@@ -1,0 +1,14 @@
+# fragmentation
+fragmentation.py
+
+# convert fragments to standardized representation of core and context
+frag_to_env_mp.py
+
+#remove duplicated lines
+sort -u
+
+# count duplicated entries
+sort r3.txt | uniq -c > r3_c.txt
+
+# create DB and import csv file with unique lines to a table
+import_env_to_db.py

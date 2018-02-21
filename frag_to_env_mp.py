@@ -86,7 +86,7 @@ def process_line(line):
     output = []
     smi, id, core, context = line.strip().split(',')
 
-    if not core and not context:
+    if (not core and not context) or id not in keep_mols_set:
         return output
     else:
         # one split
@@ -118,12 +118,20 @@ def process_line(line):
         return output
 
 
-def main(input_fname, output_fname, radius, keep_stereo, max_heavy_atoms, ncpu, verbose):
+def init(keep_mols):
+    global keep_mols_set
+    keep_mols_set = set([line.strip() for line in open(keep_mols).readlines()]) if keep_mols else set()
+
+
+def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_atoms, ncpu, verbose):
 
     # radius and remove_stereo are supplied to process_context_core via global environment (ugly but working solution)
 
+    # if keep_mols:
+    #     keep_mols = set([line.strip() for line in open(keep_mols).readlines()])
+
     ncpu = min(cpu_count(), max(ncpu, 1))
-    p = Pool(ncpu)
+    p = Pool(ncpu, initializer=init, initargs=(keep_mols,))
 
     # conn = sqlite3.connect(output_fname)
     # create_db(conn)
@@ -188,6 +196,8 @@ if __name__ == '__main__':
                         help='fragmented molecules.')
     parser.add_argument('-o', '--out', metavar='output.txt', required=True,
                         help='output text file.')
+    parser.add_argument('-k', '--keep_mols', metavar='molnames.txt', required=False, default=None,
+                        help='file with mol names to keep. Molecules which are not in the list will be ignored.')
     parser.add_argument('-r', '--radius', metavar='NUMBER', required=False, default=1,
                         help='radius of molecular context (in bonds) which will be taken into account. Default: 1.')
     parser.add_argument('-a', '--max_heavy_atoms', metavar='NUMBER', required=False, default=20,
@@ -209,9 +219,11 @@ if __name__ == '__main__':
         if o == "keep_stereo": keep_stereo = v
         if o == "ncpu": ncpu = int(v)
         if o == "max_heavy_atoms": max_heavy_atoms = int(v)
+        if o == "keep_mols": keep_mols = v
 
     main(input_fname=input_fname,
          output_fname=output_fname,
+         keep_mols=keep_mols,
          radius=radius,
          keep_stereo=keep_stereo,
          max_heavy_atoms=max_heavy_atoms,

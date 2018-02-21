@@ -37,6 +37,8 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
     INPUT:
         mol - Mol
         radius - integer, number of bonds to cut context
+        keep_stereo - bool, keep or discard information about stereoconfiguration
+        protected_ids - set/list/tuple os atom ids which cannot be present in core fragments
 
     OUTPUT:
         list of tuples (env_smi, core_smi, tuple of core atom ids)
@@ -87,6 +89,10 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
             # there are no checks for H needed because H can be present only in single cuts
             env, frag = get_canon_context_core(chains, core, radius, keep_stereo)
             output.append((env, frag, get_atom_prop(core)))
+
+    if protected_ids:
+        protected_ids = set(protected_ids)
+        output = [item for item in output if protected_ids.isdisjoint(item[2])]
 
     return output  # list of tuples (env smiles, core smiles, list of atom ids)
 
@@ -158,6 +164,8 @@ def __get_replacements(db_cur, env, min_atoms, max_atoms, radius):
 def mutate_mol(mol, db_cur, radius=3, min_size=1, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
                replace_cycles=False, protected_ids=None):
     """
+    Makes random mutations of the input structure based on supplied restrictions
+
     INPUT
         mol:      mol
         db_cur:   cursor of SQLite3 DB with fragment replacements. DB should contain tables named "radius2", "radius3".
@@ -169,6 +177,7 @@ def mutate_mol(mol, db_cur, radius=3, min_size=1, max_size=10, min_rel_size=0, m
                             the existed one. -2 and 2 mean that the existed fragment with N atoms will be replaced
                             with fragments from a DB having from N-2 to N+2 atoms.
         replace_cycles:     looking for replacement of a fragment containing cycles irrespectively of the fragment size
+        protected_ids;      set/list/tuple of atom ids which cannot be mutated
 
     OUTPUT
         list of unique mols

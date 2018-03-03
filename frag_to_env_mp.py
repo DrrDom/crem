@@ -86,7 +86,7 @@ def process_line(line):
     output = []
     smi, id, core, context = line.strip().split(',')
 
-    if (not core and not context) or id not in keep_mols_set:
+    if (not core and not context) or (keep_mols_set and id not in keep_mols_set):
         return output
     else:
         # one split

@@ -143,26 +143,33 @@ def __frag_replace(mol, frag_sma, replace_sma, frag_ids=None):
                     yield smi, rxn_sma
 
 
-def __get_replacements(db_cur, env, min_atoms, max_atoms, radius):
+def __get_replacements(db_cur, env, min_atoms, max_atoms, radius, min_freq=0):
     if radius == 3:
         db_cur.execute("""SELECT core_smi, core_sma
                           FROM radius3
                           WHERE env IN (SELECT env FROM radius3 WHERE env = ?)
                                 AND 
-                                freq >= 10 AND
-                                core_num_atoms BETWEEN ? AND ?""", (env, min_atoms, max_atoms))
+                                freq >= ? AND
+                                core_num_atoms BETWEEN ? AND ?""", (env, min_freq, min_atoms, max_atoms))
     elif radius == 2:
         db_cur.execute("""SELECT core_smi, core_sma
                           FROM radius2
                           WHERE env IN (SELECT env FROM radius2 WHERE env = ?)
                                 AND 
-                                freq >= 10 AND
-                                core_num_atoms BETWEEN ? AND ?""", (env, min_atoms, max_atoms))
+                                freq >= ? AND
+                                core_num_atoms BETWEEN ? AND ?""", (env, min_freq, min_atoms, max_atoms))
+    elif radius == 1:
+        db_cur.execute("""SELECT core_smi, core_sma
+                          FROM radius1
+                          WHERE env IN (SELECT env FROM radius1 WHERE env = ?)
+                                AND 
+                                freq >= ? AND
+                                core_num_atoms BETWEEN ? AND ?""", (env, min_freq, min_atoms, max_atoms))
     return db_cur.fetchall()
 
 
 def mutate_mol(mol, db_cur, radius=3, min_size=1, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
-               replace_cycles=False, protected_ids=None):
+               replace_cycles=False, protected_ids=None, min_freq=10):
     """
     Makes random mutations of the input structure based on supplied restrictions
 
@@ -178,20 +185,13 @@ def mutate_mol(mol, db_cur, radius=3, min_size=1, max_size=10, min_rel_size=0, m
                             with fragments from a DB having from N-2 to N+2 atoms.
         replace_cycles:     looking for replacement of a fragment containing cycles irrespectively of the fragment size
         protected_ids;      set/list/tuple of atom ids which cannot be mutated
+        min_freq:           minimum occurrence of fragments in DB for replacement
 
     OUTPUT
         list of unique mols
 
     Supply mol with explicit Hs if H replacement is desired
     """
-
-    def get_core_sma(db_cur, env, core_smi, radius):
-        if radius == 3:
-            db_cur.execute("SELECT core_sma FROM radius3 WHERE env = ? AND core_smi = ?", (env, core_smi))
-        elif radius == 2:
-            db_cur.execute("SELECT core_sma FROM radius2 WHERE env = ? AND core_smi = ?", (env, core_smi))
-        res = db_cur.fetchone()
-        return res[0] if res else None
 
     products = set()
 
@@ -207,25 +207,18 @@ def mutate_mol(mol, db_cur, radius=3, min_size=1, max_size=10, min_rel_size=0, m
         if (min_size <= num_heavy_atoms <= max_size and min_rel_size <= hac_ratio <= max_rel_size) \
                 or (replace_cycles and cycle_pattern.search(core)):
 
-            # frag_sma = get_core_sma(db_cur, env, core, radius)
             frag_sma = smiles_to_smarts(core)
-
-            # if frag_sma:
 
             min_atoms = num_heavy_atoms + min_inc
             max_atoms = num_heavy_atoms + max_inc
 
-            rep = __get_replacements(db_cur, env, min_atoms, max_atoms, radius)
+            rep = __get_replacements(db_cur, env, min_atoms, max_atoms, radius, min_freq)
             for core_smi, core_sma in rep:
                 if core_smi != core:
                     for smi, rxn in __frag_replace(mol, frag_sma, core_sma, ids):
-                        # smi = Chem.MolToSmiles(new_mol, isomericSmiles=True)
                         if smi not in products:
                             products.add(smi)
                             yield smi, rxn
-                            # products[smi] = new_mol
-
-    # return list(products.values())
 
 
 from pprint import pprint

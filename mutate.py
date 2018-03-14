@@ -6,7 +6,8 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdMMPA
 from mol_context import get_canon_context_core
-
+from multiprocessing import Pool, cpu_count
+import sqlite3
 
 cycle_pattern = re.compile("(?<!:)[1-9]+")
 
@@ -168,8 +169,45 @@ def __get_replacements(db_cur, env, min_atoms, max_atoms, radius, min_freq=0):
     return db_cur.fetchall()
 
 
-def mutate_mol(mol, db_cur, radius=3, min_size=1, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
-               replace_cycles=False, protected_ids=None, min_freq=10):
+def __get_data(mol, frags, mol_hac, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc, replace_cycles, radius, min_freq):
+    for env, core, ids in frags:
+        yield mol, env, core, ids, mol_hac, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc, replace_cycles, radius, min_freq
+
+
+def __mutate_mol_backend(items):
+
+    res = []
+
+    mol, env, core, ids, mol_hac, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc, replace_cycles, radius, min_freq = items
+
+    num_heavy_atoms = Chem.MolFromSmiles(core).GetNumHeavyAtoms()
+    hac_ratio = num_heavy_atoms / mol_hac
+
+    if (min_size <= num_heavy_atoms <= max_size and min_rel_size <= hac_ratio <= max_rel_size) \
+            or (replace_cycles and cycle_pattern.search(core)):
+
+        frag_sma = smiles_to_smarts(core)
+
+        min_atoms = num_heavy_atoms + min_inc
+        max_atoms = num_heavy_atoms + max_inc
+
+        rep = __get_replacements(cur, env, min_atoms, max_atoms, radius, min_freq)
+        # print(core, env, len(rep))
+        for core_smi, core_sma in rep:
+            if core_smi != core:
+                for item in __frag_replace(mol, frag_sma, core_sma, ids):
+                    res.append(item)
+    return res
+
+
+def __open_db(db_name):
+    global cur
+    con = sqlite3.connect(db_name)
+    cur = con.cursor()
+
+
+def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
+               replace_cycles=False, protected_ids=None, min_freq=10, ncores=1):
     """
     Makes random mutations of the input structure based on supplied restrictions
 
@@ -199,29 +237,27 @@ def mutate_mol(mol, db_cur, radius=3, min_size=1, max_size=10, min_rel_size=0, m
 
     mol_hac = mol.GetNumHeavyAtoms()
 
-    for env, core, ids in f:
-
-        num_heavy_atoms = Chem.MolFromSmiles(core).GetNumHeavyAtoms()
-        hac_ratio = num_heavy_atoms / mol_hac
-
-        if (min_size <= num_heavy_atoms <= max_size and min_rel_size <= hac_ratio <= max_rel_size) \
-                or (replace_cycles and cycle_pattern.search(core)):
-
-            frag_sma = smiles_to_smarts(core)
-
-            min_atoms = num_heavy_atoms + min_inc
-            max_atoms = num_heavy_atoms + max_inc
-
-            rep = __get_replacements(db_cur, env, min_atoms, max_atoms, radius, min_freq)
-            for core_smi, core_sma in rep:
-                if core_smi != core:
-                    for smi, rxn in __frag_replace(mol, frag_sma, core_sma, ids):
-                        if smi not in products:
-                            products.add(smi)
-                            yield smi, rxn
+    if ncores == 1:
+        global cur
+        con = sqlite3.connect(db_name)
+        cur = con.cursor()
+        for env, core, ids in f:
+            for smi, rxn in __mutate_mol_backend((mol, env, core, ids, mol_hac, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc, replace_cycles, radius, min_freq)):
+                if smi not in products:
+                    products.add(smi)
+                    yield smi, rxn
+    else:
+        p = Pool(min(ncores, cpu_count()),
+                 initializer=__open_db,
+                 initargs=(db_name, ))
+        for items in p.imap(__mutate_mol_backend, __get_data(mol, f, mol_hac, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc, replace_cycles, radius, min_freq), chunksize=5):
+            for smi, rxn in items:
+                if smi not in products:
+                    products.add(smi)
+                    yield smi, rxn
 
 
-from pprint import pprint
+# from pprint import pprint
 # mm = Chem.MolFromSmiles('CC(C)Cc1ccc(cc1Br)C(C)C(=O)O')
 # mm = Chem.AddHs(mm)
 # f = __fragment_mol(mm, 3)

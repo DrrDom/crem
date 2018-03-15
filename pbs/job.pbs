@@ -1,0 +1,8 @@
+    #!/bin/bash
+    #PBS -l select=1:ncpus=1:mem=1gb
+    ##PBS -k oe
+    #PBS -e /home/pavlop/python
+    #PBS -o /home/pavlop/python
+    python -c "f = open('job_output.txt', 'wt'); f.write('MyMessage'); f.close()"
+    python -c "print('MySTDOUTMessage')"
+    python -c "raise Exception('MyErrorMessage')"

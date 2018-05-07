@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#PBS select=1:ncpus=32
+#PBS -d /bigdisk1/pavlop/crem/orgelm_db
+
+$RADIUS=1
+
+python3 ~/python/crem/frag_to_env_mp.py -i /bigdisk1/pavlop/crem/frags/frags.txt -o r${RADIUS}.txt -k /bigdisk1/pavlop/crem/orgelm_db/organic_elements.ids -r ${RADIUS} -c 32 -v
+sort r${RADIUS}.txt | uniq -c > r${RADIUS}_c.txt
+python3 ~/python/crem/import_env_to_db.py -i r${RADIUS}_c.txt -o replacements.db -t radius${RADIUS} -c -v

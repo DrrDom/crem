@@ -1,6 +1,7 @@
 # Pavel Polishchuk, 2017
 
 import random
+import argparse
 from subprocess import Popen, PIPE
 import time
 import os
@@ -87,27 +88,38 @@ def get_jobs(job_ids, unfinished=True):
 
 if __name__ == '__main__':
 
-    nmols = 10
-    niter = 150
-    # freq = 10
+    parser = argparse.ArgumentParser(description='Stochastically explore chemical space.')
+    parser.add_argument('-o', '--out', metavar='OUTPUT_DIR', required=True,
+                        help='output dir to store results.')
+    parser.add_argument('-d', '--db', metavar='REPLACEMENT _DB', required=True,
+                        help='database with replacement.')
+    parser.add_argument('-r', '--radius', metavar='INTEGER', required=False, default=1,
+                        type=int,
+                        help='radius of environment. Default: 1.')
+    parser.add_argument('-f', '--min_freq', metavar='INTEGER', required=False, default=0,
+                        type=int,
+                        help='minimum occurrence of fragments in DB. Default: 0.')
+    parser.add_argument('-m', '--nmols', metavar='INTEGER', required=False, default=20,
+                        type=int,
+                        help='number of compounds selected on each step. Default: 20.')
+    parser.add_argument('-s', '--nsteps', metavar='INTEGER', required=False, default=150,
+                        type=int,
+                        help='number of steps. Default: 150.')
 
-    db_fname = '/home/pavlop/imtm/crem/db/r3_newmolcontext_1709_freq.db'
+    args = vars(parser.parse_args())
+    radius = args['radius']
+    min_freq = args['min_freq']
+    db_fname = os.path.abspath(args['db'])
+    output_dir = os.path.abspath(args['out'])
+    nmols = args['nmols']
+    niter = args['nsteps']
 
-    output_dir = '/bigdisk1/pavlop/crem/benzene_r1_freq10'
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
     job_dir = os.path.join(output_dir, 'jobs')
     if not os.path.exists(job_dir):
         os.mkdir(job_dir)
-
-    stdout_dir = os.path.join(output_dir, 'out')
-    if not os.path.exists(stdout_dir):
-        os.mkdir(stdout_dir)
-
-    stderr_dir = os.path.join(output_dir, 'err')
-    if not os.path.exists(stderr_dir):
-        os.mkdir(stderr_dir)
 
     input_mols = [('c1ccccc1', '0')]
 
@@ -122,11 +134,11 @@ if __name__ == '__main__':
             output_fname = os.path.join(output_dir, 'out_i%s_j%s.txt' % (str(i).zfill(3), str(j).zfill(2)))
             script = """
             #!/bin/bash
-            #PBS -l select=1:ncpus=16
-            #PDS -d %s
+            #PBS -l select=1:ncpus=32
+            #PBS -k eo
             source activate rdkit-1709
-            python3 /home/pavlop/python/crem/pbs/iterative_test4_mutate.py -i "%s" --id %s --iteration %i --job_id %i -d %s -c %i -o %s
-            """ % (output_dir, smi, mol_id, i, j, db_fname, 16, output_fname)
+            python3 /home/pavlop/python/crem/pbs/random_explore_mutate.py -i "%s" --id %s --iteration %i --job_id %i -d %s -c %i -o %s -r %i -f %i
+            """ % (smi, mol_id, i, j, db_fname, 32, output_fname, radius, min_freq)
             with open(pbs_name, "wt") as f:
                 f.write(script)
             p = Popen(['qsub', pbs_name], stdout=PIPE, encoding='utf8')
@@ -149,9 +161,7 @@ if __name__ == '__main__':
                     f.readline()  # header
                     for line in f:
                         items = line.split('\t')
-                        mw = float(items[4])
-                        if mw <= 500:
-                            uniq_smi[items[0]] = (items[1], mw)
+                        uniq_smi[items[0]] = (items[1], float(items[4]))
                 del job_ids[k]
 
             if not unfinished_jobs:

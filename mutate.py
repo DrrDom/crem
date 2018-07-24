@@ -53,10 +53,7 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
     def get_atom_prop(molecule, prop="Index"):
         res = []
         for a in molecule.GetAtoms():
-            try:
-                res.append(a.GetIntProp(prop))
-            except KeyError:
-                continue
+            res.append(a.GetIntProp(prop))
         return tuple(sorted(res))
 
     # if chosen
@@ -89,7 +86,7 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
         else:   # multiple cuts
             # there are no checks for H needed because H can be present only in single cuts
             env, frag = get_canon_context_core(chains, core, radius, keep_stereo)
-            output.append((env, frag, get_atom_prop(core)))
+            output.append((env, frag, get_atom_prop(core) if return_ids else tuple()))
 
     if protected_ids:
         protected_ids = set(protected_ids)

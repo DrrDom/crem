@@ -9,7 +9,7 @@ from mol_context import get_canon_context_core
 from multiprocessing import Pool, cpu_count
 import sqlite3
 
-cycle_pattern = re.compile("(?<!:)[1-9]+")
+cycle_pattern = re.compile("[a-zA-Z\]][1-9]+")
 
 
 def smiles_to_smarts(smi):

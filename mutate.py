@@ -53,11 +53,12 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
     def get_atom_prop(molecule, prop="Index"):
         res = []
         for a in molecule.GetAtoms():
-            res.append(a.GetIntProp(prop))
+            if a.GetAtomicNum():
+                res.append(a.GetIntProp(prop))
         return tuple(sorted(res))
 
     # if chosen
-    if protected_ids and not return_ids:
+    if protected_ids:
         return_ids = True
 
     output = []
@@ -317,7 +318,10 @@ def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, 
     #             if smi not in products:
     #                 products.add(smi)
     #                 yield smi, rxn
-
+#
+# m = Chem.MolFromSmiles('c1cc(Cl)ccc1CCl')
+# res = list(mutate_mol(m, 'test/replacements_freq100.db'))
+# print(res)
 
 # from pprint import pprint
 # mm = Chem.MolFromSmiles('CC(C)Cc1ccc(cc1Br)C(C)C(=O)O')

@@ -167,37 +167,6 @@ def __get_replacements(db_cur, env, min_atoms, max_atoms, radius, min_freq=0):
     return db_cur.fetchall()
 
 
-# def __get_data(mol, frags, mol_hac, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc, replace_cycles, radius, min_freq):
-#     for env, core, ids in frags:
-#         yield mol, env, core, ids, mol_hac, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc, replace_cycles, radius, min_freq
-#
-#
-# def __mutate_mol_backend(items):
-#
-#     res = []
-#
-#     mol, env, core, ids, mol_hac, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc, replace_cycles, radius, min_freq = items
-#
-#     num_heavy_atoms = Chem.MolFromSmiles(core).GetNumHeavyAtoms()
-#     hac_ratio = num_heavy_atoms / mol_hac
-#
-#     if (min_size <= num_heavy_atoms <= max_size and min_rel_size <= hac_ratio <= max_rel_size) \
-#             or (replace_cycles and cycle_pattern.search(core)):
-#
-#         frag_sma = smiles_to_smarts(core)
-#
-#         min_atoms = num_heavy_atoms + min_inc
-#         max_atoms = num_heavy_atoms + max_inc
-#
-#         rep = __get_replacements(cur, env, min_atoms, max_atoms, radius, min_freq)
-#         # print(core, env, len(rep))
-#         for core_smi, core_sma in rep:
-#             if core_smi != core:
-#                 for item in __frag_replace(mol, frag_sma, core_sma, ids):
-#                     res.append(item)
-#     return res
-
-
 def __gen_replacments(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
                       replace_cycles, protected_ids, min_freq):
 
@@ -229,12 +198,6 @@ def __gen_replacments(mol, db_name, radius, min_size, max_size, min_rel_size, ma
 
 def __frag_replace_mp(items):
     return list(__frag_replace(*items))
-
-
-# def __open_db(db_name):
-#     global cur
-#     con = sqlite3.connect(db_name)
-#     cur = con.cursor()
 
 
 def __get_data_2(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
@@ -293,89 +256,3 @@ def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, 
                 if smi not in products:
                     products.add(smi)
                     yield smi, rxn
-
-    #
-    #
-    # f = __fragment_mol(mol, radius, protected_ids=protected_ids)
-    #
-    # mol_hac = mol.GetNumHeavyAtoms()
-    #
-    # if ncores == 1:
-    #     global cur
-    #     con = sqlite3.connect(db_name)
-    #     cur = con.cursor()
-    #     for env, core, ids in f:
-    #         for smi, rxn in __mutate_mol_backend((mol, env, core, ids, mol_hac, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc, replace_cycles, radius, min_freq)):
-    #             if smi not in products:
-    #                 products.add(smi)
-    #                 yield smi, rxn
-    # else:
-    #     p = Pool(min(ncores, cpu_count()),
-    #              initializer=__open_db,
-    #              initargs=(db_name, ))
-    #     for items in p.imap(__mutate_mol_backend, __get_data(mol, f, mol_hac, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc, replace_cycles, radius, min_freq), chunksize=5):
-    #         for smi, rxn in items:
-    #             if smi not in products:
-    #                 products.add(smi)
-    #                 yield smi, rxn
-#
-# m = Chem.MolFromSmiles('c1cc(Cl)ccc1CCl')
-# res = list(mutate_mol(m, 'test/replacements_freq100.db'))
-# print(res)
-
-# from pprint import pprint
-# mm = Chem.MolFromSmiles('CC(C)Cc1ccc(cc1Br)C(C)C(=O)O')
-# mm = Chem.AddHs(mm)
-# f = __fragment_mol(mm, 3)
-# pprint(f)
-
-
-# frag_sma = '[H][*:1]'
-# frag_ids = (32, )
-# replace_sma = '[CH3][*:1]'
-#
-# r = __frag_replace(mm, frag_sma, replace_sma, frag_ids)
-#
-#
-# for item in r:
-#     print(item[0])
-
-#
-# print(Chem.MolToSmiles(mm, isomericSmiles=True))
-# for a in mm.GetAtoms():
-#     print(a.GetIdx(), a.GetSymbol())
-#
-# for item in r:
-#     print(Chem.MolToSmiles(item, isomericSmiles=True))
-#     for a in item.GetAtoms():
-#         print(a.GetIdx(), a.GetSymbol())
-#     item = Chem.RemoveHs(item)
-#     print(Chem.MolToSmiles(item, isomericSmiles=True))
-#     for a in item.GetAtoms():
-#         print(a.GetIdx(), a.GetSymbol())
-
-
-# mm = Chem.MolFromSmiles('CC1=CC=C(CC(=O)NC2CCCC2)C=C1Br')
-# mm = Chem.MolFromSmiles('CC(C)Cc1ccc(cc1Br)C(C(O)=O)c1ccc[nH]1')
-# # mm = Chem.MolFromSmiles('c1ccccc1c1ccccc1')
-# print(Chem.MolToSmiles(mm))
-# pprint([(a.GetSymbol(), a.GetNumExplicitHs(), a.GetNumImplicitHs()) for a in mm.GetAtoms()])
-# mm = Chem.AddHs(mm)
-# print(Chem.MolToSmiles(mm))
-# pprint([(a.GetSymbol(), a.GetNumExplicitHs(), a.GetNumImplicitHs()) for a in mm.GetAtoms()])
-# mm = Chem.RemoveHs(mm)
-# print(Chem.MolToSmiles(mm))
-# pprint([(a.GetSymbol(), a.GetNumExplicitHs(), a.GetNumImplicitHs()) for a in mm.GetAtoms()])
-
-# f = __fragment_mol(mm, 2)
-#
-# pprint(f)
-
-# for a in mm.GetAtoms():
-#     print(a.GetIdx(), a.GetSymbol(), a.GetIsAromatic())
-
-# r = __frag_replace(mm, '[CH2]1[CH2][CH2][CH]([*:1])[CH2]1', '[CH3][C]1([CH3])[S][CH]2[CH]([*:1])[C](=[O])[N]2[CH]1[C]([NH2])=[O]', (9,10,11,12,13))
-# print(r)
-# for item in r:
-#     print(Chem.MolToSmiles(item))
-#     print(item.GetProp('transformation'))

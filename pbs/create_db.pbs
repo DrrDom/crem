@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#PBS -l select=1:ncpus=32
+#PBS -k oe
+
+cd ~/imtm/crem/orgelm_pains_db
+
+python3 ~/python/crem/import_env_to_db.py -i r1_c.txt -o replacements.db -t radius1 -c -v
+python3 ~/python/crem/import_env_to_db.py -i r2_c.txt -o replacements.db -t radius2 -c -v
+python3 ~/python/crem/import_env_to_db.py -i r3_c.txt -o replacements.db -t radius3 -c -v
+

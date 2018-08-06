@@ -167,8 +167,8 @@ def __get_replacements(db_cur, env, min_atoms, max_atoms, radius, min_freq=0):
     return db_cur.fetchall()
 
 
-def __gen_replacments(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
-                      replace_cycles, protected_ids, min_freq):
+def __gen_replacements(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
+                       replace_cycles, protected_ids, min_freq):
 
     f = __fragment_mol(mol, radius, protected_ids=protected_ids)
 
@@ -202,33 +202,33 @@ def __frag_replace_mp(items):
 
 def __get_data_2(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
                  replace_cycles, protected_ids, min_freq):
-    for frag_sma, core_sma, ids in __gen_replacments(mol, db_name, radius, min_size, max_size, min_rel_size,
-                                                     max_rel_size, min_inc, max_inc, replace_cycles, protected_ids,
-                                                     min_freq):
+    for frag_sma, core_sma, ids in __gen_replacements(mol, db_name, radius, min_size, max_size, min_rel_size,
+                                                      max_rel_size, min_inc, max_inc, replace_cycles, protected_ids,
+                                                      min_freq):
         yield mol, frag_sma, core_sma, ids
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
                replace_cycles=False, protected_ids=None, min_freq=10, ncores=1):
     """
-    Makes random mutations of the input structure based on supplied restrictions
+    Generator of new molecules by replacement of fragments of the supplied molecule with fragments from DB having
+    the same chemical context
 
-    INPUT
-        mol:      mol
-        db_cur:   cursor of SQLite3 DB with fragment replacements. DB should contain tables named "radius2", "radius3".
-        radius:   integer. How far molecular context should be considered while looking for interchangeable fragments.
-        min_size, max_size: integer. Size of a fragment to replace.
-        min_rel_size, max_rel_size: float. Relative size of a fragment to the whole mol
-                                    (in terms of a number of heavy atoms)
-        min_inc, max_inc:   integer. Relative minimum and maximum size of new fragments which will replace
-                            the existed one. -2 and 2 mean that the existed fragment with N atoms will be replaced
-                            with fragments from a DB having from N-2 to N+2 atoms.
-        replace_cycles:     looking for replacement of a fragment containing cycles irrespectively of the fragment size
-        protected_ids;      set/list/tuple of atom ids which cannot be mutated
-        min_freq:           minimum occurrence of fragments in DB for replacement
-
-    OUTPUT
-        list of unique mols
+    :param mol: RDKit Mol object
+    :param db_name: path to DB with replacements
+    :param radius: radius of context which will be considered for replacement
+    :param min_size, max_size: sSize of a fragment to replace
+    :param min_rel_size, max_rel_size: Relative size of a fragment to the whole mol
+                                       (in terms of a number of heavy atoms)
+    :param min_inc, max_inc: Relative minimum and maximum size of new fragments which will replace
+                             the existed one. -2 and 2 mean that the existed fragment with N atoms will be replaced
+                             with fragments from a DB having from N-2 to N+2 atoms.
+    :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size
+    :param protected_ids: iterable with atom ids which cannot be mutated
+    :param min_freq: minimum occurrence of fragments in DB for replacement
+    :param ncores: number of cores
+    :return: tuple of SMILES of a new molecules and SMARTS of am applied transformation.
+             Only unique SMILES will be returned.
 
     Supply mol with explicit Hs if H replacement is desired
     """
@@ -237,9 +237,9 @@ def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, 
 
     if ncores == 1:
 
-        for frag_sma, core_sma, ids in __gen_replacments(mol, db_name, radius, min_size, max_size, min_rel_size,
-                                                         max_rel_size, min_inc, max_inc, replace_cycles, protected_ids,
-                                                         min_freq):
+        for frag_sma, core_sma, ids in __gen_replacements(mol, db_name, radius, min_size, max_size, min_rel_size,
+                                                          max_rel_size, min_inc, max_inc, replace_cycles, protected_ids,
+                                                          min_freq):
             for smi, rxn in __frag_replace(mol, frag_sma, core_sma, ids):
                 if smi not in products:
                     products.add(smi)
@@ -262,13 +262,13 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, protected_ids=Non
     """
     Replace hydrogens with fragments from the database
     :param mol: RDKit Mol object
-    :param db_name: name of DB with replacements
-    :param radius: radius of context
+    :param db_name: path to DB with replacements
+    :param radius: radius of context which will be considered for replacement
     :param min_atoms: minimum number of atoms in the fragment which will replace H
     :param max_atoms: maximum number of atoms in the fragment which will replace H
-    :param protected_ids: ids of heavy atoms at which no H replacement should be made.
-    Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene ids of both carbons
-    in meta-positions should be supplied)
+    :param protected_ids: iterable with ids of heavy atoms at which no H replacement should be made.
+                          Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene
+                          ids of both carbons in meta-positions should be supplied)
     :param min_freq: minimum occurrence of fragments in DB for replacement
     :param ncores: number of cores
     :return:

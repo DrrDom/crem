@@ -8,6 +8,7 @@ from rdkit.Chem import rdMMPA
 from mol_context import get_canon_context_core
 from multiprocessing import Pool, cpu_count
 import sqlite3
+from itertools import product
 
 cycle_pattern = re.compile("[a-zA-Z\]][1-9]+")
 
@@ -57,7 +58,6 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
                 res.append(a.GetIntProp(prop))
         return tuple(sorted(res))
 
-    # if chosen
     if protected_ids:
         return_ids = True
 
@@ -96,7 +96,75 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
     return output  # list of tuples (env smiles, core smiles, list of atom ids)
 
 
-def __frag_replace(mol, frag_sma, replace_sma, frag_ids=None):
+def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1=None, protected_ids_2=None,
+                        return_ids=True):
+
+    def filter_frags(frags, protected_ids):
+        output = []
+        protected_ids = set(protected_ids)
+        for _, chains in frags:
+            for atom in chains.GetAtoms():
+                if atom.GetAtomicNum() == 0:
+                    for d in atom.GetNeighbors():
+                        if d.GetAtomicNum() != 1 and d.GetIdx() not in protected_ids:
+                            output.append((None, chains))
+        return output
+
+    def prep_frags(frags, keep_stereo=False):
+        # frags is a list of tuples [(None, frag_mol_1), (None, frag_mol_2), ...]
+        ls = []
+        for _, chains in frags:
+            for atom in chains.GetAtoms():
+                if atom.GetAtomicNum() == 0:
+                    for d in atom.GetNeighbors():
+                        if d.GetAtomicNum() == 1:
+                            ids = [d.GetIntProp('Index')]
+            a, b = Chem.MolToSmiles(chains, isomericSmiles=keep_stereo).split('.')
+            if a == '[H][*:1]':
+                ls.append([b, ids])
+            else:
+                ls.append([a, ids])
+        return ls
+
+    if protected_ids_1 or protected_ids_2:
+        return_ids = True
+
+    if return_ids:
+        for atom in mol1.GetAtoms():
+            atom.SetIntProp("Index", atom.GetIdx())
+        for atom in mol2.GetAtoms():
+            atom.SetIntProp("Index", atom.GetIdx())
+
+    frags_1 = rdMMPA.FragmentMol(mol1, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
+    frags_2 = rdMMPA.FragmentMol(mol2, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
+
+    if protected_ids_1:
+        frags_1 = filter_frags(frags_1, protected_ids_1)
+
+    if protected_ids_2:
+        frags_2 = filter_frags(frags_2, protected_ids_2)
+
+    frags_1 = prep_frags(frags_1, keep_stereo)
+    frags_2 = prep_frags(frags_2, keep_stereo)
+
+    for n, ch in enumerate(frags_1):
+        frags_1[n][0] = frags_1[n][0].replace('*:1', '*:2')
+
+    q = []
+    for (fr1, ids1), (fr2, ids2) in product(frags_1, frags_2):
+        q.append(['%s.%s' % (fr1, fr2), ids1, ids2])
+
+    fake_core = '[*:1]C[*:2]'
+    output = []
+
+    for (chains, ids_1, ids_2) in q:
+        env, frag = get_canon_context_core(chains, fake_core, radius=radius, keep_stereo=keep_stereo)
+        output.append((env, '[H][*:1].[H][*:2]', ids_1, ids_2))
+
+    return output  # list of tuples (env smiles, core smiles, list of atom ids)
+
+
+def __frag_replace(mol1, mol2, frag_sma, replace_sma, frag_ids_1=None, frag_ids_2=None):
     """
     INPUT
         mol:         mol,
@@ -109,24 +177,39 @@ def __frag_replace(mol, frag_sma, replace_sma, frag_ids=None):
         Each output mol has a new field named 'transformation' with information about reaction SMARTS applied
     """
 
-    frag_sma = frag_sma.replace('*', '!#1')    # to avoid map H in mol with explicit H (lead to wrong replacement)
+    def set_protected_atoms(mol, ids):
+        if ids:
+            ids_ext = set(ids)
+            # extend atom ids on neighbour atoms
+            for i in ids:
+                a = mol.GetAtomWithIdx(i)
+                ids_ext.update(na.GetIdx() for na in a.GetNeighbors())
+            # protect untouched atoms
+            for a in mol.GetAtoms():
+                if a.GetAtomicNum() > 1 and a.GetIdx() not in ids_ext:
+                    a.SetProp('_protected', '1')
+                else:
+                    a.ClearProp('_protected')
+
+    link = False
+    if not isinstance(mol1, Chem.Mol):
+        raise StopIteration("The first molecule in __gen_replacement always must be specified")
+    if isinstance(mol1, Chem.Mol) and isinstance(mol2, Chem.Mol):
+        link = True
+
+    frag_sma = frag_sma.replace('*', '!#1')  # to avoid map H in mol with explicit H (lead to wrong replacement)
     rxn_sma = "%s>>%s" % (frag_sma, replace_sma)
     rxn = AllChem.ReactionFromSmarts(rxn_sma)
 
-    if frag_ids:
-        ids = set(frag_ids)
-        # extend atom ids on neighbour atoms
-        for i in frag_ids:
-            a = mol.GetAtomWithIdx(i)
-            ids.update(na.GetIdx() for na in a.GetNeighbors())
-        # protect untouched atoms
-        for a in mol.GetAtoms():
-            if a.GetAtomicNum() > 1 and a.GetIdx() not in ids:
-                a.SetProp('_protected', '1')
-            else:
-                a.ClearProp('_protected')
+    set_protected_atoms(mol1, frag_ids_1)
+    if link:
+        set_protected_atoms(mol2, frag_ids_2)
 
-    ps = rxn.RunReactants([mol])
+    if link:
+        reactants = [mol1, mol2]
+    else:
+        reactants = [mol1]
+    ps = rxn.RunReactants(reactants)
 
     products = set()
     for y in ps:
@@ -167,17 +250,29 @@ def __get_replacements(db_cur, env, min_atoms, max_atoms, radius, min_freq=0):
     return db_cur.fetchall()
 
 
-def __gen_replacements(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
-                       replace_cycles, protected_ids, min_freq):
+def __gen_replacements(mol1, mol2, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
+                       replace_cycles, protected_ids_1, protected_ids_2, min_freq):
 
-    f = __fragment_mol(mol, radius, protected_ids=protected_ids)
+    link = False
+    if not isinstance(mol1, Chem.Mol):
+        raise StopIteration("The first molecule in __gen_replacement always must be specified")
+    if isinstance(mol1, Chem.Mol) and isinstance(mol2, Chem.Mol):
+        link = True
+
+    if link:
+        f = __fragment_mol_link(mol1=mol1, mol2=mol2, radius=radius, protected_ids_1=protected_ids_1,
+                                protected_ids_2=protected_ids_2)
+        mol = Chem.CombineMols(mol1, mol2)
+    else:
+        mol = mol1
+        f = __fragment_mol(mol, radius, protected_ids=protected_ids_1)
 
     mol_hac = mol.GetNumHeavyAtoms()
 
     con = sqlite3.connect(db_name)
     cur = con.cursor()
 
-    for env, core, ids in f:
+    for env, core, *ids in f:  # if link = True ids is two tuples, if link = False ids is a single tuple
 
         num_heavy_atoms = Chem.MolFromSmiles(core).GetNumHeavyAtoms()
         hac_ratio = num_heavy_atoms / mol_hac
@@ -193,22 +288,40 @@ def __gen_replacements(mol, db_name, radius, min_size, max_size, min_rel_size, m
             rep = __get_replacements(cur, env, min_atoms, max_atoms, radius, min_freq)
             for core_smi, core_sma in rep:
                 if core_smi != core:
-                    yield frag_sma, core_sma, ids
+                    if link:
+                        yield frag_sma, core_sma, ids[0], ids[1]
+                    else:
+                        yield frag_sma, core_sma, ids[0]
 
 
 def __frag_replace_mp(items):
     return list(__frag_replace(*items))
 
 
-def __get_data_2(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
-                 replace_cycles, protected_ids, min_freq):
-    for frag_sma, core_sma, ids in __gen_replacements(mol, db_name, radius, min_size, max_size, min_rel_size,
-                                                      max_rel_size, min_inc, max_inc, replace_cycles, protected_ids,
-                                                      min_freq):
-        yield mol, frag_sma, core_sma, ids
+def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
+               replace_cycles, protected_ids, min_freq):
+    for frag_sma, core_sma, ids in __gen_replacements(mol1=mol, mol2=None, db_name=db_name, radius=radius,
+                                                      min_size=min_size, max_size=max_size,
+                                                      min_rel_size=min_rel_size, max_rel_size=max_rel_size,
+                                                      min_inc=min_inc, max_inc=max_inc,
+                                                      replace_cycles=replace_cycles,
+                                                      protected_ids_1=protected_ids, protected_ids_2=None,
+                                                      min_freq=min_freq):
+        yield mol, None, frag_sma, core_sma, ids, None
 
 
-def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
+def __get_data_link(mol1, mol2, db_name, radius, min_atoms, max_atoms, protected_ids_1, protected_ids_2, min_freq):
+    for frag_sma, core_sma, ids_1, ids_2 in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius,
+                                                               min_size=0, max_size=0, min_rel_size=0, max_rel_size=1,
+                                                               min_inc=min_atoms, max_inc=max_atoms,
+                                                               replace_cycles=False,
+                                                               protected_ids_1=protected_ids_1,
+                                                               protected_ids_2=protected_ids_2,
+                                                               min_freq=min_freq):
+        yield mol1, mol2, frag_sma, core_sma, ids_1, ids_2
+
+
+def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
                replace_cycles=False, protected_ids=None, min_freq=10, ncores=1):
     """
     Generator of new molecules by replacement of fragments of the supplied molecule with fragments from DB having
@@ -217,7 +330,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, 
     :param mol: RDKit Mol object
     :param db_name: path to DB with replacements
     :param radius: radius of context which will be considered for replacement
-    :param min_size, max_size: sSize of a fragment to replace
+    :param min_size, max_size: number of heavy atoms in a fragment to replace
     :param min_rel_size, max_rel_size: Relative size of a fragment to the whole mol
                                        (in terms of a number of heavy atoms)
     :param min_inc, max_inc: Relative minimum and maximum size of new fragments which will replace
@@ -227,8 +340,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, 
     :param protected_ids: iterable with atom ids which cannot be mutated
     :param min_freq: minimum occurrence of fragments in DB for replacement
     :param ncores: number of cores
-    :return: tuple of SMILES of a new molecules and SMARTS of am applied transformation.
-             Only unique SMILES will be returned.
+    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecules and
+             SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
 
     Supply mol with explicit Hs if H replacement is desired
     """
@@ -237,10 +350,14 @@ def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, 
 
     if ncores == 1:
 
-        for frag_sma, core_sma, ids in __gen_replacements(mol, db_name, radius, min_size, max_size, min_rel_size,
-                                                          max_rel_size, min_inc, max_inc, replace_cycles, protected_ids,
-                                                          min_freq):
-            for smi, rxn in __frag_replace(mol, frag_sma, core_sma, ids):
+        for frag_sma, core_sma, ids in __gen_replacements(mol1=mol, mol2=None, db_name=db_name, radius=radius,
+                                                          min_size=min_size, max_size=max_size,
+                                                          min_rel_size=min_rel_size, max_rel_size=max_rel_size,
+                                                          min_inc=min_inc, max_inc=max_inc,
+                                                          replace_cycles=replace_cycles,
+                                                          protected_ids_1=protected_ids, protected_ids_2=None,
+                                                          min_freq=min_freq):
+            for smi, rxn in __frag_replace(mol, None, frag_sma, core_sma, ids, None):
                 if smi not in products:
                     products.add(smi)
                     yield smi, rxn
@@ -248,9 +365,9 @@ def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, 
     else:
 
         p = Pool(min(ncores, cpu_count()))
-        for items in p.imap(__frag_replace_mp, __get_data_2(mol, db_name, radius, min_size, max_size, min_rel_size,
-                                                            max_rel_size, min_inc, max_inc, replace_cycles,
-                                                            protected_ids, min_freq),
+        for items in p.imap(__frag_replace_mp, __get_data(mol, db_name, radius, min_size, max_size, min_rel_size,
+                                                          max_rel_size, min_inc, max_inc, replace_cycles,
+                                                          protected_ids, min_freq),
                             chunksize=100):
             for smi, rxn in items:
                 if smi not in products:
@@ -260,7 +377,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, 
 
 def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, protected_ids=None, min_freq=10, ncores=1):
     """
-    Replace hydrogens with fragments from the database
+    Replace hydrogens with fragments from the database having the same chemical context
+
     :param mol: RDKit Mol object
     :param db_name: path to DB with replacements
     :param radius: radius of context which will be considered for replacement
@@ -271,7 +389,8 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, protected_ids=Non
                           ids of both carbons in meta-positions should be supplied)
     :param min_freq: minimum occurrence of fragments in DB for replacement
     :param ncores: number of cores
-    :return:
+    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecules and
+             SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
     """
     ids = []
     m = Chem.AddHs(mol)
@@ -283,3 +402,81 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, protected_ids=Non
     return mutate_mol(m, db_name, radius, min_size=0, max_size=0, min_inc=min_atoms, max_inc=max_atoms,
                       protected_ids=ids, min_freq=min_freq, ncores=ncores)
 
+
+def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, protected_ids_1=None, protected_ids_2=None,
+             min_freq=10, ncores=1):
+    """
+    Link two molecules by a linker from the database
+
+    :param mol1: RDKit Mol object
+    :param mol2: RDKit Mol object
+    :param db_name: path to DB with replacements
+    :param radius: radius of context which will be considered for replacement
+    :param min_atoms: minimum number of heavy atoms in the fragment which will link molecules
+    :param max_atoms: maximum number of heavy atoms in the fragment which will link molecules
+    :param protected_ids_1, protected_ids_2: iterable with ids of heavy atoms at which no H replacement should be made.
+                                             Ids of all equivalent atoms should be supplied (e.g. to protect
+                                             meta-position in toluene ids of both carbons in meta-positions should
+                                             be supplied)
+    :param min_freq: minimum occurrence of fragments in DB for replacement
+    :param ncores: number of cores
+    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecules and
+             SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
+    """
+
+    products = set()
+
+    if ncores == 1:
+
+        for frag_sma, core_sma, ids_1, ids_2 in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius,
+                                                                   min_size=0, max_size=0, min_rel_size=0,
+                                                                   max_rel_size=1, min_inc=min_atoms,
+                                                                   max_inc=max_atoms, replace_cycles=False,
+                                                                   protected_ids_1=protected_ids_1,
+                                                                   protected_ids_2=protected_ids_2,
+                                                                   min_freq=min_freq):
+            for smi, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, ids_1, ids_2):
+                if smi not in products:
+                    products.add(smi)
+                    yield smi, rxn
+
+    else:
+
+        p = Pool(min(ncores, cpu_count()))
+        for items in p.imap(__frag_replace_mp, __get_data_link(mol1, mol2, db_name, radius, min_atoms, max_atoms,
+                                                               protected_ids_1, protected_ids_2, min_freq),
+                            chunksize=100):
+            for smi, rxn in items:
+                if smi not in products:
+                    products.add(smi)
+                    yield smi, rxn
+
+#
+# from pprint import pprint
+# import time
+#
+# mol1 = Chem.MolFromSmiles('CO')
+# mol1 = Chem.AddHs(mol1)
+# mol2 = Chem.MolFromSmiles('CC(=O)O')
+# mol2 = Chem.AddHs(mol2)
+# t = time.time()
+# new_mols = list(link_mol(mol1, mol2, 'test/replacements_freq100.db', radius=3, min_atoms=0, max_atoms=2,
+#                          protected_ids_1=None, protected_ids_2=None, min_freq=10, ncores=2))
+# print(time.time() - t)
+# pprint(new_mols)
+# print(len(new_mols))
+#
+#
+# mol = Chem.MolFromSmiles('c1ccccc1CO')
+# new_mols = list(mutate_mol(mol, 'test/replacements_freq100.db', radius=3, min_size=0, protected_ids=None, min_freq=10, ncores=2))
+# pprint(new_mols)
+# print(len(new_mols))
+#
+# mol = Chem.AddHs(mol)
+# new_mols = list(mutate_mol(mol, 'test/replacements_freq100.db', radius=3, min_size=0, protected_ids=None, min_freq=10, ncores=2))
+# pprint(new_mols)
+# print(len(new_mols))
+#
+# new_mols = list(grow_mol(mol, 'test/replacements_freq100.db', radius=3, protected_ids=None, min_freq=10, ncores=2))
+# pprint(new_mols)
+# print(len(new_mols))

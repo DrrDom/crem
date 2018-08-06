@@ -256,3 +256,30 @@ def mutate_mol(mol, db_name, radius=3, min_size=1, max_size=10, min_rel_size=0, 
                 if smi not in products:
                     products.add(smi)
                     yield smi, rxn
+
+
+def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, protected_ids=None, min_freq=10, ncores=1):
+    """
+    Replace hydrogens with fragments from the database
+    :param mol: RDKit Mol object
+    :param db_name: name of DB with replacements
+    :param radius: radius of context
+    :param min_atoms: minimum number of atoms in the fragment which will replace H
+    :param max_atoms: maximum number of atoms in the fragment which will replace H
+    :param protected_ids: ids of heavy atoms at which no H replacement should be made.
+    Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene ids of both carbons
+    in meta-positions should be supplied)
+    :param min_freq: minimum occurrence of fragments in DB for replacement
+    :param ncores: number of cores
+    :return:
+    """
+    ids = []
+    m = Chem.AddHs(mol)
+    if protected_ids:
+        for i in protected_ids:
+            for a in m.GetAtomWithIdx(i).GetNeighbors():
+                if a.GetAtomicNum() == 1:
+                    ids.append(a.GetIdx())
+    return mutate_mol(m, db_name, radius, min_size=0, max_size=0, min_inc=min_atoms, max_inc=max_atoms,
+                      protected_ids=ids, min_freq=min_freq, ncores=ncores)
+

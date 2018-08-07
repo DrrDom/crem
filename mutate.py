@@ -450,33 +450,3 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, protected_
                 if smi not in products:
                     products.add(smi)
                     yield smi, rxn
-
-#
-# from pprint import pprint
-# import time
-#
-# mol1 = Chem.MolFromSmiles('CO')
-# mol1 = Chem.AddHs(mol1)
-# mol2 = Chem.MolFromSmiles('CC(=O)O')
-# mol2 = Chem.AddHs(mol2)
-# t = time.time()
-# new_mols = list(link_mol(mol1, mol2, 'test/replacements_freq100.db', radius=3, min_atoms=0, max_atoms=2,
-#                          protected_ids_1=None, protected_ids_2=None, min_freq=10, ncores=2))
-# print(time.time() - t)
-# pprint(new_mols)
-# print(len(new_mols))
-#
-#
-# mol = Chem.MolFromSmiles('c1ccccc1CO')
-# new_mols = list(mutate_mol(mol, 'test/replacements_freq100.db', radius=3, min_size=0, protected_ids=None, min_freq=10, ncores=2))
-# pprint(new_mols)
-# print(len(new_mols))
-#
-# mol = Chem.AddHs(mol)
-# new_mols = list(mutate_mol(mol, 'test/replacements_freq100.db', radius=3, min_size=0, protected_ids=None, min_freq=10, ncores=2))
-# pprint(new_mols)
-# print(len(new_mols))
-#
-# new_mols = list(grow_mol(mol, 'test/replacements_freq100.db', radius=3, protected_ids=None, min_freq=10, ncores=2))
-# pprint(new_mols)
-# print(len(new_mols))

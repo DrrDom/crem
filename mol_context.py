@@ -30,6 +30,11 @@ def __get_context_env(mol, radius):
         All explicit Hs will be stripped.
     """
     # mol is context consisting of one or more groups with single attachment point
+
+    mol = Chem.RemoveHs(mol)
+    for a in mol.GetAtoms():
+        a.SetIntProp('degree', a.GetDegree())
+
     bond_ids = set()
     for a in mol.GetAtoms():
         if a.GetSymbol() == "*":
@@ -39,10 +44,24 @@ def __get_context_env(mol, radius):
                 i -= 1
                 b = Chem.FindAtomEnvironmentOfRadiusN(mol, i, a.GetIdx())
             bond_ids.update(b)
-    m = Chem.PathToSubmol(mol, list(bond_ids))
+    m = Chem.RWMol(Chem.PathToSubmol(mol, list(bond_ids)))
+
     # remove Hs, otherwise terminal atoms will produce smiles with H ([CH2]C[*:1])
     for a in m.GetAtoms():
         a.SetNumExplicitHs(0)
+
+    # create attachment points to removed part of the environment
+    m.UpdatePropertyCache()
+    inserts = dict()
+    for a in m.GetAtoms():
+        diff = a.GetIntProp('degree') - a.GetDegree()
+        if diff:
+            inserts[a.GetIdx()] = diff
+    for atom_id, dummy_count in inserts.items():
+        for _ in range(dummy_count):
+            dummy_index = m.AddAtom(Chem.Atom(0))
+            m.AddBond(atom_id, dummy_index, Chem.BondType.SINGLE)
+
     return m
 
 

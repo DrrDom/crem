@@ -325,7 +325,7 @@ def __get_data_link(mol1, mol2, db_name, radius, min_atoms, max_atoms, protected
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
-               max_replacements=None, replace_cycles=False, protected_ids=None, min_freq=10, ncores=1):
+               max_replacements=None, replace_cycles=False, protected_ids=None, min_freq=10, return_rxn=True, ncores=1):
     """
     Generator of new molecules by replacement of fragments of the supplied molecule with fragments from DB having
     the same chemical context
@@ -345,6 +345,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
     :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size
     :param protected_ids: iterable with atom ids which cannot be mutated
     :param min_freq: minimum occurrence of fragments in DB for replacement
+    :param return_rxn: control whether to additionally return rxn of a transformation or return only generated SMILES
     :param ncores: number of cores
     :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
              SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
@@ -367,7 +368,10 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
             for smi, rxn in __frag_replace(mol, None, frag_sma, core_sma, ids, None):
                 if smi not in products:
                     products.add(smi)
-                    yield smi, rxn
+                    if return_rxn
+                        yield smi, rxn
+                    else:
+                        yield smi
 
     else:
 
@@ -379,11 +383,14 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
             for smi, rxn in items:
                 if smi not in products:
                     products.add(smi)
-                    yield smi, rxn
+                    if return_rxn
+                        yield smi, rxn
+                    else:
+                        yield smi
 
 
 def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, protected_ids=None, min_freq=10,
-             ncores=1):
+             return_rxn=True, ncores=1):
     """
     Replace hydrogens with fragments from the database having the same chemical context
 
@@ -399,6 +406,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                           Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene
                           ids of both carbons in meta-positions should be supplied)
     :param min_freq: minimum occurrence of fragments in DB for replacement
+    :param return_rxn: control whether to additionally return rxn of a transformation or return only generated SMILES
     :param ncores: number of cores
     :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
              SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
@@ -411,11 +419,12 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                 if a.GetAtomicNum() == 1:
                     ids.append(a.GetIdx())
     return mutate_mol(m, db_name, radius, min_size=0, max_size=0, min_inc=min_atoms, max_inc=max_atoms,
-                      max_replacements=max_replacements, protected_ids=ids, min_freq=min_freq, ncores=ncores)
+                      max_replacements=max_replacements, protected_ids=ids, min_freq=min_freq, return_rxn=return_rxn,
+                      ncores=ncores)
 
 
 def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None,
-             protected_ids_1=None, protected_ids_2=None, min_freq=10, ncores=1):
+             protected_ids_1=None, protected_ids_2=None, min_freq=10, return_rxn=True, ncores=1):
     """
     Link two molecules by a linker from the database
 
@@ -433,6 +442,7 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
                                              meta-position in toluene ids of both carbons in meta-positions should
                                              be supplied)
     :param min_freq: minimum occurrence of fragments in DB for replacement
+    :param return_rxn: control whether to additionally return rxn of a transformation or return only generated SMILES
     :param ncores: number of cores
     :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
              SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
@@ -453,7 +463,10 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
             for smi, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, ids_1, ids_2):
                 if smi not in products:
                     products.add(smi)
-                    yield smi, rxn
+                    if return_rxn
+                        yield smi, rxn
+                    else:
+                        yield smi
 
     else:
 
@@ -465,4 +478,9 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
             for smi, rxn in items:
                 if smi not in products:
                     products.add(smi)
-                    yield smi, rxn
+                    if return_rxn
+                        yield smi, rxn
+                    else:
+                        yield smi
+
+

@@ -227,27 +227,12 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, frag_ids_1=None, frag_ids_
 
 
 def __get_replacements(db_cur, env, min_atoms, max_atoms, radius, min_freq=0):
-    if radius == 3:
-        db_cur.execute("""SELECT core_smi, core_sma
-                          FROM radius3
-                          WHERE env IN (SELECT env FROM radius3 WHERE env = ?)
-                                AND 
-                                freq >= ? AND
-                                core_num_atoms BETWEEN ? AND ?""", (env, min_freq, min_atoms, max_atoms))
-    elif radius == 2:
-        db_cur.execute("""SELECT core_smi, core_sma
-                          FROM radius2
-                          WHERE env IN (SELECT env FROM radius2 WHERE env = ?)
-                                AND 
-                                freq >= ? AND
-                                core_num_atoms BETWEEN ? AND ?""", (env, min_freq, min_atoms, max_atoms))
-    elif radius == 1:
-        db_cur.execute("""SELECT core_smi, core_sma
-                          FROM radius1
-                          WHERE env IN (SELECT env FROM radius1 WHERE env = ?)
-                                AND 
-                                freq >= ? AND
-                                core_num_atoms BETWEEN ? AND ?""", (env, min_freq, min_atoms, max_atoms))
+    sql = """SELECT core_smi, core_sma
+             FROM radius%i
+             WHERE env = ? AND 
+                   freq >= ? AND
+                   core_num_atoms BETWEEN ? AND ?""" % radius
+    db_cur.execute(sql, (env, min_freq, min_atoms, max_atoms))
     return db_cur.fetchall()
 
 

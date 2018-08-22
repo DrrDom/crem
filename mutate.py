@@ -361,7 +361,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
     :param protected_ids: iterable with atom ids which cannot be mutated
     :param min_freq: minimum occurrence of fragments in DB for replacement
     :param ncores: number of cores
-    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecules and
+    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
              SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
 
     Supply mol with explicit Hs if H replacement is desired
@@ -415,7 +415,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                           ids of both carbons in meta-positions should be supplied)
     :param min_freq: minimum occurrence of fragments in DB for replacement
     :param ncores: number of cores
-    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecules and
+    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
              SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
     """
     ids = []
@@ -449,7 +449,7 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
                                              be supplied)
     :param min_freq: minimum occurrence of fragments in DB for replacement
     :param ncores: number of cores
-    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecules and
+    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
              SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
     """
 

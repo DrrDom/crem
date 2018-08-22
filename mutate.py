@@ -368,7 +368,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
             for smi, rxn in __frag_replace(mol, None, frag_sma, core_sma, ids, None):
                 if smi not in products:
                     products.add(smi)
-                    if return_rxn
+                    if return_rxn:
                         yield smi, rxn
                     else:
                         yield smi
@@ -383,7 +383,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
             for smi, rxn in items:
                 if smi not in products:
                     products.add(smi)
-                    if return_rxn
+                    if return_rxn:
                         yield smi, rxn
                     else:
                         yield smi
@@ -463,7 +463,7 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
             for smi, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, ids_1, ids_2):
                 if smi not in products:
                     products.add(smi)
-                    if return_rxn
+                    if return_rxn:
                         yield smi, rxn
                     else:
                         yield smi
@@ -478,7 +478,7 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
             for smi, rxn in items:
                 if smi not in products:
                     products.add(smi)
-                    if return_rxn
+                    if return_rxn:
                         yield smi, rxn
                     else:
                         yield smi

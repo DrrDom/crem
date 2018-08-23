@@ -14,7 +14,8 @@ def main(input_smiles, id, iteration, job_id, db_name, radius, min_freq, output_
     iterator = mutate_mol(m, db_name, radius=radius, min_freq=min_freq,
                           min_size=0, max_size=8,
                           min_rel_size=0, max_rel_size=0.3,
-                          min_inc=-1, max_inc=1, replace_cycles=False, ncores=ncpu)
+                          min_inc=-1, max_inc=1, replace_cycles=False, ncores=ncpu,
+                          max_replacements=25000)
     with open(output_fname, 'wt') as f:
         f.write('\t'.join(['SMILES', 'ID', 'Parent', 'Iteration', "MW", 'transformation']) + '\n')
         for i, (smi, rxn) in enumerate(iterator):

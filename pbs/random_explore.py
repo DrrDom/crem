@@ -136,6 +136,7 @@ if __name__ == '__main__':
             #!/bin/bash
             #PBS -l select=1:ncpus=32
             #PBS -k eo
+            #PBS -p -50
             source activate rdkit-1709
             python3 /home/pavlop/python/crem/pbs/random_explore_mutate.py -i "%s" --id %s --iteration %i --job_id %i -d %s -c %i -o %s -r %i -f %i
             """ % (smi, mol_id, i, j, db_fname, 32, output_fname, radius, min_freq)

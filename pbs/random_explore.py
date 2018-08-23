@@ -134,7 +134,7 @@ if __name__ == '__main__':
             output_fname = os.path.join(output_dir, 'out_i%s_j%s.txt' % (str(i).zfill(3), str(j).zfill(2)))
             script = """
             #!/bin/bash
-            #PBS -l select=1:ncpus=32
+            #PBS -l select=1:ncpus=8
             #PBS -k eo
             #PBS -p -50
             source activate rdkit-1709

@@ -367,7 +367,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                           protected_ids_1=protected_ids, protected_ids_2=None,
                                                           min_freq=min_freq):
             for smi, rxn in __frag_replace(mol, None, frag_sma, core_sma, ids, None):
-                if max_replacements is not None and len(products) < max_replacements:
+                if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
                         if return_rxn:
@@ -383,7 +383,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                           protected_ids, min_freq, max_replacements),
                             chunksize=100):
             for smi, rxn in items:
-                if max_replacements is not None and len(products) < max_replacements:
+                if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
                         if return_rxn:
@@ -464,7 +464,7 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
                                                                    protected_ids_2=protected_ids_2,
                                                                    min_freq=min_freq):
             for smi, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, ids_1, ids_2):
-                if max_replacements is not None and len(products) < max_replacements:
+                if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
                         if return_rxn:
@@ -480,7 +480,7 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
                                                                max_replacements),
                             chunksize=100):
             for smi, rxn in items:
-                if max_replacements is not None and len(products) < max_replacements:
+                if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
                         if return_rxn:

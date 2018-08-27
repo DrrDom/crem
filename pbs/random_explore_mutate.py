@@ -39,10 +39,10 @@ if __name__ == '__main__':
                         help='id of input SMILES.')
     parser.add_argument('--iteration', metavar='iteration_number', required=True,
                         help='iteration number.')
-    parser.add_argument('--job_id', metavar='job_number', required=True,
+    parser.add_argument('--job_id', metavar='', required=True,
                         help='job number.')
-    parser.add_argument('-d', '--db_name', metavar='job_number', required=True,
-                        help='job number.')
+    parser.add_argument('-d', '--db_name', metavar='', required=True,
+                        help='path to fragment database.')
     parser.add_argument('-o', '--out', metavar='output.txt', required=True,
                         help='generated molecules.')
     parser.add_argument('-c', '--ncpu', metavar='NUMBER', required=False, default=1,

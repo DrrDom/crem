@@ -8,16 +8,14 @@
 # license         : 
 #==============================================================================
 
+import re
+import sys
 from rdkit import Chem
 
 
 def mol_to_smarts(mol):
 
     mol.UpdatePropertyCache()
-
-    if mol is None:
-        sys.stderr.write("Can't generate mol for: %s\n" % smi)
-        return None
 
     # change the isotope to 42
     for atom in mol.GetAtoms():
@@ -33,4 +31,7 @@ def mol_to_smarts(mol):
 
 def smiles_to_smarts(smi):
     mol = Chem.MolFromSmiles(smi, sanitize=False)
+    if mol is None:
+        sys.stderr.write("Can't generate mol for: %s\n" % smi)
+        return None
     return mol_to_smarts(mol)

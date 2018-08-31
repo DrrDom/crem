@@ -1,8 +1,8 @@
 import re
-import sys
 from itertools import product, permutations, combinations
 from collections import defaultdict
 from rdkit import Chem
+from functions import mol_to_smarts
 
 __author__ = 'pavel'
 
@@ -291,3 +291,54 @@ def get_canon_context_core(context, core, radius, keep_stereo=False):
         return env, sorted(cores)[0]
     else:
         return None, None
+
+
+def combine_core_env_to_rxn_smarts(core, env):
+
+    if isinstance(env, str):
+        m_env = Chem.MolFromSmiles(env, sanitize=False)
+    if isinstance(core, str):
+        m_frag = Chem.MolFromSmiles(core, sanitize=False)
+
+    backup_atom_map = "backupAtomMap"
+
+    # put all atom maps to atom property and remove them
+    for a in m_env.GetAtoms():
+        atom_map = a.GetAtomMapNum()
+        if atom_map:
+            a.SetIntProp(backup_atom_map, atom_map)
+            a.SetAtomMapNum(0)
+
+    for a in m_frag.GetAtoms():
+        atom_map = a.GetAtomMapNum()
+        if atom_map:
+            a.SetIntProp(backup_atom_map, atom_map)
+            a.SetAtomMapNum(0)
+
+    # set canonical ranks for atoms in env without maps
+    m_env.UpdatePropertyCache()
+    for atom_id, rank in zip([a.GetIdx() for a in m_env.GetAtoms()], list(Chem.CanonicalRankAtoms(m_env))):
+        a = m_env.GetAtomWithIdx(atom_id)
+        if a.GetAtomicNum():  # not dummy atom
+            a.SetAtomMapNum(rank)
+
+    m = Chem.RWMol(Chem.CombineMols(m_frag, m_env))
+
+    links = defaultdict(list)  # pairs of atom ids to create bonds
+    att_to_remove = []  # ids of att points to remove
+    for a in m.GetAtoms():
+        if a.HasProp(backup_atom_map):
+            i = a.GetIntProp(backup_atom_map)
+            links[i].append(a.GetNeighbors()[0].GetIdx())
+            att_to_remove.append(a.GetIdx())
+
+    for i, j in links.values():
+        m.AddBond(i, j, Chem.BondType.SINGLE)
+
+    for i in sorted(att_to_remove, reverse=True):
+        m.RemoveAtom(i)
+
+    comb_sma = mol_to_smarts(m)
+
+    return comb_sma.replace('[*]', '').replace('()', '')
+

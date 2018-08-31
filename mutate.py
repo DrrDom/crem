@@ -5,34 +5,13 @@ import re
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdMMPA
-from mol_context import get_canon_context_core
+from mol_context import get_canon_context_core, combine_core_env_to_rxn_smarts
 from multiprocessing import Pool, cpu_count
 import sqlite3
 import random
 from itertools import product
 
 cycle_pattern = re.compile("[a-zA-Z\]][1-9]+")
-
-
-def smiles_to_smarts(smi):
-
-    mol = Chem.MolFromSmiles(smi)
-
-    if mol is None:
-        sys.stderr.write("Can't generate mol for: %s\n" % smi)
-        return None
-
-    # change the isotope to 42
-    for atom in mol.GetAtoms():
-        atom.SetIsotope(42)
-
-    # print out the smiles - all the atom attributes will be fully specified
-    smarts = Chem.MolToSmiles(mol, isomericSmiles=True)
-    # remove the 42 isotope labels
-    smarts = re.sub(r'\[42', "[", smarts)
-    # now have a fully specified SMARTS - simples!
-
-    return smarts
 
 
 def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_ids=None):
@@ -249,7 +228,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, min_size=0, max_size=8, min_
             if (min_size <= num_heavy_atoms <= max_size and min_rel_size <= hac_ratio <= max_rel_size) \
                     or (replace_cycles and cycle_pattern.search(core)):
 
-                frag_sma = smiles_to_smarts(core)
+                frag_sma = combine_core_env_to_rxn_smarts(core, env)
 
                 min_atoms = num_heavy_atoms + min_inc
                 max_atoms = num_heavy_atoms + max_inc

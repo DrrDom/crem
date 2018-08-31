@@ -10,7 +10,8 @@ from itertools import permutations
 from multiprocessing import Pool, cpu_count
 from rdkit import Chem
 
-from mol_context import get_std_context_core_permutations
+from mol_context import get_std_context_core_permutations, combine_core_env_to_rxn_smarts
+from functions import smiles_to_smarts
 
 
 def create_db(conn):
@@ -43,26 +44,6 @@ def index_db(conn):
     cur.execute("CREATE INDEX std_context_smi_idx ON core_table (std_context_smi)")
     cur.execute("CREATE INDEX std_core_smi_idx ON core_table (std_core_smi)")
     conn.commit()
-
-
-def smiles_to_smarts(smi):
-    mol = Chem.MolFromSmiles(smi)
-
-    if mol is None:
-        sys.stderr.write("Can't generate mol for: %s\n" % (smi) )
-        return None
-
-    # change the isotope to 42
-    for atom in mol.GetAtoms():
-        atom.SetIsotope(42)
-
-    # print out the smiles - all the atom attributes will be fully specified
-    smarts = Chem.MolToSmiles(mol, isomericSmiles=True)
-    # remove the 42 isotope labels
-    smarts = re.sub(r'\[42', "[", smarts)
-    # now have a fully specified SMARTS - simples!
-
-    return smarts
 
 
 def mol_to_smarts(mol):
@@ -102,7 +83,7 @@ def process_line(line):
                         env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
                         if env and cores:
                             # for 1 cut cores will always contain 1 item
-                            output.append((env, cores[0], num_heavy_atoms, smiles_to_smarts(cores[0])))
+                            output.append((env, cores[0], num_heavy_atoms, combine_core_env_to_rxn_smarts(cores[0], env)))
             else:
                 sys.stderr.write('more than two fragments in context (%s) where core is empty' % context)
                 sys.stderr.flush()
@@ -114,7 +95,7 @@ def process_line(line):
                 env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
                 if env and cores:
                     for c in cores:
-                        output.append((env, c, num_heavy_atoms, smiles_to_smarts(c)))
+                        output.append((env, c, num_heavy_atoms, combine_core_env_to_rxn_smarts(c, env)))
         return output
 
 

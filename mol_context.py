@@ -7,7 +7,7 @@ from functions import mol_to_smarts
 __author__ = 'pavel'
 
 patt_remove_map = re.compile("\[\*\:[0-9]+\]")   # to change CC([*:1])O to CC([*])O
-patt_remove_h = re.compile("(?<!\[)H[1-9]*")   # to remove H after atoms: [CH2:1] to [C:1], but not touching [H}
+patt_remove_h = re.compile("(?<!\[)H[1-9]*(?=:[0-9])")   # to remove H after atoms with maps: [CH2:1] to [C:1], but not touching [H] or [nH]
 
 
 def get_submol(mol, atom_ids):
@@ -321,7 +321,7 @@ def combine_core_env_to_rxn_smarts(core, env, keep_h=True):
     for atom_id, rank in zip([a.GetIdx() for a in m_env.GetAtoms()], list(Chem.CanonicalRankAtoms(m_env))):
         a = m_env.GetAtomWithIdx(atom_id)
         if a.GetAtomicNum():  # not dummy atom
-            a.SetAtomMapNum(rank)
+            a.SetAtomMapNum(rank + 1)  # because ranks start from 0
 
     m = Chem.RWMol(Chem.CombineMols(m_frag, m_env))
 
@@ -339,11 +339,8 @@ def combine_core_env_to_rxn_smarts(core, env, keep_h=True):
     for i in sorted(att_to_remove, reverse=True):
         m.RemoveAtom(i)
 
-    if keep_h:
-        comb_sma = mol_to_smarts(m)
-        return comb_sma.replace('[*]', '').replace('()', '')
-    else:
-        s = Chem.MolToSmiles(m)
-        s = patt_remove_h.sub('', s)
-        return s.replace('[*]', '').replace('()', '')
-
+    comb_sma = mol_to_smarts(m)
+    comb_sma = comb_sma.replace('[*]', '').replace('()', '')
+    if not keep_h:  # remove H only in mapped env part
+        comb_sma = patt_remove_h.sub('', comb_sma)
+    return comb_sma

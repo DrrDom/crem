@@ -11,7 +11,6 @@ from multiprocessing import Pool, cpu_count
 from rdkit import Chem
 
 from mol_context import get_std_context_core_permutations, combine_core_env_to_rxn_smarts
-from functions import smiles_to_smarts
 
 
 def create_db(conn):
@@ -83,7 +82,7 @@ def process_line(line):
                         env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
                         if env and cores:
                             # for 1 cut cores will always contain 1 item
-                            output.append((env, cores[0], num_heavy_atoms, combine_core_env_to_rxn_smarts(cores[0], env)))
+                            output.append((env, cores[0], num_heavy_atoms, combine_core_env_to_rxn_smarts(cores[0], env, False)))
             else:
                 sys.stderr.write('more than two fragments in context (%s) where core is empty' % context)
                 sys.stderr.flush()
@@ -95,7 +94,7 @@ def process_line(line):
                 env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
                 if env and cores:
                     for c in cores:
-                        output.append((env, c, num_heavy_atoms, combine_core_env_to_rxn_smarts(c, env)))
+                        output.append((env, c, num_heavy_atoms, combine_core_env_to_rxn_smarts(c, env, False)))
         return output
 
 

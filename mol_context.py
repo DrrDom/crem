@@ -7,6 +7,7 @@ from functions import mol_to_smarts
 __author__ = 'pavel'
 
 patt_remove_map = re.compile("\[\*\:[0-9]+\]")   # to change CC([*:1])O to CC([*])O
+patt_remove_h = re.compile("(?<!\[)H[1-9]*")   # to remove H after atoms: [CH2:1] to [C:1], but not touching [H}
 
 
 def get_submol(mol, atom_ids):
@@ -293,7 +294,7 @@ def get_canon_context_core(context, core, radius, keep_stereo=False):
         return None, None
 
 
-def combine_core_env_to_rxn_smarts(core, env):
+def combine_core_env_to_rxn_smarts(core, env, keep_h=True):
 
     if isinstance(env, str):
         m_env = Chem.MolFromSmiles(env, sanitize=False)
@@ -338,7 +339,11 @@ def combine_core_env_to_rxn_smarts(core, env):
     for i in sorted(att_to_remove, reverse=True):
         m.RemoveAtom(i)
 
-    comb_sma = mol_to_smarts(m)
-
-    return comb_sma.replace('[*]', '').replace('()', '')
+    if keep_h:
+        comb_sma = mol_to_smarts(m)
+        return comb_sma.replace('[*]', '').replace('()', '')
+    else:
+        s = Chem.MolToSmiles(m)
+        s = patt_remove_h.sub('', s)
+        return s.replace('[*]', '').replace('()', '')
 

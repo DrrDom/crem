@@ -144,7 +144,7 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
     return output  # list of tuples (env smiles, core smiles, list of atom ids)
 
 
-def __frag_replace(mol1, mol2, frag_sma, replace_sma, frag_ids_1=None, frag_ids_2=None):
+def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, frag_ids_2=None):
     """
     INPUT
         mol:         mol,
@@ -157,13 +157,23 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, frag_ids_1=None, frag_ids_
         Each output mol has a new field named 'transformation' with information about reaction SMARTS applied
     """
 
-    def set_protected_atoms(mol, ids):
+    def set_protected_atoms(mol, ids, radius):
+
+        def extend_ids(mol, atom_id, r, ids):
+            if r:
+                for a in mol.GetAtomWithIdx(atom_id).GetNeighbors():
+                    a_id = a.GetIdx()
+                    if a_id not in ids:
+                        ids.add(a_id)
+                        extend_ids(mol, a_id, r-1, ids)
+
         if ids:
             ids_ext = set(ids)
             # extend atom ids on neighbour atoms
             for i in ids:
-                a = mol.GetAtomWithIdx(i)
-                ids_ext.update(na.GetIdx() for na in a.GetNeighbors())
+                extend_ids(mol, i, radius, ids_ext)
+                # a = mol.GetAtomWithIdx(i)
+                # ids_ext.update(na.GetIdx() for na in a.GetNeighbors())
             # protect untouched atoms
             for a in mol.GetAtoms():
                 if a.GetAtomicNum() > 1 and a.GetIdx() not in ids_ext:
@@ -181,9 +191,9 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, frag_ids_1=None, frag_ids_
     rxn_sma = "%s>>%s" % (frag_sma, replace_sma)
     rxn = AllChem.ReactionFromSmarts(rxn_sma)
 
-    set_protected_atoms(mol1, frag_ids_1)
+    set_protected_atoms(mol1, frag_ids_1, radius)
     if link:
-        set_protected_atoms(mol2, frag_ids_2)
+        set_protected_atoms(mol2, frag_ids_2, radius)
 
     if link:
         reactants = [mol1, mol2]
@@ -288,7 +298,7 @@ def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_s
                                                       replace_cycles=replace_cycles,
                                                       protected_ids_1=protected_ids, protected_ids_2=None,
                                                       min_freq=min_freq):
-        yield mol, None, frag_sma, core_sma, ids, None
+        yield mol, None, frag_sma, core_sma, radius, ids, None
 
 
 def __get_data_link(mol1, mol2, db_name, radius, min_atoms, max_atoms, protected_ids_1, protected_ids_2, min_freq,
@@ -301,7 +311,7 @@ def __get_data_link(mol1, mol2, db_name, radius, min_atoms, max_atoms, protected
                                                                protected_ids_1=protected_ids_1,
                                                                protected_ids_2=protected_ids_2,
                                                                min_freq=min_freq):
-        yield mol1, mol2, frag_sma, core_sma, ids_1, ids_2
+        yield mol1, mol2, frag_sma, core_sma, radius, ids_1, ids_2
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
@@ -345,7 +355,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                           replace_cycles=replace_cycles,
                                                           protected_ids_1=protected_ids, protected_ids_2=None,
                                                           min_freq=min_freq):
-            for smi, rxn in __frag_replace(mol, None, frag_sma, core_sma, ids, None):
+            for smi, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, ids, None):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
@@ -442,7 +452,7 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
                                                                    protected_ids_1=protected_ids_1,
                                                                    protected_ids_2=protected_ids_2,
                                                                    min_freq=min_freq):
-            for smi, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, ids_1, ids_2):
+            for smi, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, ids_1, ids_2):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)

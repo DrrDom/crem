@@ -336,7 +336,7 @@ def combine_core_env_to_rxn_smarts(core, env, keep_h=True):
     m_env.UpdatePropertyCache()
     for atom_id, rank in zip([a.GetIdx() for a in m_env.GetAtoms()], list(Chem.CanonicalRankAtoms(m_env))):
         a = m_env.GetAtomWithIdx(atom_id)
-        if a.GetAtomicNum():  # not dummy atom
+        if not a.HasProp(backup_atom_map):
             a.SetAtomMapNum(rank + 1)  # because ranks start from 0
 
     m = Chem.RWMol(Chem.CombineMols(m_frag, m_env))

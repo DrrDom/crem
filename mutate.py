@@ -171,9 +171,7 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
             ids_ext = set(ids)
             # extend atom ids on neighbour atoms
             for i in ids:
-                extend_ids(mol, i, radius, ids_ext)
-                # a = mol.GetAtomWithIdx(i)
-                # ids_ext.update(na.GetIdx() for na in a.GetNeighbors())
+                extend_ids(mol, i, radius + 1, ids_ext)
             # protect untouched atoms
             for a in mol.GetAtoms():
                 if a.GetAtomicNum() > 1 and a.GetIdx() not in ids_ext:

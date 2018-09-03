@@ -9,13 +9,14 @@ __author__ = 'pavel'
 patt_remove_map = re.compile("\[\*\:[0-9]+\]")   # to change CC([*:1])O to CC([*])O
 
 
-def get_submol(mol, atom_ids):
+def __get_submol(mol, atom_ids):
     bond_ids = []
     for pair in combinations(atom_ids, 2):
         b = mol.GetBondBetweenAtoms(*pair)
         if b:
             bond_ids.append(b.GetIdx())
     m = Chem.PathToSubmol(mol, bond_ids)
+    print(Chem.MolToSmiles(m))
     m.UpdatePropertyCache()
     return m
 
@@ -40,49 +41,43 @@ def __get_context_env(mol, radius):
     """
     # mol is context consisting of one or more groups with single attachment point
 
-    mol = Chem.RemoveHs(mol)
-    for a in mol.GetAtoms():
+    m = Chem.RemoveHs(mol)
+    m = Chem.RWMol(m)
+    for a in m.GetAtoms():
         a.SetIntProp('degree', a.GetDegree())
         a.SetProp('bonds', ' '.join(str(int(b.GetBondType())) for b in a.GetBonds()))
 
     bond_ids = set()
-    for a in mol.GetAtoms():
+    for a in m.GetAtoms():
         if a.GetSymbol() == "*":
             i = radius
-            b = Chem.FindAtomEnvironmentOfRadiusN(mol, i, a.GetIdx())
+            b = Chem.FindAtomEnvironmentOfRadiusN(m, i, a.GetIdx())
             while not b and i > 0:
                 i -= 1
-                b = Chem.FindAtomEnvironmentOfRadiusN(mol, i, a.GetIdx())
+                b = Chem.FindAtomEnvironmentOfRadiusN(m, i, a.GetIdx())
             bond_ids.update(b)
 
-    # m = Chem.RWMol(mol)
-    #
-    # atom_ids = __bonds_to_atoms(mol, bond_ids)
-    #
-    # for a in m.GetAtoms():
+    atom_ids = set(__bonds_to_atoms(m, bond_ids))
 
-    m = Chem.RWMol(Chem.PathToSubmol(mol, list(bond_ids)))
+    dummy_atoms = []
 
-    # remove Hs, otherwise terminal atoms will produce smiles with H ([CH2]C[*:1])
     for a in m.GetAtoms():
-        a.SetNumExplicitHs(0)
+        if a.GetIdx() not in atom_ids:
+            nei_ids = set(na.GetIdx() for na in a.GetNeighbors())
+            intersect = nei_ids & atom_ids
+            if intersect:
+                dummy_atom_bonds = []
+                for ai in intersect:
+                    dummy_atom_bonds.append((ai, m.GetBondBetweenAtoms(a.GetIdx(), ai).GetBondType()))
+                dummy_atoms.append(dummy_atom_bonds)
 
-    # create attachment points to removed part of the environment taking into account bond orders
-    m.UpdatePropertyCache()
-    inserts = dict()
-    for a in m.GetAtoms():
-        diff = a.GetIntProp('degree') - a.GetDegree()
-        if diff:
-            inserts[a.GetIdx()] = diff
-            old_values = list(map(int, a.GetProp('bonds').split()))
-            new_values = [int(b.GetBondType()) for b in a.GetBonds()]
-            for v in new_values:
-                old_values.remove(v)
-            inserts[a.GetIdx()] = tuple(old_values)
-    for atom_id, bond_types in inserts.items():
-        for bond_type in bond_types:
-            dummy_index = m.AddAtom(Chem.Atom(0))
-            m.AddBond(atom_id, dummy_index, Chem.BondType.values[bond_type])
+    for data in dummy_atoms:
+        dummy_id = m.AddAtom(Chem.Atom(0))
+        for atom_id, bond_type in data:
+            m.AddBond(dummy_id, atom_id, bond_type)
+        atom_ids.add(dummy_id)
+
+    m = __get_submol(m, atom_ids)
 
     return m
 
@@ -362,25 +357,15 @@ def combine_core_env_to_rxn_smarts(core, env, keep_h=True):
 
     m.UpdatePropertyCache()
 
-    dummy_ids = []
     for a in m.GetAtoms():
         if a.GetAtomicNum():
             new_atom = rdqueries.AtomNumEqualsQueryAtom(a.GetAtomicNum())
+            new_atom.SetAtomMapNum(a.GetAtomMapNum())
             new_atom.ExpandQuery(rdqueries.ExplicitDegreeEqualsQueryAtom(a.GetDegree()))
             if keep_h:
                 new_atom.ExpandQuery(rdqueries.HCountEqualsQueryAtom(a.GetTotalNumHs()))
             m.ReplaceAtom(a.GetIdx(), new_atom)
-        else:
-            dummy_ids.append(a.GetIdx())
 
-    for i in sorted(dummy_ids, reverse=True):
-        m.RemoveAtom(i)
+    sma = Chem.MolToSmarts(m).replace('[*]', '[!#1]')
 
-    return Chem.MolToSmarts(m)
-
-
-m = Chem.MolFromSmiles('C#CC[*:1]')
-res = __get_context_env(m, 2)
-print(Chem.MolToSmiles(res))
-
-print(combine_core_env_to_rxn_smarts('N[*:1]', '[*]=CC[*:1]'))
+    return sma

@@ -2,12 +2,11 @@ import re
 from itertools import product, permutations, combinations
 from collections import defaultdict
 from rdkit import Chem
-from functions import mol_to_smarts
+from rdkit.Chem import rdqueries
 
 __author__ = 'pavel'
 
 patt_remove_map = re.compile("\[\*\:[0-9]+\]")   # to change CC([*:1])O to CC([*])O
-patt_remove_h = re.compile("(?<!\[)H[1-9]*(?=:[0-9])")   # to remove H after atoms with maps: [CH2:1] to [C:1], but not touching [H] or [nH]
 
 
 def get_submol(mol, atom_ids):
@@ -19,6 +18,15 @@ def get_submol(mol, atom_ids):
     m = Chem.PathToSubmol(mol, bond_ids)
     m.UpdatePropertyCache()
     return m
+
+
+def __bonds_to_atoms(mol, bond_ids):
+    output = []
+    for i in bond_ids:
+        b = mol.GetBondWithIdx(i)
+        output.append(b.GetBeginAtom().GetIdx())
+        output.append(b.GetEndAtom().GetIdx())
+    return tuple(set(output))
 
 
 def __get_context_env(mol, radius):
@@ -35,6 +43,7 @@ def __get_context_env(mol, radius):
     mol = Chem.RemoveHs(mol)
     for a in mol.GetAtoms():
         a.SetIntProp('degree', a.GetDegree())
+        a.SetProp('bonds', ' '.join(str(int(b.GetBondType())) for b in a.GetBonds()))
 
     bond_ids = set()
     for a in mol.GetAtoms():
@@ -45,23 +54,35 @@ def __get_context_env(mol, radius):
                 i -= 1
                 b = Chem.FindAtomEnvironmentOfRadiusN(mol, i, a.GetIdx())
             bond_ids.update(b)
+
+    # m = Chem.RWMol(mol)
+    #
+    # atom_ids = __bonds_to_atoms(mol, bond_ids)
+    #
+    # for a in m.GetAtoms():
+
     m = Chem.RWMol(Chem.PathToSubmol(mol, list(bond_ids)))
 
     # remove Hs, otherwise terminal atoms will produce smiles with H ([CH2]C[*:1])
     for a in m.GetAtoms():
         a.SetNumExplicitHs(0)
 
-    # create attachment points to removed part of the environment
+    # create attachment points to removed part of the environment taking into account bond orders
     m.UpdatePropertyCache()
     inserts = dict()
     for a in m.GetAtoms():
         diff = a.GetIntProp('degree') - a.GetDegree()
         if diff:
             inserts[a.GetIdx()] = diff
-    for atom_id, dummy_count in inserts.items():
-        for _ in range(dummy_count):
+            old_values = list(map(int, a.GetProp('bonds').split()))
+            new_values = [int(b.GetBondType()) for b in a.GetBonds()]
+            for v in new_values:
+                old_values.remove(v)
+            inserts[a.GetIdx()] = tuple(old_values)
+    for atom_id, bond_types in inserts.items():
+        for bond_type in bond_types:
             dummy_index = m.AddAtom(Chem.Atom(0))
-            m.AddBond(atom_id, dummy_index, Chem.BondType.SINGLE)
+            m.AddBond(atom_id, dummy_index, Chem.BondType.values[bond_type])
 
     return m
 
@@ -339,8 +360,27 @@ def combine_core_env_to_rxn_smarts(core, env, keep_h=True):
     for i in sorted(att_to_remove, reverse=True):
         m.RemoveAtom(i)
 
-    comb_sma = mol_to_smarts(m)
-    comb_sma = comb_sma.replace('[*]', '').replace('()', '')
-    if not keep_h:  # remove H only in mapped env part
-        comb_sma = patt_remove_h.sub('', comb_sma)
-    return comb_sma
+    m.UpdatePropertyCache()
+
+    dummy_ids = []
+    for a in m.GetAtoms():
+        if a.GetAtomicNum():
+            new_atom = rdqueries.AtomNumEqualsQueryAtom(a.GetAtomicNum())
+            new_atom.ExpandQuery(rdqueries.ExplicitDegreeEqualsQueryAtom(a.GetDegree()))
+            if keep_h:
+                new_atom.ExpandQuery(rdqueries.HCountEqualsQueryAtom(a.GetTotalNumHs()))
+            m.ReplaceAtom(a.GetIdx(), new_atom)
+        else:
+            dummy_ids.append(a.GetIdx())
+
+    for i in sorted(dummy_ids, reverse=True):
+        m.RemoveAtom(i)
+
+    return Chem.MolToSmarts(m)
+
+
+m = Chem.MolFromSmiles('C#CC[*:1]')
+res = __get_context_env(m, 2)
+print(Chem.MolToSmiles(res))
+
+print(combine_core_env_to_rxn_smarts('N[*:1]', '[*]=CC[*:1]'))

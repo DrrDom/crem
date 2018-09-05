@@ -268,7 +268,7 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo):
 
         env = __get_context_env(context, radius)   # cut context to radius
         __standardize_att_by_env(env, core, keep_stereo)
-        env_smi = Chem.MolToSmiles(env, isomericSmiles=keep_stereo)
+        env_smi = Chem.MolToSmiles(env, isomericSmiles=keep_stereo, allBondsExplicit=True)
 
         if att_num == 1:
 

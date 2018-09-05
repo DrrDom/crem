@@ -23,7 +23,7 @@ def mol_to_smarts(mol):
         atom.SetIsotope(42)
 
     # print out the smiles - all the atom attributes will be fully specified
-    smarts = Chem.MolToSmiles(mol, isomericSmiles=True)
+    smarts = Chem.MolToSmiles(mol, isomericSmiles=True, allBondsExplicit=True)
     # remove the 42 isotope labels
     smarts = re.sub(r'\[42', "[", smarts)
 

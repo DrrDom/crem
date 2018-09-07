@@ -214,7 +214,7 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
 
 
 def __get_replacements(db_cur, env, min_atoms, max_atoms, radius, min_freq=0):
-    sql = """SELECT core_smi, core_sma
+    sql = """SELECT core_smi, core_sma, freq
              FROM radius%i
              WHERE env = ? AND 
                    freq >= ? AND
@@ -242,12 +242,12 @@ def __gen_replacements(mol1, mol2, db_name, radius, min_size=0, max_size=8, min_
                 max_atoms = num_heavy_atoms + max_inc
 
                 rep = __get_replacements(cur, env, min_atoms, max_atoms, radius, min_freq)
-                for core_smi, core_sma in rep:
+                for core_smi, core_sma, freq in rep:
                     if core_smi != core:
                         if link:
-                            yield frag_sma, core_sma, ids[0], ids[1]
+                            yield frag_sma, core_sma, freq, ids[0], ids[1]
                         else:
-                            yield frag_sma, core_sma, ids[0]
+                            yield frag_sma, core_sma, freq, ids[0]
 
     link = False
     if not isinstance(mol1, Chem.Mol):
@@ -283,37 +283,39 @@ def __gen_replacements(mol1, mol2, db_name, radius, min_size=0, max_size=8, min_
 
 
 def __frag_replace_mp(items):
-    return list(__frag_replace(*items))
+    # return smi, rxn_smarts, rxn_smarts_freq
+    return [(*item, items[-1]) for item in __frag_replace(*items[:-1])]
 
 
 def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
                replace_cycles, protected_ids, min_freq, max_replacements):
-    for frag_sma, core_sma, ids in __gen_replacements(mol1=mol, mol2=None, db_name=db_name, radius=radius,
-                                                      min_size=min_size, max_size=max_size,
-                                                      min_rel_size=min_rel_size, max_rel_size=max_rel_size,
-                                                      min_inc=min_inc, max_inc=max_inc,
-                                                      max_replacements=max_replacements,
-                                                      replace_cycles=replace_cycles,
-                                                      protected_ids_1=protected_ids, protected_ids_2=None,
-                                                      min_freq=min_freq):
-        yield mol, None, frag_sma, core_sma, radius, ids, None
+    for frag_sma, core_sma, freq, ids in __gen_replacements(mol1=mol, mol2=None, db_name=db_name, radius=radius,
+                                                            min_size=min_size, max_size=max_size,
+                                                            min_rel_size=min_rel_size, max_rel_size=max_rel_size,
+                                                            min_inc=min_inc, max_inc=max_inc,
+                                                            max_replacements=max_replacements,
+                                                            replace_cycles=replace_cycles,
+                                                            protected_ids_1=protected_ids, protected_ids_2=None,
+                                                            min_freq=min_freq):
+        yield mol, None, frag_sma, core_sma, radius, ids, None, freq
 
 
 def __get_data_link(mol1, mol2, db_name, radius, min_atoms, max_atoms, protected_ids_1, protected_ids_2, min_freq,
                     max_replacements):
-    for frag_sma, core_sma, ids_1, ids_2 in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius,
-                                                               min_size=0, max_size=0, min_rel_size=0, max_rel_size=1,
-                                                               min_inc=min_atoms, max_inc=max_atoms,
-                                                               max_replacements=max_replacements,
-                                                               replace_cycles=False,
-                                                               protected_ids_1=protected_ids_1,
-                                                               protected_ids_2=protected_ids_2,
-                                                               min_freq=min_freq):
-        yield mol1, mol2, frag_sma, core_sma, radius, ids_1, ids_2
+    for frag_sma, core_sma, freq, ids_1, ids_2 in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius,
+                                                                     min_size=0, max_size=0, min_rel_size=0, max_rel_size=1,
+                                                                     min_inc=min_atoms, max_inc=max_atoms,
+                                                                     max_replacements=max_replacements,
+                                                                     replace_cycles=False,
+                                                                     protected_ids_1=protected_ids_1,
+                                                                     protected_ids_2=protected_ids_2,
+                                                                     min_freq=min_freq):
+        yield mol1, mol2, frag_sma, core_sma, radius, ids_1, ids_2, freq
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
-               max_replacements=None, replace_cycles=False, protected_ids=None, min_freq=10, return_rxn=True, ncores=1):
+               max_replacements=None, replace_cycles=False, protected_ids=None, min_freq=10, return_rxn=True,
+               return_rxn_freq=False, ncores=1):
     """
     Generator of new molecules by replacement of fragments of the supplied molecule with fragments from DB having
     the same chemical context
@@ -345,22 +347,28 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
 
     if ncores == 1:
 
-        for frag_sma, core_sma, ids in __gen_replacements(mol1=mol, mol2=None, db_name=db_name, radius=radius,
-                                                          min_size=min_size, max_size=max_size,
-                                                          min_rel_size=min_rel_size, max_rel_size=max_rel_size,
-                                                          min_inc=min_inc, max_inc=max_inc,
-                                                          max_replacements=max_replacements,
-                                                          replace_cycles=replace_cycles,
-                                                          protected_ids_1=protected_ids, protected_ids_2=None,
-                                                          min_freq=min_freq):
+        for frag_sma, core_sma, freq, ids in __gen_replacements(mol1=mol, mol2=None, db_name=db_name, radius=radius,
+                                                                min_size=min_size, max_size=max_size,
+                                                                min_rel_size=min_rel_size, max_rel_size=max_rel_size,
+                                                                min_inc=min_inc, max_inc=max_inc,
+                                                                max_replacements=max_replacements,
+                                                                replace_cycles=replace_cycles,
+                                                                protected_ids_1=protected_ids, protected_ids_2=None,
+                                                                min_freq=min_freq):
             for smi, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, ids, None):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
                         if return_rxn:
-                            yield smi, rxn
+                            if return_rxn_freq:
+                                yield smi, rxn, freq
+                            else:
+                                yield smi, rxn
                         else:
-                            yield smi
+                            if return_rxn_freq:
+                                yield smi, freq
+                            else:
+                                yield smi
 
     else:
 
@@ -369,18 +377,24 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                           max_rel_size, min_inc, max_inc, replace_cycles,
                                                           protected_ids, min_freq, max_replacements),
                             chunksize=100):
-            for smi, rxn in items:
+            for smi, rxn, freq in items:
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
                         if return_rxn:
-                            yield smi, rxn
+                            if return_rxn_freq:
+                                yield smi, rxn, freq
+                            else:
+                                yield smi, rxn
                         else:
-                            yield smi
+                            if return_rxn_freq:
+                                yield smi, freq
+                            else:
+                                yield smi
 
 
 def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, protected_ids=None, min_freq=10,
-             return_rxn=True, ncores=1):
+             return_rxn=True, return_rxn_freq=False, ncores=1):
     """
     Replace hydrogens with fragments from the database having the same chemical context
 
@@ -414,7 +428,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
 
 
 def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None,
-             protected_ids_1=None, protected_ids_2=None, min_freq=10, return_rxn=True, ncores=1):
+             protected_ids_1=None, protected_ids_2=None, min_freq=10, return_rxn=True, return_rxn_freq=False, ncores=1):
     """
     Link two molecules by a linker from the database
 
@@ -442,22 +456,28 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
 
     if ncores == 1:
 
-        for frag_sma, core_sma, ids_1, ids_2 in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius,
-                                                                   min_size=0, max_size=0, min_rel_size=0,
-                                                                   max_rel_size=1, min_inc=min_atoms,
-                                                                   max_inc=max_atoms, replace_cycles=False,
-                                                                   max_replacements=max_replacements,
-                                                                   protected_ids_1=protected_ids_1,
-                                                                   protected_ids_2=protected_ids_2,
-                                                                   min_freq=min_freq):
+        for frag_sma, core_sma, freq, ids_1, ids_2 in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius,
+                                                                         min_size=0, max_size=0, min_rel_size=0,
+                                                                         max_rel_size=1, min_inc=min_atoms,
+                                                                         max_inc=max_atoms, replace_cycles=False,
+                                                                         max_replacements=max_replacements,
+                                                                         protected_ids_1=protected_ids_1,
+                                                                         protected_ids_2=protected_ids_2,
+                                                                         min_freq=min_freq):
             for smi, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, ids_1, ids_2):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
                         if return_rxn:
-                            yield smi, rxn
+                            if return_rxn_freq:
+                                yield smi, rxn, freq
+                            else:
+                                yield smi, rxn
                         else:
-                            yield smi
+                            if return_rxn_freq:
+                                yield smi, freq
+                            else:
+                                yield smi
 
     else:
 
@@ -466,13 +486,17 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
                                                                protected_ids_1, protected_ids_2, min_freq,
                                                                max_replacements),
                             chunksize=100):
-            for smi, rxn in items:
+            for smi, rxn, freq in items:
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
                         if return_rxn:
-                            yield smi, rxn
+                            if return_rxn_freq:
+                                yield smi, rxn, freq
+                            else:
+                                yield smi, rxn
                         else:
-                            yield smi
-
-
+                            if return_rxn_freq:
+                                yield smi, freq
+                            else:
+                                yield smi

@@ -82,7 +82,10 @@ def process_line(line):
                         env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
                         if env and cores:
                             # for 1 cut cores will always contain 1 item
-                            output.append((env, cores[0], num_heavy_atoms, combine_core_env_to_rxn_smarts(cores[0], env, False)))
+                            if not store_comp_id:
+                                output.append((env, cores[0], num_heavy_atoms, combine_core_env_to_rxn_smarts(cores[0], env, False)))
+                            else:
+                                output.append((env, cores[0], num_heavy_atoms, combine_core_env_to_rxn_smarts(cores[0], env, False), id))
             else:
                 sys.stderr.write('more than two fragments in context (%s) where core is empty' % context)
                 sys.stderr.flush()
@@ -94,7 +97,10 @@ def process_line(line):
                 env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
                 if env and cores:
                     for c in cores:
-                        output.append((env, c, num_heavy_atoms, combine_core_env_to_rxn_smarts(c, env, False)))
+                        if not store_comp_id:
+                            output.append((env, c, num_heavy_atoms, combine_core_env_to_rxn_smarts(c, env, False)))
+                        else:
+                            output.append((env, c, num_heavy_atoms, combine_core_env_to_rxn_smarts(c, env, False), id))
         return output
 
 
@@ -103,7 +109,7 @@ def init(keep_mols):
     keep_mols_set = set([line.strip() for line in open(keep_mols).readlines()]) if keep_mols else set()
 
 
-def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_atoms, ncpu, verbose):
+def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_atoms, ncpu, store_comp_id, verbose):
 
     # radius and remove_stereo are supplied to process_context_core via global environment (ugly but working solution)
 
@@ -156,7 +162,7 @@ def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_at
 
                     for item in res:
                         if item:
-                            out.write('%s,%s,%i,%s\n' % item)
+                            out.write(','.join(map(str, item)) + '\n')
 
                     if verbose and i % 1000 == 0:
                         sys.stderr.write('\r%i lines passed' % i)
@@ -187,6 +193,8 @@ if __name__ == '__main__':
                         help='set this flag if you want to keep stereo in context and core parts.')
     parser.add_argument('-c', '--ncpu', metavar='NUMBER', required=False, default=1,
                         help='number of cpus used for computation. Default: 1.')
+    parser.add_argument('--store_comp_id', action='store_true', default=False,
+                        help='store compound id in output (only for debug).')
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
                         help='print progress.')
 
@@ -200,6 +208,7 @@ if __name__ == '__main__':
         if o == "ncpu": ncpu = int(v)
         if o == "max_heavy_atoms": max_heavy_atoms = int(v)
         if o == "keep_mols": keep_mols = v
+        if o =="store_comp_id": store_comp_id = v
 
     main(input_fname=input_fname,
          output_fname=output_fname,
@@ -208,4 +217,5 @@ if __name__ == '__main__':
          keep_stereo=keep_stereo,
          max_heavy_atoms=max_heavy_atoms,
          ncpu=ncpu,
+         store_comp_id=store_comp_id,
          verbose=verbose)

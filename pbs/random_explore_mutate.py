@@ -3,7 +3,7 @@ __author__ = 'Pavel Polishchuk'
 import argparse
 import sys
 sys.path.insert(0, '/home/pavlop/python/crem')
-from mutate import mutate_mol
+from crem import mutate_mol
 
 from rdkit import Chem
 from rdkit.Chem.Descriptors import MolWt

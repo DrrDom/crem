@@ -1,8 +1,8 @@
 # fragmentation
-fragmentation.py
+fragmentation.py -i input.smi -o frags.txt -c 32 -v
 
 # convert fragments to standardized representation of core and context
-frag_to_env_mp.py
+frag_to_env_mp.py -i frags.txt -o r3.txt -r 3 -c 32 -v
 
 #remove duplicated lines
 sort -u
@@ -11,4 +11,4 @@ sort -u
 sort r3.txt | uniq -c > r3_c.txt
 
 # create DB and import csv file with unique lines to a table
-import_env_to_db.py
+import_env_to_db.py -i r3_c.txt -o fragments.db -r 3 -c -v

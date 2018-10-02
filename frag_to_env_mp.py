@@ -208,7 +208,7 @@ if __name__ == '__main__':
         if o == "ncpu": ncpu = int(v)
         if o == "max_heavy_atoms": max_heavy_atoms = int(v)
         if o == "keep_mols": keep_mols = v
-        if o =="store_comp_id": store_comp_id = v
+        if o == "store_comp_id": store_comp_id = v
 
     main(input_fname=input_fname,
          output_fname=output_fname,

@@ -6,7 +6,9 @@ import re
 __author__ = 'pavel'
 
 
-def main(input_fname, output_fname, table_name, counts, verbose):
+def main(input_fname, output_fname, radius, counts, verbose):
+
+    table_name = 'radius%i' % radius
 
     with sqlite3.connect(output_fname) as conn:
         cur = conn.cursor()
@@ -67,8 +69,9 @@ if __name__ == '__main__':
                         help='a comma-separated  text file with env_smi, core_smi, core_atom_num and core_sma.')
     parser.add_argument('-o', '--out', metavar='output.db', required=True,
                         help='output SQLite DB file.')
-    parser.add_argument('-t', '--table', metavar='table_name', required=True,
-                        help='table name in DB. If table exists it will be dropped and recreated.')
+    parser.add_argument('-r', '--radius', metavar='RADIUS', required=True,
+                        help='radius of environment. If table for this radius value exists in output DB '
+                             'it will be dropped.')
     parser.add_argument('-c', '--counts', action='store_true', default=False,
                         help='set if the input file contains number of occurrences as a first column '
                              '(output of sort | uniq -c). This will add a column freq to the output DB.')
@@ -80,11 +83,11 @@ if __name__ == '__main__':
         if o == "input": input_fname = v
         if o == "out": output_fname = v
         if o == "verbose": verbose = v
-        if o == "table": table_name = v
+        if o == "radius": radius = int(v)
         if o == "counts": counts = v
 
     main(input_fname=input_fname,
          output_fname=output_fname,
-         table_name=table_name,
+         radius=radius,
          counts=counts,
          verbose=verbose)

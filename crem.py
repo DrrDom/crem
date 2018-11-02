@@ -438,8 +438,8 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                       return_rxn_freq=return_rxn_freq, ncores=ncores)
 
 
-def link_mol(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2, max_replacements=None,
-             protected_ids_1=None, protected_ids_2=None, min_freq=10, return_rxn=True, return_rxn_freq=False, ncores=1):
+def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2, max_replacements=None,
+              protected_ids_1=None, protected_ids_2=None, min_freq=10, return_rxn=True, return_rxn_freq=False, ncores=1):
     """
     Link two molecules by a linker from the database
 

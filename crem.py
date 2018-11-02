@@ -118,6 +118,11 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
     frags_1 = rdMMPA.FragmentMol(mol1, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
     frags_2 = rdMMPA.FragmentMol(mol2, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
 
+    # frags_1 = rdMMPA.FragmentMol(Chem.AddHs(mol1), pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
+    # frags_2 = rdMMPA.FragmentMol(Chem.AddHs(mol2), pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
+    # frags_1 = tuple((_, Chem.RemoveHs(m)) for _, m in frags_1)
+    # frags_2 = tuple((_, Chem.RemoveHs(m)) for _, m in frags_2)
+
     if protected_ids_1:
         frags_1 = filter_frags(frags_1, protected_ids_1)
 
@@ -127,8 +132,8 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
     frags_1 = prep_frags(frags_1, keep_stereo)
     frags_2 = prep_frags(frags_2, keep_stereo)
 
-    for n, ch in enumerate(frags_1):
-        frags_1[n][0] = frags_1[n][0].replace('*:1', '*:2')
+    for i in range(len(frags_1)):
+        frags_1[i][0] = frags_1[i][0].replace('*:1', '*:2')
 
     q = []
     for (fr1, ids1), (fr2, ids2) in product(frags_1, frags_2):
@@ -424,7 +429,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                     ids.append(a.GetIdx())
     return mutate_mol(m, db_name, radius, min_size=0, max_size=0, min_inc=min_atoms, max_inc=max_atoms,
                       max_replacements=max_replacements, protected_ids=ids, min_freq=min_freq, return_rxn=return_rxn,
-                      ncores=ncores)
+                      return_rxn_freq=return_rxn_freq, ncores=ncores)
 
 
 def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None,
@@ -453,6 +458,9 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
     """
 
     products = set()
+
+    mol1 = Chem.AddHs(mol1)
+    mol2 = Chem.AddHs(mol2)
 
     if ncores == 1:
 

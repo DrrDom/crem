@@ -352,7 +352,7 @@ def combine_core_env_to_rxn_smarts(core, env, keep_h=True):
     for i in sorted(att_to_remove, reverse=True):
         m.RemoveAtom(i)
 
-    comb_sma = mol_to_smarts(m)
+    comb_sma = mol_to_smarts(m, keep_h)
     if not keep_h:  # remove H only in mapped env part
         comb_sma = patt_remove_h.sub('', comb_sma)
     return comb_sma

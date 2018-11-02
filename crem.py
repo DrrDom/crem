@@ -218,17 +218,21 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
                     yield smi, rxn_sma
 
 
-def __get_replacements(db_cur, env, min_atoms, max_atoms, radius, min_freq=0):
+def __get_replacements(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0):
     sql = """SELECT core_smi, core_sma, freq
              FROM radius%i
              WHERE env = ? AND 
                    freq >= ? AND
                    core_num_atoms BETWEEN ? AND ?""" % radius
+    if isinstance(dist, int):
+        sql += " AND dist2 = %i" % dist
+    elif isinstance(dist, tuple) and len(dist) == 2:
+        sql += " AND dist2 BETWEEN %i AND %i" % dist
     db_cur.execute(sql, (env, min_freq, min_atoms, max_atoms))
     return db_cur.fetchall()
 
 
-def __gen_replacements(mol1, mol2, db_name, radius, min_size=0, max_size=8, min_rel_size=0, max_rel_size=1,
+def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_size=8, min_rel_size=0, max_rel_size=1,
                        min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
                        protected_ids_1=None, protected_ids_2=None, min_freq=10):
 
@@ -246,7 +250,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, min_size=0, max_size=8, min_
                 min_atoms = num_heavy_atoms + min_inc
                 max_atoms = num_heavy_atoms + max_inc
 
-                rep = __get_replacements(cur, env, min_atoms, max_atoms, radius, min_freq)
+                rep = __get_replacements(cur, env, dist, min_atoms, max_atoms, radius, min_freq)
                 for core_smi, core_sma, freq in rep:
                     if core_smi != core:
                         if link:
@@ -305,10 +309,12 @@ def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_s
         yield mol, None, frag_sma, core_sma, radius, ids, None, freq
 
 
-def __get_data_link(mol1, mol2, db_name, radius, min_atoms, max_atoms, protected_ids_1, protected_ids_2, min_freq,
+def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, protected_ids_1, protected_ids_2, min_freq,
                     max_replacements):
-    for frag_sma, core_sma, freq, ids_1, ids_2 in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius,
-                                                                     min_size=0, max_size=0, min_rel_size=0, max_rel_size=1,
+    for frag_sma, core_sma, freq, ids_1, ids_2 in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name,
+                                                                     radius=radius, dist=dist,
+                                                                     min_size=0, max_size=0,
+                                                                     min_rel_size=0, max_rel_size=1,
                                                                      min_inc=min_atoms, max_inc=max_atoms,
                                                                      max_replacements=max_replacements,
                                                                      replace_cycles=False,
@@ -432,7 +438,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                       return_rxn_freq=return_rxn_freq, ncores=ncores)
 
 
-def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None,
+def link_mol(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2, max_replacements=None,
              protected_ids_1=None, protected_ids_2=None, min_freq=10, return_rxn=True, return_rxn_freq=False, ncores=1):
     """
     Link two molecules by a linker from the database
@@ -441,6 +447,8 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
     :param mol2: RDKit Mol object
     :param db_name: path to DB with replacements
     :param radius: radius of context which will be considered for replacement
+    :param dist: topological distance between two attachment points in the fragment which will link molecules.
+                 Can be a single integer or a tuple of lower and upper values.
     :param min_atoms: minimum number of heavy atoms in the fragment which will link molecules
     :param max_atoms: maximum number of heavy atoms in the fragment which will link molecules
     :param max_replacements: maximum number of replacements to make. If the number of available replacements is more
@@ -464,7 +472,8 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
 
     if ncores == 1:
 
-        for frag_sma, core_sma, freq, ids_1, ids_2 in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius,
+        for frag_sma, core_sma, freq, ids_1, ids_2 in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name,
+                                                                         radius=radius, dist=dist,
                                                                          min_size=0, max_size=0, min_rel_size=0,
                                                                          max_rel_size=1, min_inc=min_atoms,
                                                                          max_inc=max_atoms, replace_cycles=False,
@@ -490,7 +499,7 @@ def link_mol(mol1, mol2, db_name, radius=3, min_atoms=1, max_atoms=2, max_replac
     else:
 
         p = Pool(min(ncores, cpu_count()))
-        for items in p.imap(__frag_replace_mp, __get_data_link(mol1, mol2, db_name, radius, min_atoms, max_atoms,
+        for items in p.imap(__frag_replace_mp, __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms,
                                                                protected_ids_1, protected_ids_2, min_freq,
                                                                max_replacements),
                             chunksize=100):

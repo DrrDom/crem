@@ -2,11 +2,44 @@ import argparse
 import sqlite3
 import sys
 import re
+from multiprocessing import Pool, cpu_count
+from rdkit import Chem
+from mol_context import combine_core_env_to_rxn_smarts
 
 __author__ = 'pavel'
 
 
-def main(input_fname, output_fname, radius, counts, verbose):
+def __calc(env, core):
+    sma = combine_core_env_to_rxn_smarts(core, env, False)
+    if core.count('*') == 2:
+        mol = Chem.MolFromSmiles(core, sanitize=False)
+        mat = Chem.GetDistanceMatrix(mol)
+        ids = []
+        for a in mol.GetAtoms():
+            if not a.GetAtomicNum():
+                ids.append(a.GetIdx())
+        dist2 = mat[ids[0], ids[1]]
+    else:
+        dist2 = 0
+    return sma, dist2
+
+
+def __calc_mp(items):
+    return __calc(*items)
+
+
+def __get_additional_data(data, pool):
+    # data is a list of tuples (env, core)
+    if pool:
+        res = [items for items in pool.imap(__calc_mp, data, chunksize=100)]
+    else:
+        res = [__calc(*items) for items in data]
+    return res
+
+
+def main(input_fname, output_fname, radius, counts, ncpu, verbose):
+
+    pool = Pool(min(ncpu, cpu_count())) if ncpu > 1 else None
 
     table_name = 'radius%i' % radius
 
@@ -20,17 +53,19 @@ def main(input_fname, output_fname, radius, counts, verbose):
                         "core_smi TEXT NOT NULL, "
                         "core_num_atoms INTEGER NOT NULL, "
                         "core_sma TEXT NOT NULL, "
+                        "dist2 INTEGER NOT NULL, "
                         "freq INTEGER NOT NULL)" % table_name)
         else:
             cur.execute("CREATE TABLE %s("
                         "env TEXT NOT NULL, "
                         "core_smi TEXT NOT NULL, "
                         "core_num_atoms INTEGER NOT NULL, "
-                        "core_sma TEXT NOT NULL)" % table_name)
+                        "core_sma TEXT NOT NULL,"
+                        "dist2 INTEGER NOT NULL)" % table_name)
         conn.commit()
 
+        buf = []
         with open(input_fname) as f:
-            buf = []
             for i, line in enumerate(f):
                 if counts:
                     tmp = re.split(',| ', line.strip())
@@ -39,26 +74,34 @@ def main(input_fname, output_fname, radius, counts, verbose):
                 else:
                     buf.append(tuple(line.strip().split(",")))
                 if (i + 1) % 100000 == 0:
+                    adata = __get_additional_data((items[:2] for items in buf), pool)
                     if counts:
-                        cur.executemany("INSERT INTO %s VALUES (?, ?, ?, ?, ?)" % table_name, buf)
+                        buf = [a[:-1] + b + (a[-1],) for a, b in zip(buf, adata)]
+                        cur.executemany("INSERT INTO %s VALUES (?, ?, ?, ?, ?, ?)" % table_name, buf)
                     else:
-                        cur.executemany("INSERT INTO %s VALUES (?, ?, ?, ?)" % table_name, buf)
+                        buf = [a + b for a, b in zip(buf, adata)]
+                        cur.executemany("INSERT INTO %s VALUES (?, ?, ?, ?, ?)" % table_name, buf)
                     conn.commit()
                     buf = []
                     if verbose:
                         sys.stderr.write("\r%i lines proceed" % (i + 1))
 
         if buf:
+            adata = __get_additional_data((items[:2] for items in buf), pool)
             if counts:
-                cur.executemany("INSERT INTO %s VALUES (?, ?, ?, ?, ?)" % table_name, buf)
+                buf = [a[:-1] + b + (a[-1],) for a, b in zip(buf, adata)]
+                cur.executemany("INSERT INTO %s VALUES (?, ?, ?, ?, ?, ?)" % table_name, buf)
             else:
-                cur.executemany("INSERT INTO %s VALUES (?, ?, ?, ?)" % table_name, buf)
+                buf = [a + b for a, b in zip(buf, adata)]
+                cur.executemany("INSERT INTO %s VALUES (?, ?, ?, ?, ?)" % table_name, buf)
             conn.commit()
 
         idx_name = "%s_env_idx" % table_name
         cur.execute("DROP INDEX IF EXISTS %s" % idx_name)
         cur.execute("CREATE INDEX %s ON %s (env)" % (idx_name, table_name))
         conn.commit()
+
+    pool.close()
 
 
 if __name__ == '__main__':
@@ -75,6 +118,8 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--counts', action='store_true', default=False,
                         help='set if the input file contains number of occurrences as a first column '
                              '(output of sort | uniq -c). This will add a column freq to the output DB.')
+    parser.add_argument('-n', '--ncpu', default=1,
+                        help='number of cpus. Default: 1.')
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
                         help='print progress.')
 
@@ -85,9 +130,11 @@ if __name__ == '__main__':
         if o == "verbose": verbose = v
         if o == "radius": radius = int(v)
         if o == "counts": counts = v
+        if o == "ncpu": ncpu = int(v)
 
     main(input_fname=input_fname,
          output_fname=output_fname,
          radius=radius,
          counts=counts,
+         ncpu=ncpu,
          verbose=verbose)

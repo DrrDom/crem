@@ -1,16 +1,13 @@
 __author__ = 'pavel'
 
 import argparse
-import sqlite3
-from pprint import pprint
 import sys
-import re
 
 from itertools import permutations
 from multiprocessing import Pool, cpu_count
 from rdkit import Chem
 
-from mol_context import get_std_context_core_permutations, combine_core_env_to_rxn_smarts
+from mol_context import get_std_context_core_permutations
 
 
 def create_db(conn):
@@ -45,21 +42,6 @@ def index_db(conn):
     conn.commit()
 
 
-def mol_to_smarts(mol):
-
-    # change the isotope to 42
-    for atom in mol.GetAtoms():
-        atom.SetIsotope(42)
-
-    # print out the smiles - all the atom attributes will be fully specified
-    smarts = Chem.MolToSmiles(mol, isomericSmiles=True)
-    # remove the 42 isotope labels
-    smarts = re.sub(r'\[42', "[", smarts)
-    # now have a fully specified SMARTS - simples!
-
-    return smarts
-
-
 def process_line(line):
     # returns env_smi, core_smi, heavy_atoms_num, core_smarts
 
@@ -83,9 +65,9 @@ def process_line(line):
                         if env and cores:
                             # for 1 cut cores will always contain 1 item
                             if not store_comp_id:
-                                output.append((env, cores[0], num_heavy_atoms, combine_core_env_to_rxn_smarts(cores[0], env, False)))
+                                output.append((env, cores[0], num_heavy_atoms))
                             else:
-                                output.append((env, cores[0], num_heavy_atoms, combine_core_env_to_rxn_smarts(cores[0], env, False), id))
+                                output.append((env, cores[0], num_heavy_atoms, id))
             else:
                 sys.stderr.write('more than two fragments in context (%s) where core is empty' % context)
                 sys.stderr.flush()
@@ -98,9 +80,9 @@ def process_line(line):
                 if env and cores:
                     for c in cores:
                         if not store_comp_id:
-                            output.append((env, c, num_heavy_atoms, combine_core_env_to_rxn_smarts(c, env, False)))
+                            output.append((env, c, num_heavy_atoms))
                         else:
-                            output.append((env, c, num_heavy_atoms, combine_core_env_to_rxn_smarts(c, env, False), id))
+                            output.append((env, c, num_heavy_atoms, id))
         return output
 
 
@@ -113,45 +95,8 @@ def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_at
 
     # radius and remove_stereo are supplied to process_context_core via global environment (ugly but working solution)
 
-    # if keep_mols:
-    #     keep_mols = set([line.strip() for line in open(keep_mols).readlines()])
-
     ncpu = min(cpu_count(), max(ncpu, 1))
     p = Pool(ncpu, initializer=init, initargs=(keep_mols,))
-
-    # conn = sqlite3.connect(output_fname)
-    # create_db(conn)
-    # cur = conn.cursor()
-    #
-    # cache = []
-    #
-    # try:
-    #
-    #     with open(input_fname) as f:
-    #
-    #         for i, res in enumerate(p.imap_unordered(process_line, f, chunksize=1000), 1):
-    #
-    #             cache.extend((i for i in res if i))
-    #             # insert_db(cur, tuple(i for i in res if i))
-    #
-    #             if verbose and i % 1000 == 0:
-    #                 sys.stderr.write('\r%i lines passed' % i)
-    #                 sys.stderr.flush()
-    #
-    #             if i % 10000:
-    #                 insert_db(cur, set(cache))
-    #                 cache = []
-    #                 conn.commit()
-    #
-    #             if i > 10000:
-    #                 break
-    #
-    # finally:
-    #     insert_db(cur, set(cache))
-    #     p.close()
-    #     conn.commit()
-    #     compress_db(conn)
-    #     index_db(conn)
 
     try:
         with open(output_fname, 'wt') as out:

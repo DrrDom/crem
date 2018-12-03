@@ -97,7 +97,7 @@ if __name__ == '__main__':
 
     for fname in sorted(os.listdir(output_dir)):
         if re.search('^r[1-5]_c\.txt$', fname):
-            script += 'python3 ~/python/crem/import_env_to_db.py -i %s -o replacements.db -r %s -c\n' % (fname, fname[1])
+            script += 'python3 ~/python/crem/import_env_to_db.py -i %s -o replacements.db -r %s -c -n 32\n' % (fname, fname[1])
     with open(pbs_name, "wt") as f:
         f.write(script)
     p = Popen(['qsub', pbs_name], stdout=PIPE, encoding='utf8')

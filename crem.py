@@ -170,7 +170,7 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
                     a_id = a.GetIdx()
                     if a_id not in ids:
                         ids.add(a_id)
-                        extend_ids(mol, a_id, r-1, ids)
+                    extend_ids(mol, a_id, r-1, ids)
 
         if ids:
             ids_ext = set(ids)

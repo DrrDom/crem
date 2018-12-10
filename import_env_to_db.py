@@ -101,7 +101,8 @@ def main(input_fname, output_fname, radius, counts, ncpu, verbose):
         cur.execute("CREATE INDEX %s ON %s (env)" % (idx_name, table_name))
         conn.commit()
 
-    pool.close()
+    if pool is not None:
+        pool.close()
 
 
 if __name__ == '__main__':

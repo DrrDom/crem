@@ -325,8 +325,8 @@ def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, pro
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
-               max_replacements=None, replace_cycles=False, protected_ids=None, min_freq=10, return_rxn=True,
-               return_rxn_freq=False, ncores=1):
+               max_replacements=None, replace_cycles=False, replace_ids=None, protected_ids=None, min_freq=10,
+               return_rxn=True, return_rxn_freq=False, ncores=1):
     """
     Generator of new molecules by replacement of fragments of the supplied molecule with fragments from DB having
     the same chemical context
@@ -344,17 +344,29 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                              than the specified threshold only the specified number of randomly chosen replacements
                              will be applied.
     :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size
-    :param protected_ids: iterable with atom ids which cannot be mutated
+    :param replace_ids: iterable with atom ids to replace, it has higher priority over protected_ids (if replace_ids
+                        were specified protected_ids argument would be completely ignored).
+                        Ids of hydrogen atoms (if any) connected to the specified heavy atoms will be automatically
+                        labeled as replaceable.
+    :param protected_ids: iterable with atom ids which cannot be mutated. If the molecule was supplied with explicit
+                          hydrogen the ids of protected hydrogens should be supplied as well, otherwise they will be
+                          replaced.
     :param min_freq: minimum occurrence of fragments in DB for replacement
     :param return_rxn: control whether to additionally return rxn of a transformation or return only generated SMILES
     :param ncores: number of cores
     :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
-             SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
+             SMARTS of an applied transformation. Only entries with distinct SMILES will be returned.
 
     Supply mol with explicit Hs if H replacement is desired
     """
 
     products = set()
+
+    if replace_ids:
+        ids = set()
+        for i in replace_ids:
+            ids.update(a.GetIdx() for a in mol.GetAtomWithIdx(i).GetNeighbors() if a.GetAtomicNum() == 1)
+        protected_ids = sorted(set(range(mol.GetNumAtoms())).difference(ids).difference(replace_ids))
 
     if ncores == 1:
 
@@ -404,8 +416,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                 yield smi
 
 
-def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, protected_ids=None, min_freq=10,
-             return_rxn=True, return_rxn_freq=False, ncores=1):
+def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, replace_ids=None,
+             protected_ids=None, min_freq=10, return_rxn=True, return_rxn_freq=False, ncores=1):
     """
     Replace hydrogens with fragments from the database having the same chemical context
 
@@ -417,7 +429,12 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
     :param max_replacements: maximum number of replacements to make. If the number of available replacements is more
                              than the specified threshold only the specified number of randomly chosen replacements
                              will be applied.
-    :param protected_ids: iterable with ids of heavy atoms at which no H replacement should be made.
+    :param replace_ids: iterable with ids of heavy atom with replaceable Hs or/and ids of H atoms to replace,
+                        it has higher priority over protected_ids (if replace_ids were specified protected_ids argument
+                        would be completely ignored).
+                        If ids of heavy atoms were supplied all attached hydrogens will be replaced.
+    :param protected_ids: iterable with ids of heavy atoms at which no H replacement should be made or ids of
+                          protected Hs.
                           Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene
                           ids of both carbons in meta-positions should be supplied)
     :param min_freq: minimum occurrence of fragments in DB for replacement
@@ -426,20 +443,43 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
     :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
              SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
     """
-    ids = []
+
     m = Chem.AddHs(mol)
-    if protected_ids:
+
+    # create the list of ids of protected Hs only would be enough, however in the first case (replace_ids) the full list
+    # of protected atom ids is created
+    if replace_ids:
+
+        ids = set()
+        for i in replace_ids:
+            if m.GetAtomWithIdx(i).GetAtomicNum() == 1:
+                ids.add(i)
+            else:
+                ids.update(a.GetIdx() for a in m.GetAtomWithIdx(i).GetNeighbors() if a.GetAtomicNum() == 1)
+        ids = sorted(set(range(m.GetNumAtoms())).difference(ids))
+
+    elif protected_ids:
+
+        ids = []
         for i in protected_ids:
-            for a in m.GetAtomWithIdx(i).GetNeighbors():
-                if a.GetAtomicNum() == 1:
-                    ids.append(a.GetIdx())
+            if m.GetAtomWithIdx(i).GetAtomicNum() == 1:
+                ids.append(i)
+            else:
+                for a in m.GetAtomWithIdx(i).GetNeighbors():
+                    if a.GetAtomicNum() == 1:
+                        ids.append(a.GetIdx())
+
+    else:
+        ids = None
+
     return mutate_mol(m, db_name, radius, min_size=0, max_size=0, min_inc=min_atoms, max_inc=max_atoms,
-                      max_replacements=max_replacements, protected_ids=ids, min_freq=min_freq, return_rxn=return_rxn,
-                      return_rxn_freq=return_rxn_freq, ncores=ncores)
+                      max_replacements=max_replacements, replace_ids=None, protected_ids=ids,
+                      min_freq=min_freq, return_rxn=return_rxn, return_rxn_freq=return_rxn_freq, ncores=ncores)
 
 
 def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2, max_replacements=None,
-              protected_ids_1=None, protected_ids_2=None, min_freq=10, return_rxn=True, return_rxn_freq=False, ncores=1):
+              replace_ids_1=None, replace_ids_2=None, protected_ids_1=None, protected_ids_2=None,
+              min_freq=10, return_rxn=True, return_rxn_freq=False, ncores=1):
     """
     Link two molecules by a linker from the database
 
@@ -454,7 +494,12 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
     :param max_replacements: maximum number of replacements to make. If the number of available replacements is more
                              than the specified threshold only the specified number of randomly chosen replacements
                              will be applied.
-    :param protected_ids_1, protected_ids_2: iterable with ids of heavy atoms at which no H replacement should be made.
+    :param replace_ids_1, replace_ids_2: iterable with atom ids to replace, it has higher priority over protected_ids
+                                         (if replace_ids were specified protected_ids argument would be completely
+                                         ignored).
+                                         If ids of heavy atoms were supplied the attached hydrogens will be replaced.
+    :param protected_ids_1, protected_ids_2: iterable with ids of heavy atoms at which no H replacement should be made
+                                             and/or ids of protected H.
                                              Ids of all equivalent atoms should be supplied (e.g. to protect
                                              meta-position in toluene ids of both carbons in meta-positions should
                                              be supplied)
@@ -465,10 +510,42 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
              SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
     """
 
+    def __get_protected_ids(m, replace_ids, protected_ids):
+        # the list of ids of heavy atom with protected hydrogens should be returned
+
+        if replace_ids:
+
+            ids = set()
+            for i in replace_ids:
+                if m.GetAtomWithIdx(i).GetAtomicNum() == 1:
+                    ids.update(a.GetIdx() for a in m.GetAtomWithIdx(i).GetNeighbors())
+                else:
+                    ids.add(i)
+            heavy_atom_ids = set(a.GetIdx() for a in m.GetAtoms() if a.GetAtomicNum() > 1)
+            res_ids = sorted(heavy_atom_ids.difference(ids))
+
+        elif protected_ids:
+
+            ids = set()
+            for i in replace_ids:
+                if m.GetAtomWithIdx(i).GetAtomicNum() == 1:
+                    ids.update(a.GetIdx() for a in m.GetAtomWithIdx(i).GetNeighbors())
+                else:
+                    ids.add(i)
+            res_ids = sorted(ids)
+
+        else:
+            res_ids = None
+
+        return res_ids
+
     products = set()
 
     mol1 = Chem.AddHs(mol1)
     mol2 = Chem.AddHs(mol2)
+
+    protected_ids_1 = __get_protected_ids(mol1, replace_ids_1, protected_ids_1)
+    protected_ids_2 = __get_protected_ids(mol2, replace_ids_2, protected_ids_2)
 
     if ncores == 1:
 

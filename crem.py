@@ -152,14 +152,15 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
 def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, frag_ids_2=None):
     """
     INPUT
-        mol:         mol,
+        mol1:        mol for mutate, grow or link,
+        mol2:        for link,
         frag_sma:    SMARTS of a fragment,
         replace_sma: SMARTS of a replacement (from DB),
-        frag_ids:    atom ids of a fragment if you need to make exact replacement, if None all possible matches will be
-                     replaced
+        radius:      context radius considered,
+        frag_ids_1, frag_ids_2: atom ids of a fragment if you need to make exact replacement, if None all possible
+                                matches will be replaced
     OUTPUT
-        list of mols with replaced fragment.
-        Each output mol has a new field named 'transformation' with information about reaction SMARTS applied
+        generator returns canonical isomeric SMILES, RDKit Mol and rxn rule
     """
 
     def set_protected_atoms(mol, ids, radius):
@@ -215,7 +216,7 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
                 smi = Chem.MolToSmiles(Chem.RemoveHs(p), isomericSmiles=True)
                 if smi not in products:
                     products.add(smi)
-                    yield smi, rxn_sma
+                    yield smi, p, rxn_sma
 
 
 def __get_replacements(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0):
@@ -292,7 +293,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
 
 def __frag_replace_mp(items):
-    # return smi, rxn_smarts, rxn_smarts_freq
+    # return smi, rxn_smarts, rxn_smarts_freq, mol
     return [(*item, items[-1]) for item in __frag_replace(*items[:-1])]
 
 
@@ -326,7 +327,7 @@ def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, pro
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
                max_replacements=None, replace_cycles=False, replace_ids=None, protected_ids=None, min_freq=10,
-               return_rxn=True, return_rxn_freq=False, ncores=1):
+               return_rxn=True, return_rxn_freq=False, return_mol=False, ncores=1):
     """
     Generator of new molecules by replacement of fragments of the supplied molecule with fragments from DB having
     the same chemical context
@@ -353,11 +354,16 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                           replaced.
     :param min_freq: minimum occurrence of fragments in DB for replacement
     :param return_rxn: control whether to additionally return rxn of a transformation or return only generated SMILES
+    :param return_rxn_freq: return the frequency of a transformation in the DB
+    :param return_mol return RDKit Mol object of a generated molecule
     :param ncores: number of cores
-    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
-             SMARTS of an applied transformation. Only entries with distinct SMILES will be returned.
+    :return: generator over new molecules. Each entry is a list. The first item is SMILES. If return_rxn = True
+             the next items is SMARTS of a transformation. If return_rxn_freq = True the next item is frequency of
+             this transformation in the DB (will only added if return_rxn = True). The next item is RDKit Mol
+             if return_mol == True.
+             Only entries with distinct SMILES will be returned.
 
-    Supply mol with explicit Hs if H replacement is desired
+    Noye: supply mol with explicit Hs if H replacement is desired
     """
 
     products = set()
@@ -378,21 +384,18 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                                 replace_cycles=replace_cycles,
                                                                 protected_ids_1=protected_ids, protected_ids_2=None,
                                                                 min_freq=min_freq):
-            for smi, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, ids, None):
+            for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, ids, None):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
+                        res = [smi]
                         if return_rxn:
+                            res.append(rxn)
                             if return_rxn_freq:
-                                yield smi, rxn, freq
-                            else:
-                                yield smi, rxn
-                        else:
-                            if return_rxn_freq:
-                                yield smi, freq
-                            else:
-                                yield smi
-
+                                res.append(freq)
+                        if return_mol:
+                            res.append(m)
+                        yield res
     else:
 
         p = Pool(min(ncores, cpu_count()))
@@ -400,20 +403,18 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                           max_rel_size, min_inc, max_inc, replace_cycles,
                                                           protected_ids, min_freq, max_replacements),
                             chunksize=100):
-            for smi, rxn, freq in items:
+            for smi, m, rxn, freq in items:
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
+                        res = [smi]
                         if return_rxn:
+                            res.append(rxn)
                             if return_rxn_freq:
-                                yield smi, rxn, freq
-                            else:
-                                yield smi, rxn
-                        else:
-                            if return_rxn_freq:
-                                yield smi, freq
-                            else:
-                                yield smi
+                                res.append(freq)
+                        if return_mol:
+                            res.append(m)
+                        yield res
 
 
 def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, replace_ids=None,
@@ -479,7 +480,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
 
 def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2, max_replacements=None,
               replace_ids_1=None, replace_ids_2=None, protected_ids_1=None, protected_ids_2=None,
-              min_freq=10, return_rxn=True, return_rxn_freq=False, ncores=1):
+              min_freq=10, return_rxn=True, return_rxn_freq=False, return_mol=False, ncores=1):
     """
     Link two molecules by a linker from the database
 
@@ -505,9 +506,14 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                                              be supplied)
     :param min_freq: minimum occurrence of fragments in DB for replacement
     :param return_rxn: control whether to additionally return rxn of a transformation or return only generated SMILES
+    :param return_rxn_freq: return the frequency of a transformation in the DB
+    :param return_mol return RDKit Mol object of a generated molecule
     :param ncores: number of cores
-    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
-             SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
+    :return: generator over new molecules. Each entry is a list. The first item is SMILES. If return_rxn = True
+             the next items is SMARTS of a transformation. If return_rxn_freq = True the next item is frequency of
+             this transformation in the DB (will only added if return_rxn = True). The next item is RDKit Mol
+             if return_mol == True.
+             Only entries with distinct SMILES will be returned.
     """
 
     def __get_protected_ids(m, replace_ids, protected_ids):
@@ -558,20 +564,18 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                                                                          protected_ids_1=protected_ids_1,
                                                                          protected_ids_2=protected_ids_2,
                                                                          min_freq=min_freq):
-            for smi, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, ids_1, ids_2):
+            for smi, m, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, ids_1, ids_2):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
+                        res = [smi]
                         if return_rxn:
+                            res.append(rxn)
                             if return_rxn_freq:
-                                yield smi, rxn, freq
-                            else:
-                                yield smi, rxn
-                        else:
-                            if return_rxn_freq:
-                                yield smi, freq
-                            else:
-                                yield smi
+                                res.append(freq)
+                        if return_mol:
+                            res.append(m)
+                        yield res
 
     else:
 
@@ -580,17 +584,15 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                                                                protected_ids_1, protected_ids_2, min_freq,
                                                                max_replacements),
                             chunksize=100):
-            for smi, rxn, freq in items:
+            for smi, m, rxn, freq in items:
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
+                        res = [smi]
                         if return_rxn:
+                            res.append(rxn)
                             if return_rxn_freq:
-                                yield smi, rxn, freq
-                            else:
-                                yield smi, rxn
-                        else:
-                            if return_rxn_freq:
-                                yield smi, freq
-                            else:
-                                yield smi
+                                res.append(freq)
+                        if return_mol:
+                            res.append(m)
+                        yield res

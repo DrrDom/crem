@@ -345,8 +345,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                              than the specified threshold only the specified number of randomly chosen replacements
                              will be applied.
     :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size
-    :param replace_ids: iterable with atom ids to replace, it has higher priority over protected_ids (if replace_ids
-                        were specified protected_ids argument would be completely ignored).
+    :param replace_ids: iterable with atom ids to replace, it has lower priority over protected_ids (replace_ids
+                        available in protected_ids would be ignored).
                         Ids of hydrogen atoms (if any) connected to the specified heavy atoms will be automatically
                         labeled as replaceable.
     :param protected_ids: iterable with atom ids which cannot be mutated. If the molecule was supplied with explicit
@@ -363,16 +363,21 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
              if return_mol == True.
              Only entries with distinct SMILES will be returned.
 
-    Noye: supply mol with explicit Hs if H replacement is desired
+    Note: supply mol with explicit Hs if H replacement is desired
     """
 
     products = set()
+
+    protected_ids = set(protected_ids) if protected_ids else set()
 
     if replace_ids:
         ids = set()
         for i in replace_ids:
             ids.update(a.GetIdx() for a in mol.GetAtomWithIdx(i).GetNeighbors() if a.GetAtomicNum() == 1)
-        protected_ids = sorted(set(range(mol.GetNumAtoms())).difference(ids).difference(replace_ids))
+        ids = set(a.GetIdx() for a in mol.GetAtoms()).difference(ids).difference(replace_ids)  # ids which should be protected
+        protected_ids.update(ids)  # since protected_ids has a higher priority add them anyway
+
+    protected_ids = sorted(protected_ids)
 
     if ncores == 1:
 
@@ -431,9 +436,8 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                              than the specified threshold only the specified number of randomly chosen replacements
                              will be applied.
     :param replace_ids: iterable with ids of heavy atom with replaceable Hs or/and ids of H atoms to replace,
-                        it has higher priority over protected_ids (if replace_ids were specified protected_ids argument
-                        would be completely ignored).
-                        If ids of heavy atoms were supplied all attached hydrogens will be replaced.
+                        it has lower priority over protected_ids (replace_ids available in protected_ids would be
+                        ignored). If ids of heavy atoms were supplied all attached hydrogens will be replaced.
     :param protected_ids: iterable with ids of heavy atoms at which no H replacement should be made or ids of
                           protected Hs.
                           Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene
@@ -449,17 +453,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
 
     # create the list of ids of protected Hs only would be enough, however in the first case (replace_ids) the full list
     # of protected atom ids is created
-    if replace_ids:
-
-        ids = set()
-        for i in replace_ids:
-            if m.GetAtomWithIdx(i).GetAtomicNum() == 1:
-                ids.add(i)
-            else:
-                ids.update(a.GetIdx() for a in m.GetAtomWithIdx(i).GetNeighbors() if a.GetAtomicNum() == 1)
-        ids = sorted(set(range(m.GetNumAtoms())).difference(ids))
-
-    elif protected_ids:
+    if protected_ids:
 
         ids = []
         for i in protected_ids:
@@ -469,12 +463,24 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                 for a in m.GetAtomWithIdx(i).GetNeighbors():
                     if a.GetAtomicNum() == 1:
                         ids.append(a.GetIdx())
+        protected_ids = set(ids)  # ids of protected Hs
 
     else:
-        ids = None
+        protected_ids = set()
+
+    if replace_ids:
+
+        ids = set()  # ids if replaceable Hs
+        for i in replace_ids:
+            if m.GetAtomWithIdx(i).GetAtomicNum() == 1:
+                ids.add(i)
+            else:
+                ids.update(a.GetIdx() for a in m.GetAtomWithIdx(i).GetNeighbors() if a.GetAtomicNum() == 1)
+        ids = set(a.GetIdx() for a in m.GetAtoms() if a.GetAtomicNum() == 1).difference(ids)  # ids of Hs to protect
+        protected_ids.update(ids)  # since protected_ids has a higher priority add them anyway
 
     return mutate_mol(m, db_name, radius, min_size=0, max_size=0, min_inc=min_atoms, max_inc=max_atoms,
-                      max_replacements=max_replacements, replace_ids=None, protected_ids=ids,
+                      max_replacements=max_replacements, replace_ids=None, protected_ids=protected_ids,
                       min_freq=min_freq, return_rxn=return_rxn, return_rxn_freq=return_rxn_freq, ncores=ncores)
 
 
@@ -495,9 +501,8 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
     :param max_replacements: maximum number of replacements to make. If the number of available replacements is more
                              than the specified threshold only the specified number of randomly chosen replacements
                              will be applied.
-    :param replace_ids_1, replace_ids_2: iterable with atom ids to replace, it has higher priority over protected_ids
-                                         (if replace_ids were specified protected_ids argument would be completely
-                                         ignored).
+    :param replace_ids_1, replace_ids_2: iterable with atom ids to replace, it has lower priority over protected_ids
+                                         (replace_ids available in protected_ids would be ignored).
                                          If ids of heavy atoms were supplied the attached hydrogens will be replaced.
     :param protected_ids_1, protected_ids_2: iterable with ids of heavy atoms at which no H replacement should be made
                                              and/or ids of protected H.
@@ -519,6 +524,19 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
     def __get_protected_ids(m, replace_ids, protected_ids):
         # the list of ids of heavy atom with protected hydrogens should be returned
 
+        if protected_ids:
+
+            ids = set()
+            for i in protected_ids:
+                if m.GetAtomWithIdx(i).GetAtomicNum() == 1:
+                    ids.update(a.GetIdx() for a in m.GetAtomWithIdx(i).GetNeighbors())
+                else:
+                    ids.add(i)
+            protected_ids = ids
+
+        else:
+            protected_ids = set()
+
         if replace_ids:
 
             ids = set()
@@ -528,22 +546,10 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                 else:
                     ids.add(i)
             heavy_atom_ids = set(a.GetIdx() for a in m.GetAtoms() if a.GetAtomicNum() > 1)
-            res_ids = sorted(heavy_atom_ids.difference(ids))
+            ids = heavy_atom_ids.difference(ids)  # ids of heavy atoms which should be protected
+            protected_ids.update(ids)  # since protected_ids has a higher priority add them anyway
 
-        elif protected_ids:
-
-            ids = set()
-            for i in replace_ids:
-                if m.GetAtomWithIdx(i).GetAtomicNum() == 1:
-                    ids.update(a.GetIdx() for a in m.GetAtomWithIdx(i).GetNeighbors())
-                else:
-                    ids.add(i)
-            res_ids = sorted(ids)
-
-        else:
-            res_ids = None
-
-        return res_ids
+        return protected_ids
 
     products = set()
 

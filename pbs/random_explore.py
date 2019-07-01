@@ -115,7 +115,7 @@ if __name__ == '__main__':
     niter = args['nsteps']
 
     if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
 
     job_dir = os.path.join(output_dir, 'jobs')
     if not os.path.exists(job_dir):

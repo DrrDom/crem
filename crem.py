@@ -280,13 +280,9 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
     if max_replacements is not None:
         res = list(func())
-        if len(res) > max_replacements:
-            random.shuffle(res)
-            for items in res:
-                yield items
-        else:
-            for items in func():
-                yield items
+        random.shuffle(res)
+        for items in res[:max_replacements]:
+            yield items
     else:
         for items in func():
             yield items

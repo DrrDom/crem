@@ -28,6 +28,8 @@ db_fname = '/home/pavlop/imtm/crem/update/db/orgelm/replacements.db'
 # db_fname = '/home/pavel/QSAR/crem/update/db/lilly_pains_sc2/replacements.db'
 smi_fname = '/home/pavlop/python/guacamol/guacamol/data/guacamol_v1_all.smi'
 # smi_fname = '/home/pavel/python/guacamol/guacamol/data/guacamol_v1_all.smi'
+total_ncpu = 31
+# total_ncpu = 2
 
 
 from guacamol.assess_goal_directed_generation import assess_goal_directed_generation
@@ -39,9 +41,10 @@ from joblib import delayed
 from rdkit import Chem
 from rdkit.Chem.rdchem import Mol
 
-from crem import mutate_mol
+from crem import mutate_mol2, mutate_mol
 
 from pprint import pprint
+from multiprocessing import Pool, cpu_count
 
 def make_mating_pool(population_mol: List[Mol], population_scores, offspring_size: int):
     """
@@ -75,8 +78,8 @@ class CREM_Generator(GoalDirectedGenerator):
 
     def __init__(self, smi_file, selection_size, radius, replacements, 
                  max_size, min_size, max_inc, min_inc,
-                 generations, ncpu, random_start):
-        self.pool = joblib.Parallel(n_jobs=2)
+                 generations, ncpu, random_start, output_dir):
+        self.pool = joblib.Parallel(n_jobs=ncpu)
         self.smiles = self.load_smiles_from_file(smi_file)
         self.selection_size = selection_size
         self.radius = radius
@@ -87,10 +90,12 @@ class CREM_Generator(GoalDirectedGenerator):
         self.replacements = replacements
         self.replacements_baseline = replacements
         self.generations = generations
-        self.ncpu = ncpu
         self.random_start = random_start
         self.patience = 2
-        self.patience2 = 20
+        self.patience2 = 10
+        self.patience_restart = 24
+        self.task = 0
+        self.output_dir = output_dir
 
     def load_smiles_from_file(self, smi_file):
         with open(smi_file) as f:
@@ -103,29 +108,27 @@ class CREM_Generator(GoalDirectedGenerator):
         scored_smiles = list(zip(scores, smiles))
         scored_smiles = sorted(scored_smiles, key=lambda x: x[0], reverse=True)
         return [smile for score, smile in scored_smiles][:k]
-        
+
     def generate(self, mols):
-        res = []
-        for i, mol in enumerate(mols):
-            for m in mutate_mol(mol, db_fname,
-                                 radius=self.radius, min_size=self.min_size,
-                                 max_size=self.max_size,
-                                 min_rel_size=0, max_rel_size=1,
-                                 min_inc=self.min_inc, max_inc=self.max_inc,
-                                 max_replacements=self.replacements,
-                                 replace_cycles=False,
-                                 protected_ids=None, min_freq=0,
-                                 return_rxn=False, return_rxn_freq=False,
-                                 ncores=self.ncpu):
-                res.append(m[0])
-        return list(set(res))
+        res = self.pool(delayed(mutate_mol2)(mol, db_name=db_fname,
+                                             radius=self.radius, min_size=self.min_size,
+                                             max_size=self.max_size,
+                                             min_rel_size=0, max_rel_size=1,
+                                             min_inc=self.min_inc, max_inc=self.max_inc,
+                                             max_replacements=self.replacements,
+                                             replace_cycles=False,
+                                             protected_ids=None, min_freq=0,
+                                             return_rxn=False, return_rxn_freq=False,
+                                             ncores=1) for mol in mols)
+        res = set(m[0] for sublist in res for m in sublist)
+        return list(res)
 
     def get_params(self, score):
         # get min_inc, max_inc, max_replacements
         if score > 0.8:
-            return -3, 3, self.replacements_baseline + 1000
+            return -4, 4, self.replacements_baseline + 1000
         if score > 0.6:
-            return -4, 4, self.replacements_baseline + 200
+            return -5, 5, self.replacements_baseline + 200
         if score > 0.4:
             return -6, 6, self.replacements_baseline + 100
         if score > 0.3:
@@ -136,6 +139,9 @@ class CREM_Generator(GoalDirectedGenerator):
 
     def generate_optimized_molecules(self, scoring_function: ScoringFunction, number_molecules: int,
                                      starting_population: Optional[List[str]] = None) -> List[str]:
+
+        self.task += 1
+        restart = starting_population is None
 
         if number_molecules > self.selection_size:
             self.selection_size = number_molecules
@@ -159,23 +165,15 @@ class CREM_Generator(GoalDirectedGenerator):
         patience = 0
         patience2 = 0
         patience2_score = 0
-        
-        used_smiles = set(population_smiles)   # all explored smiles
+        patience_restart = 0
+
+        used_smiles = set(population_smiles)   # smiles already used for mutation
         best_smiles = set()
         ref_score = max(population_scores)
-        # used_smiles = set(population_smiles)  # smiles used for generation
-        # # best_smiles = set(population_smiles[i] for i, s in enumerate(population_scores) if s == 1)
-        # best_smiles_scores = list(zip(population_scores, population_smiles))
-
-        # opt_min_inc = self.min_inc
-        # opt_max_inc = self.max_inc
 
         self.min_inc, self.max_inc, self.replacements = self.get_params(max(population_scores))
 
         for generation in range(self.generations):
-
-            # print("generation:", generation, "==============")
-            # print(f"parameters: {self.min_inc}, {self.max_inc}")
 
             new_smiles = set(self.generate(population_mols))
             new_mols = [Chem.MolFromSmiles(s) for s in new_smiles]
@@ -186,27 +184,22 @@ class CREM_Generator(GoalDirectedGenerator):
             best_smiles = sorted(best_smiles, key=lambda x: x[0], reverse=True)[:number_molecules]
 
             # update parameters
-            # print(max(new_scores), ref_score)
             if max(new_scores) <= ref_score and max(new_scores) < 1:
                 if patience >= self.patience:
                     self.min_inc -= 1
                     self.max_inc += 1
                     patience = 0
-                    # print(">> generation parameters increased:", self.min_inc, self.max_inc)
                     used_smiles = set()
                     ref_score = max(new_scores)
                 else:
                     patience += 1
-                    # print(">> patience increased,", patience)
             else:
                 patience = 0
                 ref_score = max(new_scores)
                 self.min_inc, self.max_inc, self.replacements = self.get_params(best_smiles[0][0])
-                # print(f">> generation parameters returned to initial values: {self.min_inc}, {self.max_inc}")
-                # self.min_inc = opt_min_inc
-                # self.max_inc = opt_max_inc
 
             if sum(score for score, smi in best_smiles) <= patience2_score:
+                patience_restart += 1
                 if patience2 >= self.patience2:
                     self.min_inc -= 15
                     self.max_inc += 15
@@ -218,6 +211,7 @@ class CREM_Generator(GoalDirectedGenerator):
             else:
                 patience2_score = sum(score for score, smi in best_smiles)
                 patience2 = 0
+                patience_restart = 0
 
             # select next population
             new_tuples = []
@@ -242,10 +236,6 @@ class CREM_Generator(GoalDirectedGenerator):
 
             used_smiles.update(population_smiles)
 
-            # print(best_smiles)
-            # print(population_smiles)
-            # print(population_scores)
-
             # stats
             gen_time = time() - t0
             t0 = time()
@@ -266,12 +256,29 @@ class CREM_Generator(GoalDirectedGenerator):
 
             sys.stdout.flush()
 
+            # everything is perfect
             if all(score == 1 for score, smi in best_smiles):
                 break
-                  
+
+            # optimization get stuck - no improvement for a long time
+            if patience_restart >= self.patience_restart:
+                if restart:
+                    # restart optimization from another random seeds
+                    starting_population = np.random.choice(self.smiles, self.selection_size)
+                    population_smiles = heapq.nlargest(self.selection_size, starting_population, key=scoring_function.score)
+                    population_mols = [Chem.MolFromSmiles(s) for s in population_smiles]
+                    population_scores = self.pool(delayed(score_mol)(m, scoring_function.score) for m in population_mols)
+                    ref_score = max(population_scores)
+                    patience_restart = 0
+                else:
+                    # give up
+                    break
+
         # finally
+        with open(os.path.join(self.output_dir, f'{self.task}.smi'), 'wt') as f:
+            for score, smi in best_smiles:
+                f.write(f'{smi}\t{round(score, 3)}\n')
         return [smi for score, smi in best_smiles]
-        # return [Chem.MolToSmiles(mol) for mol in population_mols]
 
 
 def main():
@@ -285,7 +292,7 @@ def main():
     parser.add_argument('--min_inc', type=int, default=-7)
     parser.add_argument('--max_inc', type=int, default=7)
     parser.add_argument('--generations', type=int, default=1000)
-    parser.add_argument('--ncpu', type=int, default=1)
+    parser.add_argument('--ncpu', type=int, default=total_ncpu)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--output_dir', type=str, default=None)
     parser.add_argument('--suite', default='v2')
@@ -313,7 +320,8 @@ def main():
                                replacements=args.replacements,
                                generations=args.generations,
                                ncpu=args.ncpu,
-                               random_start=True)
+                               random_start=True,
+                               output_dir=args.output_dir)
 
     json_file_path = os.path.join(args.output_dir, 'goal_directed_results.json')
     assess_goal_directed_generation(optimiser, json_output_file=json_file_path, benchmark_version=args.suite)

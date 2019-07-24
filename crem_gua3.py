@@ -176,6 +176,7 @@ class CREM_Generator(GoalDirectedGenerator):
 
         # evolution: go go go!!
         t0 = time()
+        time_start = t0
 
         patience1 = 0
         patience2 = 0
@@ -261,6 +262,9 @@ class CREM_Generator(GoalDirectedGenerator):
                   f'p3: {patience3} | '
                   f'{gen_time:.2f} sec')
             sys.stdout.flush()
+
+            if t0 - time_start > 18000:   # execution time > 5hr
+                break
 
         # finally
         best.round({'score': 3}).to_csv(os.path.join(self.output_dir, f'{self.task}.smi'), sep="\t", header=False, index=False)

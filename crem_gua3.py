@@ -8,30 +8,15 @@
 # license         : 
 #==============================================================================
 
-# from __future__ import print_function
-
 import argparse
-import heapq
 import json
 import os
-import random
 from time import time
 from typing import List, Optional
 
 import joblib
 import numpy as np
 import pandas as pd
-
-import sys
-sys.path.append('/home/pavlop/python/guacamol')
-# sys.path.append('/home/pavel/python/guacamol')
-db_fname = '/home/pavlop/imtm/crem/update/db/orgelm/replacements.db'
-# db_fname = '/home/pavel/QSAR/crem/update/db/lilly_pains_sc2/replacements.db'
-smi_fname = '/home/pavlop/python/guacamol/guacamol/data/guacamol_v1_all.smi'
-# smi_fname = '/home/pavel/python/guacamol/guacamol/data/guacamol_v1_all.smi'
-total_ncpu = 31
-# total_ncpu = 2
-
 
 from guacamol.assess_goal_directed_generation import assess_goal_directed_generation
 from guacamol.goal_directed_generator import GoalDirectedGenerator
@@ -42,10 +27,8 @@ from joblib import delayed
 from rdkit import Chem
 from rdkit.Chem.rdchem import Mol
 
-from crem import mutate_mol2, mutate_mol
+from crem import mutate_mol2
 
-from pprint import pprint
-from multiprocessing import Pool, cpu_count
 
 def make_mating_pool(population_mol: List[Mol], population_scores, offspring_size: int):
     """
@@ -77,12 +60,13 @@ def score_mol(mol, score_fn):
 
 class CREM_Generator(GoalDirectedGenerator):
 
-    def __init__(self, smi_file, selection_size, radius, replacements, 
-                 max_size, min_size, max_inc, min_inc,
+    def __init__(self, smi_file, selection_size, db_fname, radius,
+                 replacements, max_size, min_size, max_inc, min_inc,
                  generations, ncpu, random_start, output_dir):
         self.pool = joblib.Parallel(n_jobs=ncpu)
         self.smiles = self.load_smiles_from_file(smi_file)
         self.N = selection_size
+        self.db_fname = db_fname
         self.radius = radius
         self.min_size = min_size
         self.max_size = max_size
@@ -112,7 +96,7 @@ class CREM_Generator(GoalDirectedGenerator):
 
     def generate(self, smiles):
         mols = [Chem.AddHs(Chem.MolFromSmiles(s)) for s in smiles]
-        res = self.pool(delayed(mutate_mol2)(mol, db_name=db_fname,
+        res = self.pool(delayed(mutate_mol2)(mol, db_name=self.db_fname,
                                              radius=self.radius, min_size=self.min_size,
                                              max_size=self.max_size,
                                              min_rel_size=0, max_rel_size=1,
@@ -273,8 +257,9 @@ class CREM_Generator(GoalDirectedGenerator):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--smiles_file', default=smi_fname)
+    parser.add_argument('--smiles_file', type=str)
     parser.add_argument('--selection_size', type=int, default=5)
+    parser.add_argument('--db_fname', type=str, default=5)
     parser.add_argument('--radius', type=int, default=3)
     parser.add_argument('--replacements', type=int, default=100)
     parser.add_argument('--min_size', type=int, default=0)
@@ -282,7 +267,7 @@ def main():
     parser.add_argument('--min_inc', type=int, default=-7)
     parser.add_argument('--max_inc', type=int, default=7)
     parser.add_argument('--generations', type=int, default=1000)
-    parser.add_argument('--ncpu', type=int, default=total_ncpu)
+    parser.add_argument('--ncpu', type=int, default=1)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--output_dir', type=str, default=None)
     parser.add_argument('--suite', default='v2')
@@ -302,6 +287,7 @@ def main():
 
     optimiser = CREM_Generator(smi_file=args.smiles_file,
                                selection_size=args.selection_size,
+                               db_fname=args.db_fname,
                                radius=args.radius,
                                min_size=args.min_size,
                                max_size=args.max_size,

@@ -10,38 +10,6 @@ from rdkit import Chem
 from mol_context import get_std_context_core_permutations
 
 
-def create_db(conn):
-    cur = conn.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS core_table
-                  (
-                    std_context_smi TEXT NOT NULL,
-                    std_core_smi TEXT NOT NULL,
-                    smart_core_smi TEXT NOT NULL
-                  )""")
-    cur.execute("DELETE FROM core_table")
-    cur.execute("DROP INDEX IF EXISTS std_context_smi_idx")
-    cur.execute("DROP INDEX IF EXISTS std_core_smi_idx")
-    conn.commit()
-
-
-def insert_db(cur, items):
-    cur.executemany("INSERT INTO core_table VALUES(?,?,?)", items)
-
-
-def compress_db(conn):
-    cur = conn.cursor()
-    cur.execute("DELETE FROM core_table WHERE rowid NOT IN (SELECT MIN(rowid) "
-                "FROM core_table GROUP BY std_context_smi, std_core_smi)")
-    conn.commit()
-
-
-def index_db(conn):
-    cur = conn.cursor()
-    cur.execute("CREATE INDEX std_context_smi_idx ON core_table (std_context_smi)")
-    cur.execute("CREATE INDEX std_core_smi_idx ON core_table (std_core_smi)")
-    conn.commit()
-
-
 def process_line(line):
     # returns env_smi, core_smi, heavy_atoms_num, core_smarts
 

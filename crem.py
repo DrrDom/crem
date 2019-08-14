@@ -322,8 +322,8 @@ def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, pro
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
-               max_replacements=None, replace_cycles=False, replace_ids=None, protected_ids=None, min_freq=10,
-               return_rxn=True, return_rxn_freq=False, return_mol=False, ncores=1):
+               max_replacements=None, replace_cycles=False, replace_ids=None, protected_ids=None, min_freq=0,
+               return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1):
     """
     Generator of new molecules by replacement of fragments of the supplied molecule with fragments from DB having
     the same chemical context
@@ -396,7 +396,10 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                 res.append(freq)
                         if return_mol:
                             res.append(m)
-                        yield res
+                        if len(res) == 1:
+                            yield res[0]
+                        else:
+                            yield res
     else:
 
         p = Pool(min(ncores, cpu_count()))
@@ -415,11 +418,14 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                 res.append(freq)
                         if return_mol:
                             res.append(m)
-                        yield res
+                        if len(res) == 1:
+                            yield res[0]
+                        else:
+                            yield res
 
 
 def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, replace_ids=None,
-             protected_ids=None, min_freq=10, return_rxn=True, return_rxn_freq=False, ncores=1):
+             protected_ids=None, min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1):
     """
     Replace hydrogens with fragments from the database having the same chemical context
 
@@ -440,6 +446,8 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                           ids of both carbons in meta-positions should be supplied)
     :param min_freq: minimum occurrence of fragments in DB for replacement
     :param return_rxn: control whether to additionally return rxn of a transformation or return only generated SMILES
+    :param return_rxn_freq: return the frequency of a transformation in the DB
+    :param return_mol return RDKit Mol object of a generated molecule
     :param ncores: number of cores
     :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
              SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
@@ -477,12 +485,13 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
 
     return mutate_mol(m, db_name, radius, min_size=0, max_size=0, min_inc=min_atoms, max_inc=max_atoms,
                       max_replacements=max_replacements, replace_ids=None, protected_ids=protected_ids,
-                      min_freq=min_freq, return_rxn=return_rxn, return_rxn_freq=return_rxn_freq, ncores=ncores)
+                      min_freq=min_freq, return_rxn=return_rxn, return_rxn_freq=return_rxn_freq, return_mol=return_mol,
+                      ncores=ncores)
 
 
 def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2, max_replacements=None,
               replace_ids_1=None, replace_ids_2=None, protected_ids_1=None, protected_ids_2=None,
-              min_freq=10, return_rxn=True, return_rxn_freq=False, return_mol=False, ncores=1):
+              min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1):
     """
     Link two molecules by a linker from the database
 
@@ -577,7 +586,10 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                                 res.append(freq)
                         if return_mol:
                             res.append(m)
-                        yield res
+                        if len(res) == 1:
+                            yield res[0]
+                        else:
+                            yield res
 
     else:
 
@@ -597,7 +609,10 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                                 res.append(freq)
                         if return_mol:
                             res.append(m)
-                        yield res
+                        if len(res) == 1:
+                            yield res[0]
+                        else:
+                            yield res
 
 
 def mutate_mol2(*args, **kwargs):

@@ -600,101 +600,34 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                         yield res
 
 
-def mutate_mol2(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
-                max_replacements=None, replace_cycles=False, replace_ids=None, protected_ids=None, min_freq=10,
-                return_rxn=True, return_rxn_freq=False, return_mol=False, ncores=1):
+def mutate_mol2(*args, **kwargs):
     """
-    Generator of new molecules by replacement of fragments of the supplied molecule with fragments from DB having
-    the same chemical context
-
-    :param mol: RDKit Mol object
-    :param db_name: path to DB with replacements
-    :param radius: radius of context which will be considered for replacement
-    :param min_size, max_size: number of heavy atoms in a fragment to replace
-    :param min_rel_size, max_rel_size: Relative size of a fragment to the whole mol
-                                       (in terms of a number of heavy atoms)
-    :param min_inc, max_inc: Relative minimum and maximum size of new fragments which will replace
-                             the existed one. -2 and 2 mean that the existed fragment with N atoms will be replaced
-                             with fragments from a DB having from N-2 to N+2 atoms.
-    :param max_replacements: maximum number of replacements to make. If the number of available replacements is more
-                             than the specified threshold only the specified number of randomly chosen replacements
-                             will be applied.
-    :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size
-    :param replace_ids: iterable with atom ids to replace, it has lower priority over protected_ids (replace_ids
-                        available in protected_ids would be ignored).
-                        Ids of hydrogen atoms (if any) connected to the specified heavy atoms will be automatically
-                        labeled as replaceable.
-    :param protected_ids: iterable with atom ids which cannot be mutated. If the molecule was supplied with explicit
-                          hydrogen the ids of protected hydrogens should be supplied as well, otherwise they will be
-                          replaced.
-    :param min_freq: minimum occurrence of fragments in DB for replacement
-    :param return_rxn: control whether to additionally return rxn of a transformation or return only generated SMILES
-    :param return_rxn_freq: return the frequency of a transformation in the DB
-    :param return_mol return RDKit Mol object of a generated molecule
-    :param ncores: number of cores
-    :return: generator over new molecules. Each entry is a list. The first item is SMILES. If return_rxn = True
-             the next items is SMARTS of a transformation. If return_rxn_freq = True the next item is frequency of
-             this transformation in the DB (will only added if return_rxn = True). The next item is RDKit Mol
-             if return_mol == True.
-             Only entries with distinct SMILES will be returned.
-
-    Note: supply mol with explicit Hs if H replacement is desired
+    Convenience function which can be used to process molecules in parallel using multiprocessing module.
+    Is calls mutate_mol which cannot be used directly in multiprocessing because it is a generator
+    :param args: positional arguments, the same as in mutate_mol function
+    :param kwargs: keyword arguments, the same as in mutate_mol function
+    :return: list with output molecules
     """
+    return list(mutate_mol(*args, **kwargs))
 
-    products = set()
-    output = []
 
-    protected_ids = set(protected_ids) if protected_ids else set()
+def grow_mol2(*args, **kwargs):
+    """
+    Convenience function which can be used to process molecules in parallel using multiprocessing module.
+    Is calls grow_mol which cannot be used directly in multiprocessing because it is a generator
+    :param args: positional arguments, the same as in grow_mol function
+    :param kwargs: keyword arguments, the same as in grow_mol function
+    :return: list with output molecules
+    """
+    return list(grow_mol(*args, **kwargs))
 
-    if replace_ids:
-        ids = set()
-        for i in replace_ids:
-            ids.update(a.GetIdx() for a in mol.GetAtomWithIdx(i).GetNeighbors() if a.GetAtomicNum() == 1)
-        ids = set(a.GetIdx() for a in mol.GetAtoms()).difference(ids).difference(replace_ids)  # ids which should be protected
-        protected_ids.update(ids)  # since protected_ids has a higher priority add them anyway
 
-    protected_ids = sorted(protected_ids)
-
-    if ncores == 1:
-
-        for frag_sma, core_sma, freq, ids in __gen_replacements(mol1=mol, mol2=None, db_name=db_name, radius=radius,
-                                                                min_size=min_size, max_size=max_size,
-                                                                min_rel_size=min_rel_size, max_rel_size=max_rel_size,
-                                                                min_inc=min_inc, max_inc=max_inc,
-                                                                max_replacements=max_replacements,
-                                                                replace_cycles=replace_cycles,
-                                                                protected_ids_1=protected_ids, protected_ids_2=None,
-                                                                min_freq=min_freq):
-            for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, ids, None):
-                if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
-                    if smi not in products:
-                        products.add(smi)
-                        res = [smi]
-                        if return_rxn:
-                            res.append(rxn)
-                            if return_rxn_freq:
-                                res.append(freq)
-                        if return_mol:
-                            res.append(m)
-                        output.append(res)
-    else:
-
-        p = Pool(min(ncores, cpu_count()))
-        for items in p.imap(__frag_replace_mp, __get_data(mol, db_name, radius, min_size, max_size, min_rel_size,
-                                                          max_rel_size, min_inc, max_inc, replace_cycles,
-                                                          protected_ids, min_freq, max_replacements),
-                            chunksize=100):
-            for smi, m, rxn, freq in items:
-                if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
-                    if smi not in products:
-                        products.add(smi)
-                        res = [smi]
-                        if return_rxn:
-                            res.append(rxn)
-                            if return_rxn_freq:
-                                res.append(freq)
-                        if return_mol:
-                            res.append(m)
-                        output.append(res)
-
-    return output
+def link_mols2(*args, **kwargs):
+    """
+    Convenience function which can be used to process molecules in parallel using multiprocessing module.
+    Is calls link_mols which cannot be used directly in multiprocessing because it is a generator
+    :param args: positional arguments, the same as in link_mols function
+    :param kwargs: keyword arguments, the same as in link_mols function
+    :return: list with output molecules
+    """
+    return list(link_mols(*args, **kwargs))

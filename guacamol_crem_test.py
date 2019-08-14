@@ -11,6 +11,7 @@
 import argparse
 import json
 import os
+import sys
 from time import time
 from typing import List, Optional
 
@@ -21,7 +22,6 @@ import pandas as pd
 from guacamol.assess_goal_directed_generation import assess_goal_directed_generation
 from guacamol.goal_directed_generator import GoalDirectedGenerator
 from guacamol.scoring_function import ScoringFunction
-from guacamol.utils.chemistry import canonicalize
 from guacamol.utils.helpers import setup_default_logger
 from joblib import delayed
 from rdkit import Chem
@@ -45,13 +45,6 @@ def make_mating_pool(population_mol: List[Mol], population_scores, offspring_siz
     population_probs = [p / sum_scores for p in population_scores]
     mating_pool = np.random.choice(population_mol, p=population_probs, size=offspring_size, replace=True)
     return mating_pool
-
-
-def select_new_pool(ids, scores, num):
-    # sum_scores = sum(scores)
-    # probs = [p / sum_scores for p in scores]
-    probs = [i / sum(range(len(ids))) for i in reversed(range(len(ids)))]
-    return np.random.choice(ids, p=probs, size=num, replace=False)
 
 
 def score_mol(mol, score_fn):
@@ -258,10 +251,10 @@ class CREM_Generator(GoalDirectedGenerator):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--smiles_file', type=str)
-    parser.add_argument('--selection_size', type=int, default=5)
+    parser.add_argument('--selection_size', type=int, default=10)
     parser.add_argument('--db_fname', type=str, default=5)
     parser.add_argument('--radius', type=int, default=3)
-    parser.add_argument('--replacements', type=int, default=100)
+    parser.add_argument('--replacements', type=int, default=1000)
     parser.add_argument('--min_size', type=int, default=0)
     parser.add_argument('--max_size', type=int, default=10)
     parser.add_argument('--min_inc', type=int, default=-7)

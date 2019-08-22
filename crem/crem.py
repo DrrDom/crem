@@ -5,7 +5,7 @@ import re
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdMMPA
-from mol_context import get_canon_context_core, combine_core_env_to_rxn_smarts
+from .mol_context import get_canon_context_core, combine_core_env_to_rxn_smarts
 from multiprocessing import Pool, cpu_count
 import sqlite3
 import random
@@ -117,11 +117,6 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
 
     frags_1 = rdMMPA.FragmentMol(mol1, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
     frags_2 = rdMMPA.FragmentMol(mol2, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
-
-    # frags_1 = rdMMPA.FragmentMol(Chem.AddHs(mol1), pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
-    # frags_2 = rdMMPA.FragmentMol(Chem.AddHs(mol2), pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
-    # frags_1 = tuple((_, Chem.RemoveHs(m)) for _, m in frags_1)
-    # frags_2 = tuple((_, Chem.RemoveHs(m)) for _, m in frags_2)
 
     if protected_ids_1:
         frags_1 = filter_frags(frags_1, protected_ids_1)
@@ -325,41 +320,51 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                max_replacements=None, replace_cycles=False, replace_ids=None, protected_ids=None, min_freq=0,
                return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1):
     """
-    Generator of new molecules by replacement of fragments of the supplied molecule with fragments from DB having
-    the same chemical context
+    Generator of new molecules by replacement of fragments in the supplied molecule with fragments from DB.
 
-    :param mol: RDKit Mol object
-    :param db_name: path to DB with replacements
-    :param radius: radius of context which will be considered for replacement
-    :param min_size, max_size: number of heavy atoms in a fragment to replace
-    :param min_rel_size, max_rel_size: Relative size of a fragment to the whole mol
-                                       (in terms of a number of heavy atoms)
-    :param min_inc, max_inc: Relative minimum and maximum size of new fragments which will replace
-                             the existed one. -2 and 2 mean that the existed fragment with N atoms will be replaced
-                             with fragments from a DB having from N-2 to N+2 atoms.
-    :param max_replacements: maximum number of replacements to make. If the number of available replacements is more
-                             than the specified threshold only the specified number of randomly chosen replacements
-                             will be applied.
-    :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size
-    :param replace_ids: iterable with atom ids to replace, it has lower priority over protected_ids (replace_ids
-                        available in protected_ids would be ignored).
+    :param mol: RDKit Mol object. If hydrogens are explicit they will be replaced as well, otherwise not.
+    :param db_name: path to DB file with fragment replacements.
+    :param radius: radius of context which will be considered for replacement. Default: 3.
+    :param min_size: minimum number of heavy atoms in a fragment to replace. If 0 - hydrogens will be replaced
+                     (if they are explicit). Default: 0.
+    :param max_size: maximum number of heavy atoms in a fragment to replace. Default: 10.
+    :param min_rel_size: minimum relative size of a replaced fragment to the whole molecule
+                         (in terms of a number of heavy atoms)
+    :param max_rel_size: maximum relative size of a replaced fragment to the whole molecule
+                         (in terms of a number of heavy atoms)
+    :param min_inc: minimum change of a number of heavy atoms in replacing fragments to a number of heavy atoms in
+                    replaced one. Negative value means that the replacing fragments would be smaller than the replaced
+                    one on a specified number of heavy atoms. Default: -2.
+    :param max_inc: maximum change of a number of heavy atoms in replacing fragments to a number of heavy atoms in
+                    replaced one. Default: 2.
+    :param max_replacements: maximum number of replacements to make. If the number of replacements available in DB is
+                             greater than the specified value the specified number of randomly chosen replacements
+                             will be applied. Default: None.
+    :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size.
+                           Default: False.
+    :param replace_ids: iterable with atom ids to replace, it has lower priority over `protected_ids` (replace_ids
+                        which are present in protected_ids would be protected).
                         Ids of hydrogen atoms (if any) connected to the specified heavy atoms will be automatically
-                        labeled as replaceable.
-    :param protected_ids: iterable with atom ids which cannot be mutated. If the molecule was supplied with explicit
+                        labeled as replaceable. Default: None.
+    :param protected_ids: iterable with atom ids which will not be mutated. If the molecule was supplied with explicit
                           hydrogen the ids of protected hydrogens should be supplied as well, otherwise they will be
                           replaced.
-    :param min_freq: minimum occurrence of fragments in DB for replacement
-    :param return_rxn: control whether to additionally return rxn of a transformation or return only generated SMILES
-    :param return_rxn_freq: return the frequency of a transformation in the DB
-    :param return_mol return RDKit Mol object of a generated molecule
-    :param ncores: number of cores
-    :return: generator over new molecules. Each entry is a list. The first item is SMILES. If return_rxn = True
-             the next items is SMARTS of a transformation. If return_rxn_freq = True the next item is frequency of
-             this transformation in the DB (will only added if return_rxn = True). The next item is RDKit Mol
-             if return_mol == True.
+                          Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene
+                          ids of both carbons in meta-positions should be supplied)
+                          This argument has a higher priority over `replace_ids`. Default: None.
+    :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
+    :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
+    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
+    :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
+    :param ncores: number of cores. Default: 1.
+    :return: generator over new molecules. If no additional return arguments were called this would be a generator over
+             SMILES of new molecules. If any of additional return values were asked the function will return a list
+             of list where the first item is SMILES, then rxn string of a transformation (optional), frequency of
+             fragment occurrence in the DB (optional), RDKit Mol object (optional).
              Only entries with distinct SMILES will be returned.
 
-    Note: supply mol with explicit Hs if H replacement is desired
+    Note: supply RDKit Mol object with explicit hydrogens if H replacement is required
+
     """
 
     products = set()
@@ -427,30 +432,34 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
 def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, replace_ids=None,
              protected_ids=None, min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1):
     """
-    Replace hydrogens with fragments from the database having the same chemical context
+    Replace hydrogens with fragments from the database.
 
-    :param mol: RDKit Mol object
-    :param db_name: path to DB with replacements
-    :param radius: radius of context which will be considered for replacement
+    :param mol: RDKit Mol object. If hydrogens are explicit they will be replaced as well, otherwise not.
+    :param db_name: path to DB file with fragment replacements.
+    :param radius: radius of context which will be considered for replacement. Default: 3.
     :param min_atoms: minimum number of atoms in the fragment which will replace H
     :param max_atoms: maximum number of atoms in the fragment which will replace H
-    :param max_replacements: maximum number of replacements to make. If the number of available replacements is more
-                             than the specified threshold only the specified number of randomly chosen replacements
-                             will be applied.
+    :param max_replacements: maximum number of replacements to make. If the number of replacements available in DB is
+                             greater than the specified value the specified number of randomly chosen replacements
+                             will be applied. Default: None.
     :param replace_ids: iterable with ids of heavy atom with replaceable Hs or/and ids of H atoms to replace,
-                        it has lower priority over protected_ids (replace_ids available in protected_ids would be
-                        ignored). If ids of heavy atoms were supplied all attached hydrogens will be replaced.
-    :param protected_ids: iterable with ids of heavy atoms at which no H replacement should be made or ids of
-                          protected Hs.
+                        it has lower priority over `protected_ids` (replace_ids
+                        which are present in protected_ids would be protected). Default: None.
+    :param protected_ids: iterable with hydrogen atom ids or ids of heavy atoms at which hydrogens will not be replaced.
                           Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene
-                          ids of both carbons in meta-positions should be supplied)
-    :param min_freq: minimum occurrence of fragments in DB for replacement
-    :param return_rxn: control whether to additionally return rxn of a transformation or return only generated SMILES
-    :param return_rxn_freq: return the frequency of a transformation in the DB
-    :param return_mol return RDKit Mol object of a generated molecule
-    :param ncores: number of cores
-    :return: generator over new molecules. Each entry is a tuple of SMILES of a new molecule and
-             SMARTS of an applied transformation. Only entries with unique SMILES will be returned.
+                          ids of both carbons in meta-positions should be supplied).
+                          This argument has a higher priority over `replace_ids`. Default: None.
+    :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
+    :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
+    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
+    :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
+    :param ncores: number of cores. Default: 1.
+    :return: generator over new molecules. If no additional return arguments were called this would be a generator over
+             SMILES of new molecules. If any of additional return values were asked the function will return a list
+             of list where the first item is SMILES, then rxn string of a transformation (optional), frequency of
+             fragment occurrence in the DB (optional), RDKit Mol object (optional).
+             Only entries with distinct SMILES will be returned.
+
     """
 
     m = Chem.AddHs(mol)
@@ -493,37 +502,44 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
               replace_ids_1=None, replace_ids_2=None, protected_ids_1=None, protected_ids_2=None,
               min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1):
     """
-    Link two molecules by a linker from the database
+    Link two molecules by a linker from the database.
 
-    :param mol1: RDKit Mol object
-    :param mol2: RDKit Mol object
-    :param db_name: path to DB with replacements
-    :param radius: radius of context which will be considered for replacement
+    :param mol1: the first RDKit Mol object
+    :param mol2: the second RDKit Mol object
+    :param db_name: path to DB file with fragment replacements.
+    :param radius: radius of context which will be considered for replacement. Default: 3.
     :param dist: topological distance between two attachment points in the fragment which will link molecules.
-                 Can be a single integer or a tuple of lower and upper values.
+                 Can be a single integer or a tuple of lower and upper bound values.
     :param min_atoms: minimum number of heavy atoms in the fragment which will link molecules
     :param max_atoms: maximum number of heavy atoms in the fragment which will link molecules
-    :param max_replacements: maximum number of replacements to make. If the number of available replacements is more
-                             than the specified threshold only the specified number of randomly chosen replacements
-                             will be applied.
-    :param replace_ids_1, replace_ids_2: iterable with atom ids to replace, it has lower priority over protected_ids
-                                         (replace_ids available in protected_ids would be ignored).
-                                         If ids of heavy atoms were supplied the attached hydrogens will be replaced.
-    :param protected_ids_1, protected_ids_2: iterable with ids of heavy atoms at which no H replacement should be made
-                                             and/or ids of protected H.
-                                             Ids of all equivalent atoms should be supplied (e.g. to protect
-                                             meta-position in toluene ids of both carbons in meta-positions should
-                                             be supplied)
-    :param min_freq: minimum occurrence of fragments in DB for replacement
-    :param return_rxn: control whether to additionally return rxn of a transformation or return only generated SMILES
-    :param return_rxn_freq: return the frequency of a transformation in the DB
-    :param return_mol return RDKit Mol object of a generated molecule
-    :param ncores: number of cores
-    :return: generator over new molecules. Each entry is a list. The first item is SMILES. If return_rxn = True
-             the next items is SMARTS of a transformation. If return_rxn_freq = True the next item is frequency of
-             this transformation in the DB (will only added if return_rxn = True). The next item is RDKit Mol
-             if return_mol == True.
+    :param max_replacements: maximum number of replacements to make. If the number of replacements available in DB is
+                             greater than the specified value the specified number of randomly chosen replacements
+                             will be applied. Default: None.
+    :param replace_ids_1: iterable with ids of heavy atom of the first molecule with replaceable Hs or/and ids of H
+                          atoms to replace,
+                          it has lower priority over `protected_ids_1` (replace_ids
+                          which are present in protected_ids would be protected). Default: None.
+    :param replace_ids_2: iterable with ids of heavy atom of the second molecule with replaceable Hs or/and ids of H
+                          atoms to replace,
+                          it has lower priority over `protected_ids_2` (replace_ids
+                          which are present in protected_ids would be protected). Default: None.
+    :param protected_ids_1: iterable with ids of heavy atoms of the first molecule at which no H replacement should
+                            be made and/or ids of protected hydrogens.
+                            This argument has a higher priority over `replace_ids_1`. Default: None.
+    :param protected_ids_2: iterable with ids of heavy atoms of the second molecule at which no H replacement should
+                            be made and/or ids of protected hydrogens.
+                            This argument has a higher priority over `replace_ids_2`. Default: None.
+    :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
+    :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
+    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
+    :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
+    :param ncores: number of cores. Default: 1.
+    :return: generator over new molecules. If no additional return arguments were called this would be a generator over
+             SMILES of new molecules. If any of additional return values were asked the function will return a list
+             of list where the first item is SMILES, then rxn string of a transformation (optional), frequency of
+             fragment occurrence in the DB (optional), RDKit Mol object (optional).
              Only entries with distinct SMILES will be returned.
+
     """
 
     def __get_protected_ids(m, replace_ids, protected_ids):
@@ -618,10 +634,12 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
 def mutate_mol2(*args, **kwargs):
     """
     Convenience function which can be used to process molecules in parallel using multiprocessing module.
-    Is calls mutate_mol which cannot be used directly in multiprocessing because it is a generator
+    It calls mutate_mol which cannot be used directly in multiprocessing because it is a generator
+
     :param args: positional arguments, the same as in mutate_mol function
     :param kwargs: keyword arguments, the same as in mutate_mol function
     :return: list with output molecules
+
     """
     return list(mutate_mol(*args, **kwargs))
 
@@ -629,10 +647,12 @@ def mutate_mol2(*args, **kwargs):
 def grow_mol2(*args, **kwargs):
     """
     Convenience function which can be used to process molecules in parallel using multiprocessing module.
-    Is calls grow_mol which cannot be used directly in multiprocessing because it is a generator
+    It calls grow_mol which cannot be used directly in multiprocessing because it is a generator
+
     :param args: positional arguments, the same as in grow_mol function
     :param kwargs: keyword arguments, the same as in grow_mol function
     :return: list with output molecules
+
     """
     return list(grow_mol(*args, **kwargs))
 
@@ -640,9 +660,11 @@ def grow_mol2(*args, **kwargs):
 def link_mols2(*args, **kwargs):
     """
     Convenience function which can be used to process molecules in parallel using multiprocessing module.
-    Is calls link_mols which cannot be used directly in multiprocessing because it is a generator
+    It calls link_mols which cannot be used directly in multiprocessing because it is a generator
+
     :param args: positional arguments, the same as in link_mols function
     :param kwargs: keyword arguments, the same as in link_mols function
     :return: list with output molecules
+
     """
     return list(link_mols(*args, **kwargs))

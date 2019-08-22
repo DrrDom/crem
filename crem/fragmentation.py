@@ -60,8 +60,7 @@ def main(input_fname, output_fname, ncpu, verbose):
     p.close()
 
 
-if __name__ == '__main__':
-
+def entry_point():
     parser = argparse.ArgumentParser(description='Fragment input compounds by cutting bonds matching bond SMARTS.')
     parser.add_argument('-i', '--input', metavar='input.smi', required=True,
                         help='input SMILES with optional comma-separated ID).')
@@ -83,3 +82,7 @@ if __name__ == '__main__':
          output_fname=output_fname,
          ncpu=ncpu,
          verbose=verbose)
+
+
+if __name__ == '__main__':
+    entry_point()

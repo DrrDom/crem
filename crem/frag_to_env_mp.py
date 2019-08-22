@@ -7,7 +7,7 @@ from itertools import permutations
 from multiprocessing import Pool, cpu_count
 from rdkit import Chem
 
-from mol_context import get_std_context_core_permutations
+from .mol_context import get_std_context_core_permutations
 
 
 def process_line(line):
@@ -16,7 +16,7 @@ def process_line(line):
     output = []
     smi, id, core, context = line.strip().split(',')
 
-    if (not core and not context) or (keep_mols_set and id not in keep_mols_set):
+    if (not core and not context) or (_keep_mols and id not in _keep_mols):
         return output
     else:
         # one split
@@ -28,11 +28,11 @@ def process_line(line):
                         continue
                     mm = Chem.MolFromSmiles(core, sanitize=False)
                     num_heavy_atoms = mm.GetNumHeavyAtoms() if mm else float('inf')
-                    if num_heavy_atoms <= max_heavy_atoms:
-                        env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
+                    if num_heavy_atoms <= _max_heavy_atoms:
+                        env, cores = get_std_context_core_permutations(context, core, _radius, _keep_stereo)
                         if env and cores:
                             # for 1 cut cores will always contain 1 item
-                            if not store_comp_id:
+                            if not _store_comp_id:
                                 output.append((env, cores[0], num_heavy_atoms))
                             else:
                                 output.append((env, cores[0], num_heavy_atoms, id))
@@ -43,20 +43,28 @@ def process_line(line):
         else:
             mm = Chem.MolFromSmiles(core, sanitize=False)
             num_heavy_atoms = mm.GetNumHeavyAtoms() if mm else float('inf')
-            if num_heavy_atoms <= max_heavy_atoms:
-                env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
+            if num_heavy_atoms <= _max_heavy_atoms:
+                env, cores = get_std_context_core_permutations(context, core, _radius, _keep_stereo)
                 if env and cores:
                     for c in cores:
-                        if not store_comp_id:
+                        if not _store_comp_id:
                             output.append((env, c, num_heavy_atoms))
                         else:
                             output.append((env, c, num_heavy_atoms, id))
         return output
 
 
-def init(keep_mols):
-    global keep_mols_set
-    keep_mols_set = set([line.strip() for line in open(keep_mols).readlines()]) if keep_mols else set()
+def init(keep_mols, radius, keep_stereo, max_heavy_atoms, store_comp_id):
+    global _keep_mols
+    global _radius
+    global _keep_stereo
+    global _max_heavy_atoms
+    global _store_comp_id
+    _keep_mols = set([line.strip() for line in open(keep_mols).readlines()]) if keep_mols else set()
+    _radius = radius
+    _keep_stereo = keep_stereo
+    _max_heavy_atoms = max_heavy_atoms
+    _store_comp_id = store_comp_id
 
 
 def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_atoms, ncpu, store_comp_id, verbose):
@@ -64,7 +72,7 @@ def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_at
     # radius and remove_stereo are supplied to process_context_core via global environment (ugly but working solution)
 
     ncpu = min(cpu_count(), max(ncpu, 1))
-    p = Pool(ncpu, initializer=init, initargs=(keep_mols,))
+    p = Pool(ncpu, initializer=init, initargs=(keep_mols, radius, keep_stereo, max_heavy_atoms, store_comp_id))
 
     try:
         with open(output_fname, 'wt') as out:
@@ -85,8 +93,7 @@ def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_at
         p.close()
 
 
-if __name__ == '__main__':
-
+def entry_point():
     parser = argparse.ArgumentParser(description='Create text file for fragment replacement from fragmented molecules '
                                                  'obtained with fragmentation.py. '
                                                  'The output may contain duplicated lines which should be filtered out '
@@ -132,3 +139,7 @@ if __name__ == '__main__':
          ncpu=ncpu,
          store_comp_id=store_comp_id,
          verbose=verbose)
+
+
+if __name__ == '__main__':
+    entry_point()

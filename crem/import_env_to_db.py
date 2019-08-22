@@ -4,7 +4,7 @@ import sys
 import re
 from multiprocessing import Pool, cpu_count
 from rdkit import Chem
-from mol_context import combine_core_env_to_rxn_smarts
+from .mol_context import combine_core_env_to_rxn_smarts
 
 __author__ = 'pavel'
 
@@ -105,8 +105,7 @@ def main(input_fname, output_fname, radius, counts, ncpu, verbose):
         pool.close()
 
 
-if __name__ == '__main__':
-
+def entry_point():
     parser = argparse.ArgumentParser(description='Create SQLite DB from a text file containing env_smi, core_smi, '
                                                  'core_atom_num and core_sma.')
     parser.add_argument('-i', '--input', metavar='env_frags.txt', required=True,
@@ -139,3 +138,7 @@ if __name__ == '__main__':
          counts=counts,
          ncpu=ncpu,
          verbose=verbose)
+
+
+if __name__ == '__main__':
+    entry_point()

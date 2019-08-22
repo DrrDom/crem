@@ -2,7 +2,7 @@ import re
 from itertools import product, permutations, combinations
 from collections import defaultdict
 from rdkit import Chem
-from functions import mol_to_smarts
+from .functions import mol_to_smarts
 
 __author__ = 'pavel'
 

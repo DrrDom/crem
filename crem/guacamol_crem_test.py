@@ -27,7 +27,7 @@ from joblib import delayed
 from rdkit import Chem
 from rdkit.Chem.rdchem import Mol
 
-from crem import mutate_mol2
+from .crem import mutate_mol2
 
 
 def make_mating_pool(population_mol: List[Mol], population_scores, offspring_size: int):
@@ -248,11 +248,11 @@ class CREM_Generator(GoalDirectedGenerator):
         return best['smi'][:number_molecules]
 
 
-def main():
+def entry_point():
     parser = argparse.ArgumentParser()
     parser.add_argument('--smiles_file', type=str)
+    parser.add_argument('--db_fname', type=str)
     parser.add_argument('--selection_size', type=int, default=10)
-    parser.add_argument('--db_fname', type=str, default=5)
     parser.add_argument('--radius', type=int, default=3)
     parser.add_argument('--replacements', type=int, default=1000)
     parser.add_argument('--min_size', type=int, default=0)
@@ -297,4 +297,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    entry_point()

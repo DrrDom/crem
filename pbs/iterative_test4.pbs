@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-#PBS -l select=1:ncpus=1
-#####PBS -k oe
-# PBS -o /home/pavlop/python
-# PBS -e /home/pavlop/python
-python3 /home/pavlop/python/crem/pbs/iterative_test4.py

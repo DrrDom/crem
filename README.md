@@ -162,6 +162,10 @@ res = list(p.imap(partial(mutate_mol2, db_name='replacements.db', max_size=1), i
 
 `res` would be a list of lists with SMILES of generated molecules
 
+## Precompiled fragment databases
+
+The links to download precompiled fragment databases will be published at - http://www.qsar4u.com/pages/crem.php
+
 ## Bechmarks
 
 ##### Guacamol

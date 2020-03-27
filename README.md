@@ -13,6 +13,15 @@ The main idea behind is similar to matched molecular pairs considering context t
 6) Replacements with fragments occurred in a fragment database with certain minimal frequency  
 7) Make randomly chosen replacements up to the specified number  
 
+**Limitations and known issues**
+1) New ring systems cannot be constructed from fragments, thus representativeness of ring systems in generated structures depends on a used fragment database. We are working on that issue.
+2) Very large molecules will not be processed by CReM. If a molecule has more than 30 non-single single bonds it will not be MUTATED. If a molecule has more than 100 hydrogen atoms it will not be processed by GROW and LINK. If you need to process such large structures please contact me.
+3) Canonicalisation of contexts depends on RDKit SMILES representation. Thus, changing in RDKit SMILES representation may affect fragment databases and make impossible to use a database prepared with previous RDKit version from code running under later RDKit versions.  
+
+## Documentation
+
+https://crem.readthedocs.io/en/latest/
+
 ## Installation
 
 Several command line utilities will be installed to create fragment databases and `crem` module will become available in Python imports to generate structures.
@@ -41,6 +50,8 @@ pip uninstall crem
 
 ## Generation of a fragment database
 
+This step is required if you want to generate a custom fragment database. You can download precompiled databases obtained by fragmentation of the whole ChEMBL by links provided on this page - http://www.qsar4u.com/pages/crem.php.  
+ 
 Fragmentation of input structures:
 ```text
 fragmentation -i input.smi -o frags.txt -c 32 -v
@@ -73,7 +84,7 @@ from rdkit import Chem
 
 Create a molecute and **mutate** it. Only one heavy atom will be substituted. Default radius is 3.
 ```python
-m = Chem.MolFromSmiles('c1cc(OC)ccc1C')  # toluene
+m = Chem.MolFromSmiles('c1cc(OC)ccc1C')  # methoxytoluene
 mols = list(mutate_mol(m, db_name='replacements.db', max_size=1))
 ```
 output example
@@ -162,10 +173,6 @@ res = list(p.imap(partial(mutate_mol2, db_name='replacements.db', max_size=1), i
 
 `res` would be a list of lists with SMILES of generated molecules
 
-## Precompiled fragment databases
-
-The links to download precompiled fragment databases will be published at - http://www.qsar4u.com/pages/crem.php
-
 ## Bechmarks
 
 ##### Guacamol
@@ -193,10 +200,6 @@ The links to download precompiled fragment databases will be published at - http
 |Deco Hop|0.996|0.970|**1.000**|0.590|**1.000**
 |Scaffold Hop|0.998|0.885|**1.000**|0.478|**1.000**
 |total score|17.341|14.398|17.983|9.011|17.919
-
-## Documentation
-
-https://crem.readthedocs.io/en/latest/
 
 ## License
 BSD-3

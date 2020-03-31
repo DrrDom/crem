@@ -214,8 +214,8 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
                     yield smi, p, rxn_sma
 
 
-def __get_replacements(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0):
-    sql = """SELECT core_smi, core_sma, freq
+def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0):
+    sql = """SELECT rowid
              FROM radius%i
              WHERE env = ? AND 
                    freq >= ? AND
@@ -225,34 +225,20 @@ def __get_replacements(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq
     elif isinstance(dist, tuple) and len(dist) == 2:
         sql += " AND dist2 BETWEEN %i AND %i" % dist
     db_cur.execute(sql, (env, min_freq, min_atoms, max_atoms))
+    return set(i[0] for i in db_cur.fetchall())
+
+
+def __get_replacements(db_cur, radius, row_ids):
+    sql = f"""SELECT rowid, core_smi, core_sma, freq
+             FROM radius{radius}
+             WHERE rowid IN ({','.join(map(str, row_ids))})"""
+    db_cur.execute(sql)
     return db_cur.fetchall()
 
 
 def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_size=8, min_rel_size=0, max_rel_size=1,
                        min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
                        protected_ids_1=None, protected_ids_2=None, min_freq=10):
-
-    def func():
-        for env, core, *ids in f:  # if link = True ids is two tuples, if link = False ids is a single tuple
-
-            num_heavy_atoms = Chem.MolFromSmiles(core).GetNumHeavyAtoms()
-            hac_ratio = num_heavy_atoms / mol_hac
-
-            if (min_size <= num_heavy_atoms <= max_size and min_rel_size <= hac_ratio <= max_rel_size) \
-                    or (replace_cycles and cycle_pattern.search(core)):
-
-                frag_sma = combine_core_env_to_rxn_smarts(core, env)
-
-                min_atoms = num_heavy_atoms + min_inc
-                max_atoms = num_heavy_atoms + max_inc
-
-                rep = __get_replacements(cur, env, dist, min_atoms, max_atoms, radius, min_freq)
-                for core_smi, core_sma, freq in rep:
-                    if core_smi != core:
-                        if link:
-                            yield frag_sma, core_sma, freq, ids[0], ids[1]
-                        else:
-                            yield frag_sma, core_sma, freq, ids[0]
 
     link = False
     if not isinstance(mol1, Chem.Mol):
@@ -268,19 +254,64 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
         mol = mol1
         f = __fragment_mol(mol, radius, protected_ids=protected_ids_1)
 
-    mol_hac = mol.GetNumHeavyAtoms()
+    if f:
+        mol_hac = mol.GetNumHeavyAtoms()
 
-    con = sqlite3.connect(db_name)
-    cur = con.cursor()
+        con = sqlite3.connect(db_name)
+        cur = con.cursor()
 
-    if max_replacements is not None:
-        res = list(func())
-        random.shuffle(res)
-        for items in res[:max_replacements]:
-            yield items
-    else:
-        for items in func():
-            yield items
+        replacements = dict()  # to store unused   row_id: (frag_sma, core, ids)
+        returned_values = 0
+        preliminary_return = 0
+        if max_replacements is not None:
+            random.shuffle(f)
+            preliminary_return = max_replacements // len(f)
+            if preliminary_return == 0:
+                preliminary_return = 1
+
+        for env, core, *ids in f:  # if link = True ids is two tuples, if link = False ids is a single tuple
+
+            num_heavy_atoms = Chem.MolFromSmiles(core).GetNumHeavyAtoms()
+            hac_ratio = num_heavy_atoms / mol_hac
+
+            if (min_size <= num_heavy_atoms <= max_size and min_rel_size <= hac_ratio <= max_rel_size) \
+                    or (replace_cycles and cycle_pattern.search(core)):
+
+                frag_sma = combine_core_env_to_rxn_smarts(core, env)
+
+                min_atoms = num_heavy_atoms + min_inc
+                max_atoms = num_heavy_atoms + max_inc
+
+                row_ids = __get_replacements_rowids(cur, env, dist, min_atoms, max_atoms, radius, min_freq)
+
+                if max_replacements is None:
+                    res = __get_replacements(cur, radius, row_ids)
+                else:
+                    selected_row_ids = random.sample(row_ids, min(len(row_ids), preliminary_return))
+                    row_ids.difference_update(selected_row_ids)
+                    replacements.update({i: (frag_sma, core, ids) for i in row_ids})
+                    res = __get_replacements(cur, radius, selected_row_ids)
+
+                for row_id, core_smi, core_sma, freq in res:
+                    if core_smi != core:
+                        if link:
+                            yield frag_sma, core_sma, freq, ids[0], ids[1]
+                        else:
+                            yield frag_sma, core_sma, freq, ids[0]
+                        if max_replacements is not None:
+                            returned_values += 1
+                            if returned_values >= max_replacements:
+                                raise StopIteration
+
+        if max_replacements is not None:
+            selected_row_ids = random.sample(replacements.keys(), min(len(replacements), max_replacements - returned_values))
+            res = __get_replacements(cur, radius, selected_row_ids)
+            for row_id, core_smi, core_sma, freq in res:
+                if core_smi != replacements[row_id][1]:
+                    if link:
+                        yield replacements[row_id][0], core_sma, freq, replacements[row_id][2][0], replacements[row_id][2][1]
+                    else:
+                        yield replacements[row_id][0], core_sma, freq, replacements[row_id][2][0]
 
 
 def __frag_replace_mp(items):

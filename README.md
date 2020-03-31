@@ -51,6 +51,11 @@ pip uninstall crem
 ## Generation of a fragment database
 
 This step is required if you want to generate a custom fragment database. You can download precompiled databases obtained by fragmentation of the whole ChEMBL by links provided on this page - http://www.qsar4u.com/pages/crem.php.  
+
+For convenience there is the bash script crem_create_frag_db.sh which includes all steps below. It takes three positional arguments: input file with SMILES, output directory where intermediate files and a final database will be stored and number of CPUs to use (this is optional, default value is 1).
+```text
+crem_create_frag_db.sh input.smi fragdb_dir 32
+```
  
 Fragmentation of input structures:
 ```text

@@ -1,0 +1,5 @@
+0.0.2
+
+- faster selection of random replacements
+- added bash script crem_create_frag_db.sh to generate fragment database in one step
+- fixed the RDKit bug which prevents fragmentation with three attachment points

@@ -18,6 +18,8 @@ def fragment_mol(smi, smi_id=''):
     else:
         # heavy atoms
         frags = rdMMPA.FragmentMol(mol, pattern="[!#1]!@!=!#[!#1]", maxCuts=4, resultsAsMols=False, maxCutBonds=30)
+        frags += rdMMPA.FragmentMol(mol, pattern="[!#1]!@!=!#[!#1]", maxCuts=3, resultsAsMols=False, maxCutBonds=30)
+        frags = set(frags)
         for core, chains in frags:
             output = '%s,%s,%s,%s\n' % (smi, smi_id, core, chains)
             outlines.add(output)

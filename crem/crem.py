@@ -50,8 +50,10 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
 
     # heavy atoms
     frags = rdMMPA.FragmentMol(mol, pattern="[!#1]!@!=!#[!#1]", maxCuts=4, resultsAsMols=True, maxCutBonds=30)
+    frags += rdMMPA.FragmentMol(mol, pattern="[!#1]!@!=!#[!#1]", maxCuts=3, resultsAsMols=True, maxCutBonds=30)
     # hydrogen atoms
     frags += rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
+    frags = set(frags)
 
     for i, (core, chains) in enumerate(frags):
         if core is None:  # single cut

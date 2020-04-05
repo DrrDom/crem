@@ -99,7 +99,7 @@ class CREM_Generator(GoalDirectedGenerator):
                                              protected_ids=None, min_freq=0,
                                              return_rxn=False, return_rxn_freq=False,
                                              ncores=1) for mol in mols)
-        res = set(m[0] for sublist in res for m in sublist)
+        res = set(m for sublist in res for m in sublist)
         return list(res)
 
     def set_params(self, score):

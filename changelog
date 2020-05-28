@@ -1,4 +1,8 @@
-0.0.2
+0.2.1
+
+- fix link operation to return all possible links irrespectively to the order of linked molecules
+
+0.2
 
 - faster selection of random replacements
 - added bash script crem_create_frag_db.sh to generate fragment database in one step

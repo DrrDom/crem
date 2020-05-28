@@ -96,11 +96,14 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
         # frags is a list of tuples [(None, frag_mol_1), (None, frag_mol_2), ...]
         ls = []
         for _, chains in frags:
+            ids = []
             for atom in chains.GetAtoms():
                 if atom.GetAtomicNum() == 0:
                     for d in atom.GetNeighbors():
                         if d.GetAtomicNum() == 1:
                             ids = [d.GetIntProp('Index')]
+                if ids:
+                    break   # only one such occurrence can be
             a, b = Chem.MolToSmiles(chains, isomericSmiles=keep_stereo).split('.')
             if a == '[H][*:1]':
                 ls.append([b, ids])
@@ -197,23 +200,25 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
         set_protected_atoms(mol2, frag_ids_2, radius)
 
     if link:
-        reactants = [mol1, mol2]
+        reactants = [[mol1, mol2], [mol2, mol1]]   # separate parts in SMARTS match only the corresponding molecule
+                                                   # in C.O C will match only the first reactnt and O - only the second
     else:
-        reactants = [mol1]
-    ps = rxn.RunReactants(reactants)
+        reactants = [[mol1]]
 
     products = set()
-    for y in ps:
-        for p in y:
-            e = Chem.SanitizeMol(p, catchErrors=True)
-            if e:
-                sys.stderr.write("Molecule %s caused sanitization error %i" % (Chem.MolToSmiles(p, isomericSmiles=True), e))
-                sys.stderr.flush()
-            else:
-                smi = Chem.MolToSmiles(Chem.RemoveHs(p), isomericSmiles=True)
-                if smi not in products:
-                    products.add(smi)
-                    yield smi, p, rxn_sma
+    for r in reactants:
+        ps = rxn.RunReactants(r)
+        for y in ps:
+            for p in y:
+                e = Chem.SanitizeMol(p, catchErrors=True)
+                if e:
+                    sys.stderr.write("Molecule %s caused sanitization error %i" % (Chem.MolToSmiles(p, isomericSmiles=True), e))
+                    sys.stderr.flush()
+                else:
+                    smi = Chem.MolToSmiles(Chem.RemoveHs(p), isomericSmiles=True)
+                    if smi not in products:
+                        products.add(smi)
+                        yield smi, p, rxn_sma
 
 
 def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0):

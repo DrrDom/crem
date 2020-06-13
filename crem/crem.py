@@ -303,7 +303,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                         if max_replacements is not None:
                             returned_values += 1
                             if returned_values >= max_replacements:
-                                raise StopIteration
+                                return
 
         if max_replacements is not None:
             selected_row_ids = random.sample(replacements.keys(), min(len(replacements), max_replacements - returned_values))

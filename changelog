@@ -1,3 +1,8 @@
+0.2.2
+
+- added jupyter notebook with examples
+- fix mutate_mol generator for Python 3.7 and later
+
 0.2.1
 
 - fix link operation to return all possible links irrespectively to the order of linked molecules

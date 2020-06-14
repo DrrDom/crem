@@ -15,7 +15,7 @@ The main idea behind is similar to matched molecular pairs considering context t
 
 **Limitations and known issues**
 1) New ring systems cannot be constructed from fragments, thus representativeness of ring systems in generated structures depends on a used fragment database. We are working on that issue.
-2) Very large molecules will not be processed by CReM. If a molecule has more than 30 non-ring single bonds it will not be MUTATED. If a molecule has more than 100 hydrogen atoms it will not be processed by GROW and LINK. If you need to process such large structures please contact me.
+2) Very large molecules will not be processed by CReM. If a molecule has more than 30 non-ring single bonds it will not be MUTATED. If a molecule has more than 100 hydrogen atoms it will not be processed by GROW and LINK.
 3) Canonicalisation of contexts depends on RDKit SMILES representation. Thus, changing in RDKit SMILES representation may affect fragment databases and make impossible to use a database prepared with previous RDKit version from code running under later RDKit versions.  
 
 ## Documentation

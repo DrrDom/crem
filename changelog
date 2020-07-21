@@ -1,3 +1,7 @@
+0.2.3
+
+- fixed leakage of resources due to not closed pool in generators
+
 0.2.2
 
 - added jupyter notebook with examples

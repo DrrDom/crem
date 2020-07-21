@@ -465,6 +465,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                             yield res[0]
                         else:
                             yield res
+        p.close()
 
 
 def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, replace_ids=None,
@@ -667,6 +668,7 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                             yield res[0]
                         else:
                             yield res
+        p.close()
 
 
 def mutate_mol2(*args, **kwargs):

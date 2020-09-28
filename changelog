@@ -1,3 +1,7 @@
+0.2.4
+
+- add support of custom parameters which can be used for fragment selection (**kwargs in mutate_mol, grow_mol, link_mols). A user can add custom parameters (e.g. pharmacophore features count, TPSA, etc) for each fragment in additional columns of a database and use these columns for fragment pre-filtering.
+
 0.2.3
 
 - fixed leakage of resources due to not closed pool in generators

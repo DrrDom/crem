@@ -12,6 +12,7 @@ import random
 from itertools import product
 
 cycle_pattern = re.compile("[a-zA-Z\]][1-9]+")
+Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 
 
 def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_ids=None):

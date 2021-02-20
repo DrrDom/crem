@@ -42,7 +42,10 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
     if protected_ids:
         return_ids = True
 
-    output = []
+    # due to the bug https://github.com/rdkit/rdkit/issues/3040
+    # outputs of rdMMPA.FragmentMol calls will contain duplicated fragments
+    # their are removed by using this set
+    output = set()
 
     # set original atom idx to keep them in fragmented mol
     if return_ids:
@@ -54,7 +57,6 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
     frags += rdMMPA.FragmentMol(mol, pattern="[!#1]!@!=!#[!#1]", maxCuts=3, resultsAsMols=True, maxCutBonds=30)
     # hydrogen atoms
     frags += rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
-    frags = set(frags)
 
     for i, (core, chains) in enumerate(frags):
         if core is None:  # single cut
@@ -63,20 +65,20 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
             ids_1 = get_atom_prop(components[1]) if return_ids else tuple()
             if Chem.MolToSmiles(components[0]) != '[H][*:1]':  # context cannot be H
                 env, frag = get_canon_context_core(components[0], components[1], radius, keep_stereo)
-                output.append((env, frag, ids_1))
+                output.add((env, frag, ids_1))
             if Chem.MolToSmiles(components[1]) != '[H][*:1]':  # context cannot be H
                 env, frag = get_canon_context_core(components[1], components[0], radius, keep_stereo)
-                output.append((env, frag, ids_0))
+                output.add((env, frag, ids_0))
         else:   # multiple cuts
             # there are no checks for H needed because H can be present only in single cuts
             env, frag = get_canon_context_core(chains, core, radius, keep_stereo)
-            output.append((env, frag, get_atom_prop(core) if return_ids else tuple()))
+            output.add((env, frag, get_atom_prop(core) if return_ids else tuple()))
 
     if protected_ids:
         protected_ids = set(protected_ids)
         output = [item for item in output if protected_ids.isdisjoint(item[2])]
 
-    return output  # list of tuples (env smiles, core smiles, list of atom ids)
+    return list(output)  # list of tuples (env smiles, core smiles, list of atom ids)
 
 
 def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1=None, protected_ids_2=None,

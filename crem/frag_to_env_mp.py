@@ -2,12 +2,23 @@ __author__ = 'pavel'
 
 import argparse
 import sys
+import logging
 
 from itertools import permutations
 from multiprocessing import Pool, cpu_count
 from rdkit import Chem
+import subprocess
 
 from .mol_context import get_std_context_core_permutations
+
+logger = logging.getLogger(__name__)
+
+def wccount(filename):
+    out = subprocess.Popen(['wc', '-l', filename],
+                         stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT,
+                         ).communicate()[0]
+    return int(out.partition(b' ')[0])
 
 
 def process_line(line):
@@ -69,10 +80,16 @@ def init(keep_mols, radius, keep_stereo, max_heavy_atoms, store_comp_id):
 
 def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_atoms, ncpu, store_comp_id, verbose):
 
+    logger.info(f'Starting frag to env, with input {input_fname}')
+
     # radius and remove_stereo are supplied to process_context_core via global environment (ugly but working solution)
 
     ncpu = min(cpu_count(), max(ncpu, 1))
     p = Pool(ncpu, initializer=init, initargs=(keep_mols, radius, keep_stereo, max_heavy_atoms, store_comp_id))
+
+    # count lines in input_fname :
+    n_lines = wccount(input_fname)
+    logger.info(f'Input file contains {n_lines} lines')
 
     try:
         with open(output_fname, 'wt') as out:
@@ -91,6 +108,8 @@ def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_at
 
     finally:
         p.close()
+
+    logger.info(f'Env succeeded, fragments with env wrote to {output_fname}')
 
 
 def entry_point():

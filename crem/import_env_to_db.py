@@ -4,9 +4,13 @@ import sys
 import re
 from multiprocessing import Pool, cpu_count
 from rdkit import Chem
+import logging
 from .mol_context import combine_core_env_to_rxn_smarts
+from .frag_to_env_mp import wccount
 
 __author__ = 'pavel'
+
+logger = logging.getLogger(__name__)
 
 
 def __calc(env, core):
@@ -42,6 +46,11 @@ def main(input_fname, output_fname, radius, counts, ncpu, verbose):
     pool = Pool(min(ncpu, cpu_count())) if ncpu > 1 else None
 
     table_name = 'radius%i' % radius
+
+    logger.info(f'Starting env to db, with input {input_fname}')
+
+    n_lines = wccount(input_fname)
+    logger.info(f'Input file contains {n_lines} lines')
 
     with sqlite3.connect(output_fname) as conn:
         cur = conn.cursor()
@@ -103,6 +112,8 @@ def main(input_fname, output_fname, radius, counts, ncpu, verbose):
 
     if pool is not None:
         pool.close()
+
+    logger.info(f'Env to db succeeded, db table {table_name} wrote to {output_fname}')
 
 
 def entry_point():

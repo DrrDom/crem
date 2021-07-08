@@ -2,12 +2,15 @@ __author__ = 'pavel'
 
 import argparse
 import sys
+import logging
 
 from itertools import permutations
 from multiprocessing import Pool, cpu_count
 from rdkit import Chem
 
 from .mol_context import get_std_context_core_permutations
+
+logger = logging.getLogger(__name__)
 
 
 def process_line(line):
@@ -69,6 +72,8 @@ def init(keep_mols, radius, keep_stereo, max_heavy_atoms, store_comp_id):
 
 def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_atoms, ncpu, store_comp_id, verbose):
 
+    logger.info(f'Starting frag to env, with input {input_fname}')
+
     # radius and remove_stereo are supplied to process_context_core via global environment (ugly but working solution)
 
     ncpu = min(cpu_count(), max(ncpu, 1))
@@ -91,6 +96,8 @@ def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_at
 
     finally:
         p.close()
+
+    logger.info(f'Env succeeded, fragments with env wrote to {output_fname}')
 
 
 def entry_point():

@@ -6,8 +6,20 @@ from multiprocessing import Pool, cpu_count
 from rdkit import Chem
 from rdkit.Chem import rdMMPA
 
+import logging
+logger = logging.getLogger(__name__)
 
-def fragment_mol(smi, smi_id=''):
+
+MAX_CUT_BONDS = 12
+MAX_CUTS = 10
+BOND_PATTERN = '[!#1!D1]!@!=!#[!#1!D1]'
+
+def fragment_mol(smi: str,
+                 smi_id: str ='',
+                 max_cuts = MAX_CUTS,
+                 max_cut_bonds = MAX_CUT_BONDS,
+                 bond_pattern = BOND_PATTERN,
+                 split_hs: bool = False):
 
     mol = Chem.MolFromSmiles(smi)
 
@@ -16,25 +28,35 @@ def fragment_mol(smi, smi_id=''):
     if mol is None:
         sys.stderr.write("Can't generate mol for: %s\n" % smi)
     else:
-        # heavy atoms
-        frags = rdMMPA.FragmentMol(mol, pattern="[!#1]!@!=!#[!#1]", maxCuts=4, resultsAsMols=False, maxCutBonds=30)
-        frags += rdMMPA.FragmentMol(mol, pattern="[!#1]!@!=!#[!#1]", maxCuts=3, resultsAsMols=False, maxCutBonds=30)
+        # fragment with implicit Hs
+        frags = rdMMPA.FragmentMol(mol,
+                                   pattern= bond_pattern,
+                                   maxCuts=max_cuts,
+                                   resultsAsMols=False,
+                                   maxCutBonds=max_cut_bonds)
+
         frags = set(frags)
         for core, chains in frags:
             output = '%s,%s,%s,%s\n' % (smi, smi_id, core, chains)
             outlines.add(output)
-        # hydrogen splitting
-        mol = Chem.AddHs(mol)
-        n = mol.GetNumAtoms() - mol.GetNumHeavyAtoms()
-        if n < 60:
-            frags = rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=False, maxCutBonds=100)
-            for core, chains in frags:
-                output = '%s,%s,%s,%s\n' % (smi, smi_id, core, chains)
-                outlines.add(output)
+
+        if split_hs:
+            # hydrogen splitting in original code, we ignore this
+            mol = Chem.AddHs(mol)
+            n_hydrogens = mol.GetNumAtoms() - mol.GetNumHeavyAtoms()
+            if n_hydrogens < 60:
+                frags = rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=False, maxCutBonds=100)
+                for core, chains in frags:
+                    output = '%s,%s,%s,%s\n' % (smi, smi_id, core, chains)
+                    outlines.add(output)
     return outlines
 
 
 def process_line(line):
+    """
+    Processes a .smi file line with SMILES,name or SMILES only, returns the list of fragment strings
+    obtained with the fragment_mol function
+    """
     tmp = line.strip().split(',')
     if len(tmp) == 1:
         return fragment_mol(tmp[0])
@@ -42,9 +64,15 @@ def process_line(line):
         return fragment_mol(tmp[0], tmp[1])
 
 
-def main(input_fname, output_fname, ncpu, verbose):
+def main(input_fname, output_fname, ncpu = -1, verbose: bool = True):
+    """
+    Takes as input a .smi file and a path to create the .db with fragments,
+    multiprocesses the fragmentation of all SMILES and inserts new fragments in db.
+    """
+    logger.info(f'Starting fragmentation, with input {input_fname}')
 
-    ncpu = min(cpu_count(), max(ncpu, 1))
+    if ncpu == -1 :
+        ncpu = cpu_count()
     p = Pool(ncpu)
 
     with open(output_fname, 'wt') as out:
@@ -60,6 +88,8 @@ def main(input_fname, output_fname, ncpu, verbose):
                     sys.stderr.flush()
 
     p.close()
+
+    logger.info(f'Fragmentation succeeded, fragments wrote to {output_fname}')
 
 
 def entry_point():

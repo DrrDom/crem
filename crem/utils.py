@@ -6,7 +6,7 @@ import joblib
 from collections import OrderedDict
 
 
-def get_child_added_atom_ids(child_mol):
+def __get_child_added_atom_ids(child_mol):
     '''
     # After RDKit reaction procedure there is a field <react_atom_idx> with initial parent atom idx in a child mol
     '''
@@ -17,7 +17,7 @@ def get_child_added_atom_ids(child_mol):
     return sorted(added_mol_ids)
 
 
-def get_child_protected_atom_ids(mol, protected_parent_ids):
+def __get_child_protected_atom_ids(mol, protected_parent_ids):
     '''
 
     :param mol:
@@ -32,16 +32,15 @@ def get_child_protected_atom_ids(mol, protected_parent_ids):
             protected_mol_ids.append(a.GetIdx())
     return sorted(protected_mol_ids)
 
-def map_get_child_protected_atom_ids(args):
-    return get_child_protected_atom_ids(*args)
 
-def mol_with_atom_index(mol):
+def __mol_with_atom_index(mol):
     atoms = mol.GetNumAtoms()
     for idx in range(atoms):
         mol.GetAtomWithIdx(idx).SetProp('molAtomMapNumber', str(mol.GetAtomWithIdx(idx).GetIdx()))
     return mol
 
-def main(mol, db_fname, num_iteration, mode='scaffold', radius=3, max_replacements=None,
+
+def enumerate_compounds(mol, db_fname, num_iteration, mode='scaffold', radius=3, max_replacements=None,
          min_freq=0, protected_ids=None, replase_ids=None, ncpu=1, protect_added_frag=False, **kwargs):
     '''
     :param mol:
@@ -112,8 +111,12 @@ def main(mol, db_fname, num_iteration, mode='scaffold', radius=3, max_replacemen
 
     pool = joblib.Parallel(n_jobs=ncpu)
 
-    #check if the statical arguments are in the kwargs dict
-    for kw in ['return_mol', 'return_rxn', 'return_rxn_freq', 'ncores', 'radius', 'max_replacements', 'min_freq']:
+    if mode not in ['scaffold', 'analogs']:
+        print('Wrong mode. Please choose one from the list - "analogs","scaffold"')
+        return None
+
+    # to check if the statical arguments are in the kwargs dict
+    for kw in ['return_mol', 'return_rxn', 'return_rxn_freq', 'ncores']:
         if kw in kwargs:
             kwargs.pop(kw)
 
@@ -121,10 +124,9 @@ def main(mol, db_fname, num_iteration, mode='scaffold', radius=3, max_replacemen
         protect_added_frag = True
 
     if protected_ids is None and replase_ids is not None:
-        protected_ids = set(a.GetIdx() for a in mol.GetAtoms()).difference(replase_ids)
+        protected_ids = list(set(a.GetIdx() for a in mol.GetAtoms()).difference(replase_ids))
 
-    protected_ids_list = [protected_ids]
-    start_mols = [mol]
+    start_mols = {mol: protected_ids}
     # to get results ordered by iterations
     generated_mols = OrderedDict()
     n = 0
@@ -136,29 +138,29 @@ def main(mol, db_fname, num_iteration, mode='scaffold', radius=3, max_replacemen
                                                  min_freq=min_freq, radius=radius, max_replacements = max_replacements,
                                                  return_mol=True, return_rxn=False, return_rxn_freq=False,
                                                  ncores=1 if len(start_mols)!= 1 else ncpu, **kwargs)
-                                      for m, prot_ids in itertools.zip_longest(start_mols, protected_ids_list))
+                                      for m, prot_ids in start_mols.items())
         if mode == 'analogs':
             new_mols = pool(joblib.delayed(mutate_mol2)(m, db_name=db_fname, protected_ids=prot_ids,
                                                  min_freq=0,  radius=radius, max_replacements = max_replacements,
                                                  return_mol=True, return_rxn=False, return_rxn_freq=False,
                                                  ncores=1 if len(start_mols)!= 1 else ncpu, **kwargs)
-                                      for m, prot_ids in itertools.zip_longest(start_mols, protected_ids_list))
+                                      for m, prot_ids in start_mols.items())
 
-        new_mols_dict = {items[0]:{'child': items[1], 'parent_protected_ids':parent_protected_ids} for childs, parent_protected_ids in zip(new_mols, protected_ids_list)
-                         for items in childs if childs} #smi:[mol_obj, parent_mol_obj}
-        if not new_mols_dict:
-            sys.stderr.write(f'Procedure is finished.\n{n+1} iterations were completed successfully.\nTotally {len(generated_mols)} new compounds were generated.\n')
-            return generated_mols
+        parent_protected_ids_list = start_mols.values()
+        start_mols = OrderedDict()
+        for childs, parent_protected_ids in zip(new_mols, parent_protected_ids_list):
+            for items in childs:
+                if items[0] not in generated_mols:
+                    protected_ids = __get_child_protected_atom_ids(items[1], parent_protected_ids)
+                    if protect_added_frag:
+                        protect_added_ids = __get_child_added_atom_ids(items[1])
+                        protected_ids = set(protected_ids + protect_added_ids)
 
-        # generated_mols.update({smi:items['child'] for smi, items in new_mols_dict.items()}) # smi: child_mol_object
-        generated_mols.update(new_mols_dict)
-        start_mols = [items['child'] for items in new_mols_dict.values()]
-        print(start_mols)
-        protected_ids_list = list(map(map_get_child_protected_atom_ids,
-                                      [(i['child'], i['parent_protected_ids']) for i in new_mols_dict.values()]))
-        if protect_added_frag:
-            protect_added_ids_list = list(map(get_child_added_atom_ids, [i['child'] for i in new_mols_dict.values()]))
-            protected_ids_list = [list(set(i+j)) for i,j in zip(protected_ids_list, protect_added_ids_list)]
+                        generated_mols[items[0]] = items[1]
+                        start_mols[items[1]] = protected_ids
+
+        if not start_mols:
+            break
 
     sys.stderr.write(f'Procedure is finished.\n{n+1} iterations were completed successfully.\nTotally {len(generated_mols)} new compounds were generated.\n')
     return generated_mols

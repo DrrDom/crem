@@ -1,9 +1,9 @@
-import itertools
 import sys
-
-from  .crem import grow_mol2, mutate_mol2
-import joblib
 from collections import OrderedDict
+
+import joblib
+
+from .crem import grow_mol2, mutate_mol2
 
 
 def __get_child_added_atom_ids(child_mol):
@@ -41,7 +41,7 @@ def __mol_with_atom_index(mol):
 
 
 def enumerate_compounds(mol, db_fname, num_iteration, mode='scaffold', radius=3, max_replacements=None,
-         min_freq=0, protected_ids=None, replase_ids=None, ncpu=1, protect_added_frag=False, **kwargs):
+                        min_freq=0, protected_ids=None, replase_ids=None, ncpu=1, protect_added_frag=False, **kwargs):
     '''
     :param mol:
     :param db_fname: path to DB file with fragment replacements.
@@ -135,16 +135,17 @@ def enumerate_compounds(mol, db_fname, num_iteration, mode='scaffold', radius=3,
         new_mols = ()
         if mode == 'scaffold':
             new_mols = pool(joblib.delayed(grow_mol2)(m, db_name=db_fname, protected_ids=prot_ids,
-                                                 min_freq=min_freq, radius=radius, max_replacements = max_replacements,
-                                                 return_mol=True, return_rxn=False, return_rxn_freq=False,
-                                                 ncores=1 if len(start_mols)!= 1 else ncpu, **kwargs)
-                                      for m, prot_ids in start_mols.items())
+                                                      min_freq=min_freq, radius=radius,
+                                                      max_replacements=max_replacements,
+                                                      return_mol=True, return_rxn=False, return_rxn_freq=False,
+                                                      ncores=1 if len(start_mols) != 1 else ncpu, **kwargs)
+                            for m, prot_ids in start_mols.items())
         if mode == 'analogs':
             new_mols = pool(joblib.delayed(mutate_mol2)(m, db_name=db_fname, protected_ids=prot_ids,
-                                                 min_freq=0,  radius=radius, max_replacements = max_replacements,
-                                                 return_mol=True, return_rxn=False, return_rxn_freq=False,
-                                                 ncores=1 if len(start_mols)!= 1 else ncpu, **kwargs)
-                                      for m, prot_ids in start_mols.items())
+                                                        min_freq=0, radius=radius, max_replacements=max_replacements,
+                                                        return_mol=True, return_rxn=False, return_rxn_freq=False,
+                                                        ncores=1 if len(start_mols) != 1 else ncpu, **kwargs)
+                            for m, prot_ids in start_mols.items())
 
         parent_protected_ids_list = start_mols.values()
         start_mols = OrderedDict()
@@ -162,5 +163,6 @@ def enumerate_compounds(mol, db_fname, num_iteration, mode='scaffold', radius=3,
         if not start_mols:
             break
 
-    sys.stderr.write(f'Procedure is finished.\n{n+1} iterations were completed successfully.\nTotally {len(generated_mols)} new compounds were generated.\n')
+    sys.stderr.write(f'Procedure is finished.\n{n + 1} iterations were completed successfully.\n'
+                     f'Totally {len(generated_mols)} new compounds were generated.\n')
     return generated_mols

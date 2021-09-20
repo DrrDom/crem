@@ -106,8 +106,7 @@ def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3
     '''
 
     if mode not in ['scaffold', 'analogs']:
-        print('Wrong mode. Please choose one from the list - "analogs","scaffold"')
-        return None
+        raise ValueError('Wrong mode. Please choose one from the list - "analogs","scaffold"')
 
     if ncpu is None:
         ncpu = cpu_count()

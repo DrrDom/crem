@@ -44,11 +44,12 @@ def __mol_with_atom_index(mol):
 
 
 def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3, max_replacements=None,
-                        min_freq=0, protected_ids=None, replace_ids=None, protect_added_frag=False, ncpu=None,
-                        **kwargs):
+                        min_freq=0, protected_ids=None, replace_ids=None, protect_added_frag=False, return_smi=False,
+                        ncpu=None, **kwargs):
     '''
     Convenience function to perform scaffold decoration or enumeration of analog series. This performs in multiple
     iterations by modification of compounds enumerated on the previous iteration. May result in combinatorial explosion.
+    The function returns the list of distinct molecules generated over all iterations.
 
     Scaffold decoration uses grow procedure. Hydrogens will be added to the supplied molecule and replaced with
     fragments from the database. A user can protect particular positions from expansion by setting protect_ids argument.
@@ -79,6 +80,7 @@ def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3
     :param protect_added_frag: True or False. If set True new fragments cannot be attached/replace fragments added on
                                previous iterations. Applicable only in 'analogs' mode. In 'scaffold' mode user input is
                                ignored and the argument internally set to True. Default: False
+    :param return_smi: if True will return the list of SMILES instead of Mol objects. Default: False.
     :param ncpu: number of cores. None means all cpus.
 
     *Common grow/mutate arguments*
@@ -167,4 +169,7 @@ def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3
     if n + 1 < n_iterations:
         sys.stderr.write(f'INFO. Procedure is finished after {n + 1} iterations instead of {n_iterations}\n')
 
-    return generated_mols
+    if not return_smi:
+        return list(generated_mols.values())
+    else:
+        return list(generated_mols.keys())

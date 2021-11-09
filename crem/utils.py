@@ -44,7 +44,7 @@ def __mol_with_atom_index(mol):
 
 
 def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3, max_replacements=None,
-                        min_freq=0, protected_ids=None, replace_ids=None, protect_added_frag=False, return_smi=False,
+                        protected_ids=None, replace_ids=None, min_freq=0, protect_added_frag=False, return_smi=False,
                         ncpu=None, **kwargs):
     '''
     Convenience function to perform scaffold decoration or enumeration of analog series. This performs in multiple
@@ -77,14 +77,12 @@ def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3
                           these are ids of hydrogens and heavy atoms. Please note, a molecule should be supplied with
                           explicit hydrogens in 'analogs' mode if one wants to replace them. Default: None.
     :param replace_ids: iterable with atom ids to replace, it has lower priority then `protected_ids`. Default: None.
+    :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
     :param protect_added_frag: True or False. If set True new fragments cannot be attached/replace fragments added on
                                previous iterations. Applicable only in 'analogs' mode. In 'scaffold' mode user input is
                                ignored and the argument internally set to True. Default: False
     :param return_smi: if True will return the list of SMILES instead of Mol objects. Default: False.
     :param ncpu: number of cores. None means all cpus.
-
-    *Common grow/mutate arguments*
-    :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
 
     :param kwargs: these arguments will be passed to grow_mol (for 'scaffold' mode) and mutate_mol ('analogs' mode)
     functions.

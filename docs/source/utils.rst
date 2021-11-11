@@ -1,7 +1,7 @@
 Utility functions
 ====================
 
-.. currentmodule:: crem.crem.utils
+.. currentmodule:: crem.utils
 
 
 .. autosummary::
@@ -10,5 +10,5 @@ Utility functions
    enumerate_compounds
 
 
-.. automodule:: crem.crem.utils
+.. automodule:: crem.utils
    :members:

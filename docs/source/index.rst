@@ -17,6 +17,7 @@ Welcome to CReM's documentation!
    :caption: Contents:
 
    operations
+   utils
    
 
 .. toctree::

@@ -1,3 +1,7 @@
+0.2.6
+
+- add a module to enumerate compounds based on a seed molecules using scaffold or analog modes
+
 0.2.5
 
 - x2 code speed up

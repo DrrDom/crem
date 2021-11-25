@@ -2,17 +2,20 @@
 
 import sys
 import re
+from collections import defaultdict
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdMMPA
-from .mol_context import get_canon_context_core, combine_core_env_to_rxn_smarts
+from crem.mol_context import get_canon_context_core, combine_core_env_to_rxn_smarts
 from multiprocessing import Pool, cpu_count
 import sqlite3
 import random
 from itertools import product
+from crem.mol_context import patt_remove_map
 
 cycle_pattern = re.compile("[a-zA-Z\]][1-9]+")
 Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
+patt_remove_brackets = re.compile('\(\)')
 
 
 def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_ids=None):
@@ -69,14 +72,51 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
             if Chem.MolToSmiles(components[1]) != '[H][*:1]':  # context cannot be H
                 env, frag = get_canon_context_core(components[1], components[0], radius, keep_stereo)
                 output.add((env, frag, ids_0))
-        else:   # multiple cuts
+        else:  # multiple cuts
             # there are no checks for H needed because H can be present only in single cuts
             env, frag = get_canon_context_core(chains, core, radius, keep_stereo)
             output.add((env, frag, get_atom_prop(core) if return_ids else tuple()))
 
+    atom_ranks = list(Chem.CanonicalRankAtoms(mol, breakTies=False, includeChirality=False, includeIsotopes=False))
+    tmp = defaultdict(list)
+    for i, rank in enumerate(atom_ranks):
+        tmp[rank].append(i)
+    atom_eq = dict()
+    for ids in tmp.values():
+        if len(ids) > 1:
+            for i in ids:
+                atom_eq[i] = [j for j in ids if j != i]
+
+    print(atom_eq)
+
+    extended_output = []
+    for item in output:
+        print(item)
+        if all(i in atom_eq.keys() for i in item[2]):  # if all atoms of a fragment have equivalent atoms
+            smi = patt_remove_map.sub('', item[1])
+            smi = patt_remove_brackets.sub('', smi)
+            print(smi)
+            ids_list = [set(i) for i in mol.GetSubstructMatches(Chem.MolFromSmarts(smi))]
+            print(ids_list)
+            for ids_matched in ids_list:
+                for ids_eq in product(*(atom_eq[i] for i in item[2])):  # enumerate all combinations of equivalent atoms
+                    print(ids_matched, set(ids_eq))
+                    if ids_matched == set(ids_eq):
+                        extended_output.append((item[0], item[1], tuple(sorted(ids_eq))))
+
+    print(extended_output)
+
+    if extended_output:
+        output.update(extended_output)
+
+    print(output)
+    print(protected_ids)
+
     if protected_ids:
         protected_ids = set(protected_ids)
         output = [item for item in output if protected_ids.isdisjoint(item[2])]
+
+    print(output)
 
     return list(output)  # list of tuples (env smiles, core smiles, list of atom ids)
 

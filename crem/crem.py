@@ -87,36 +87,23 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
             for i in ids:
                 atom_eq[i] = [j for j in ids if j != i]
 
-    print(atom_eq)
-
     extended_output = []
     for item in output:
-        print(item)
         if all(i in atom_eq.keys() for i in item[2]):  # if all atoms of a fragment have equivalent atoms
             smi = patt_remove_map.sub('', item[1])
             smi = patt_remove_brackets.sub('', smi)
-            print(smi)
             ids_list = [set(i) for i in mol.GetSubstructMatches(Chem.MolFromSmarts(smi))]
-            print(ids_list)
             for ids_matched in ids_list:
                 for ids_eq in product(*(atom_eq[i] for i in item[2])):  # enumerate all combinations of equivalent atoms
-                    print(ids_matched, set(ids_eq))
                     if ids_matched == set(ids_eq):
                         extended_output.append((item[0], item[1], tuple(sorted(ids_eq))))
-
-    print(extended_output)
 
     if extended_output:
         output.update(extended_output)
 
-    print(output)
-    print(protected_ids)
-
     if protected_ids:
         protected_ids = set(protected_ids)
         output = [item for item in output if protected_ids.isdisjoint(item[2])]
-
-    print(output)
 
     return list(output)  # list of tuples (env smiles, core smiles, list of atom ids)
 

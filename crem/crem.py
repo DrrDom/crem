@@ -18,13 +18,49 @@ Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 patt_remove_brackets = re.compile('\(\)')
 
 
-def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_ids=None):
+def __extend_output_by_equivalent_atoms(mol, output):
+    """
+    Generate additional fragments which cover equivalent atoms to extend the output and make replacements for
+    equivalent atoms as well
+
+    :param mol:
+    :param output:
+    :return:
+    """
+
+    atom_ranks = list(Chem.CanonicalRankAtoms(mol, breakTies=False, includeChirality=False, includeIsotopes=False))
+    tmp = defaultdict(list)
+    for i, rank in enumerate(atom_ranks):
+        tmp[rank].append(i)
+    atom_eq = dict()  # dict of equivalent atoms
+    for ids in tmp.values():
+        if len(ids) > 1:
+            for i in ids:
+                atom_eq[i] = [j for j in ids if j != i]
+
+    extended_output = []
+    for item in output:
+        if all(i in atom_eq.keys() for i in item[2]):  # if all atoms of a fragment have equivalent atoms
+            smi = patt_remove_map.sub('', item[1])
+            smi = patt_remove_brackets.sub('', smi)
+            ids_list = [set(i) for i in mol.GetSubstructMatches(Chem.MolFromSmarts(smi))]
+            for ids_matched in ids_list:
+                for ids_eq in product(*(atom_eq[i] for i in item[2])):  # enumerate all combinations of equivalent atoms
+                    if ids_matched == set(ids_eq):
+                        extended_output.append((item[0], item[1], tuple(sorted(ids_eq))))
+    return extended_output
+
+
+def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_ids=None, symmetry_fixes=False):
     """
     INPUT:
         mol - Mol
         radius - integer, number of bonds to cut context
         keep_stereo - bool, keep or discard information about stereoconfiguration
         protected_ids - set/list/tuple os atom ids which cannot be present in core fragments
+        symmetry_fixes - if set, then duplicated fragments having different ids will be returned (useful when one
+                         wants to alter only small part of a molecule and it is important atoms with which ids will be
+                         replaced)
 
     OUTPUT:
         list of tuples (env_smi, core_smi, tuple of core atom ids)
@@ -77,29 +113,10 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
             env, frag = get_canon_context_core(chains, core, radius, keep_stereo)
             output.add((env, frag, get_atom_prop(core) if return_ids else tuple()))
 
-    atom_ranks = list(Chem.CanonicalRankAtoms(mol, breakTies=False, includeChirality=False, includeIsotopes=False))
-    tmp = defaultdict(list)
-    for i, rank in enumerate(atom_ranks):
-        tmp[rank].append(i)
-    atom_eq = dict()
-    for ids in tmp.values():
-        if len(ids) > 1:
-            for i in ids:
-                atom_eq[i] = [j for j in ids if j != i]
-
-    extended_output = []
-    for item in output:
-        if all(i in atom_eq.keys() for i in item[2]):  # if all atoms of a fragment have equivalent atoms
-            smi = patt_remove_map.sub('', item[1])
-            smi = patt_remove_brackets.sub('', smi)
-            ids_list = [set(i) for i in mol.GetSubstructMatches(Chem.MolFromSmarts(smi))]
-            for ids_matched in ids_list:
-                for ids_eq in product(*(atom_eq[i] for i in item[2])):  # enumerate all combinations of equivalent atoms
-                    if ids_matched == set(ids_eq):
-                        extended_output.append((item[0], item[1], tuple(sorted(ids_eq))))
-
-    if extended_output:
-        output.update(extended_output)
+    if symmetry_fixes:
+        extended_output = __extend_output_by_equivalent_atoms(mol, output)
+        if extended_output:
+            output.update(extended_output)
 
     if protected_ids:
         protected_ids = set(protected_ids)
@@ -280,7 +297,7 @@ def __get_replacements(db_cur, radius, row_ids):
 
 def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_size=8, min_rel_size=0, max_rel_size=1,
                        min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
-                       protected_ids_1=None, protected_ids_2=None, min_freq=10, **kwargs):
+                       protected_ids_1=None, protected_ids_2=None, min_freq=10, symmetry_fixes=False, **kwargs):
 
     link = False
     if not isinstance(mol1, Chem.Mol):
@@ -294,7 +311,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
         mol = Chem.CombineMols(mol1, mol2)
     else:
         mol = mol1
-        f = __fragment_mol(mol, radius, protected_ids=protected_ids_1)
+        f = __fragment_mol(mol, radius, protected_ids=protected_ids_1, symmetry_fixes=symmetry_fixes)
 
     if f:
         mol_hac = mol.GetNumHeavyAtoms()
@@ -362,7 +379,7 @@ def __frag_replace_mp(items):
 
 
 def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
-               replace_cycles, protected_ids, min_freq, max_replacements, **kwargs):
+               replace_cycles, protected_ids, min_freq, max_replacements, symmetry_fixes, **kwargs):
     for frag_sma, core_sma, freq, ids in __gen_replacements(mol1=mol, mol2=None, db_name=db_name, radius=radius,
                                                             min_size=min_size, max_size=max_size,
                                                             min_rel_size=min_rel_size, max_rel_size=max_rel_size,
@@ -370,7 +387,7 @@ def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_s
                                                             max_replacements=max_replacements,
                                                             replace_cycles=replace_cycles,
                                                             protected_ids_1=protected_ids, protected_ids_2=None,
-                                                            min_freq=min_freq, **kwargs):
+                                                            min_freq=min_freq, symmetry_fixes=symmetry_fixes, **kwargs):
         yield mol, None, frag_sma, core_sma, radius, ids, None, freq
 
 
@@ -390,8 +407,8 @@ def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, pro
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
-               max_replacements=None, replace_cycles=False, replace_ids=None, protected_ids=None, min_freq=0,
-               return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, **kwargs):
+               max_replacements=None, replace_cycles=False, replace_ids=None, protected_ids=None, symmetry_fixes=False,
+               min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, **kwargs):
     """
     Generator of new molecules by replacement of fragments in the supplied molecule with fragments from DB.
 
@@ -425,6 +442,13 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                           Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene
                           ids of both carbons in meta-positions should be supplied)
                           This argument has a higher priority over `replace_ids`. Default: None.
+    :param symmetry_fixes: if set True duplicated fragments with equivalent atoms having different ids will be
+                           enumerated. This makes sense if one wants to replace particular atom(s) which have
+                           equivalent ones. By default, among equivalent atoms only those with the lowest ids
+                           are replaced. This will result in generation of duplicated molecules if several equivalent
+                           atoms are selected which will be filtered later nevertheless. So, it is not very reasonable
+                           to use this argument and select several equivalent atoms to replace.
+                           This solves the issue of rdkit MMPA fragmenter which removes duplicates internally.
     :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
@@ -467,7 +491,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                                 max_replacements=max_replacements,
                                                                 replace_cycles=replace_cycles,
                                                                 protected_ids_1=protected_ids, protected_ids_2=None,
-                                                                min_freq=min_freq, **kwargs):
+                                                                min_freq=min_freq, symmetry_fixes=symmetry_fixes,
+                                                                **kwargs):
             for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, ids, None):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
@@ -488,7 +513,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
         p = Pool(min(ncores, cpu_count()))
         for items in p.imap(__frag_replace_mp, __get_data(mol, db_name, radius, min_size, max_size, min_rel_size,
                                                           max_rel_size, min_inc, max_inc, replace_cycles,
-                                                          protected_ids, min_freq, max_replacements, **kwargs),
+                                                          protected_ids, min_freq, max_replacements, symmetry_fixes,
+                                                          **kwargs),
                             chunksize=100):
             for smi, m, rxn, freq in items:
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
@@ -509,7 +535,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
 
 
 def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, replace_ids=None,
-             protected_ids=None, min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1,
+             protected_ids=None, symmetry_fixes=False, min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1,
              **kwargs):
     """
     Replace hydrogens with fragments from the database.
@@ -529,6 +555,13 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                           Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene
                           ids of both carbons in meta-positions should be supplied).
                           This argument has a higher priority over `replace_ids`. Default: None.
+    :param symmetry_fixes: if set True duplicated fragments with equivalent atoms having different ids will be
+                           enumerated. This makes sense if one wants to replace particular atom(s) which have
+                           equivalent ones. By default, among equivalent atoms only those with the lowest ids
+                           are replaced. This will result in generation of duplicated molecules if several equivalent
+                           atoms are selected which will be filtered later nevertheless. So, it is not very reasonable
+                           to use this argument and select several equivalent atoms to replace.
+                           This solves the issue of rdkit MMPA fragmenter which removes duplicates internally.
     :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
@@ -580,7 +613,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
     return mutate_mol(m, db_name, radius, min_size=0, max_size=0, min_inc=min_atoms, max_inc=max_atoms,
                       max_replacements=max_replacements, replace_ids=None, protected_ids=protected_ids,
                       min_freq=min_freq, return_rxn=return_rxn, return_rxn_freq=return_rxn_freq, return_mol=return_mol,
-                      ncores=ncores, **kwargs)
+                      ncores=ncores, symmetry_fixes=symmetry_fixes, **kwargs)
 
 
 def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2, max_replacements=None,

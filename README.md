@@ -210,7 +210,12 @@ res = list(p.imap(partial(mutate_mol2, db_name='replacements.db', max_size=1), i
 BSD-3
 
 ## Citation
-CReM: chemically reasonable mutations framework for structure generation  
+CReM: chemically reasonable mutations framework for structure generation    
 Pavel Polishchuk  
 *Journal of Cheminformatics* **2020**, 12, (1), 28  
 https://doi.org/10.1186/s13321-020-00431-w
+
+Control of Synthetic Feasibility of Compounds Generated with CReM  
+Pavel Polishchuk  
+*Journal of Chemical Information and Modeling* **2020**, 60, 6074-6080  
+https://dx.doi.org/10.1021/acs.jcim.0c00792

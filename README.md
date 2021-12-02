@@ -22,6 +22,11 @@ The main idea behind is similar to matched molecular pairs considering context t
 
 https://crem.readthedocs.io/en/latest/
 
+## Web app
+
+To play with a tool online.  
+https://crem.imtm.cz/
+
 ## Installation
 
 Several command line utilities will be installed to create fragment databases and `crem` module will become available in Python imports to generate structures.

@@ -2,6 +2,7 @@ __author__ = 'pavel'
 
 import argparse
 import sys
+from functools import partial
 from multiprocessing import Pool, cpu_count
 from rdkit import Chem
 from rdkit.Chem import rdMMPA
@@ -34,15 +35,15 @@ def fragment_mol(smi, smi_id=''):
     return outlines
 
 
-def process_line(line):
-    tmp = line.strip().split(',')
+def process_line(line, sep):
+    tmp = line.strip().split(sep)
     if len(tmp) == 1:
         return fragment_mol(tmp[0])
     else:
         return fragment_mol(tmp[0], tmp[1])
 
 
-def main(input_fname, output_fname, ncpu, verbose):
+def main(input_fname, output_fname, sep, ncpu, verbose):
 
     ncpu = min(cpu_count(), max(ncpu, 1))
     p = Pool(ncpu)
@@ -51,7 +52,7 @@ def main(input_fname, output_fname, ncpu, verbose):
 
         with open(input_fname) as f:
 
-            for i, res in enumerate(p.imap_unordered(process_line, f, chunksize=100), 1):
+            for i, res in enumerate(p.imap_unordered(partial(process_line, sep=sep), f, chunksize=100), 1):
 
                 out.write(''.join(res))
 
@@ -68,6 +69,8 @@ def entry_point():
                         help='input SMILES with optional comma-separated ID).')
     parser.add_argument('-o', '--out', metavar='output.txt', required=True,
                         help='fragmented molecules.')
+    parser.add_argument('-s', '--sep', metavar='STRING', required=False, default=None,
+                        help='separator in input file. Default: Tab.')
     parser.add_argument('-c', '--ncpu', metavar='NUMBER', required=False, default=1,
                         help='number of cpus used for computation. Default: 1.')
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
@@ -79,9 +82,11 @@ def entry_point():
         if o == "out": output_fname = v
         if o == "verbose": verbose = v
         if o == "ncpu": ncpu = int(v)
+        if o == "sep": sep = v
 
     main(input_fname=input_fname,
          output_fname=output_fname,
+         sep=sep,
          ncpu=ncpu,
          verbose=verbose)
 

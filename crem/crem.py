@@ -540,7 +540,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
     """
     Replace hydrogens with fragments from the database.
 
-    :param mol: RDKit Mol object. If hydrogens are explicit they will be replaced as well, otherwise not.
+    :param mol: RDKit Mol object.
     :param db_name: path to DB file with fragment replacements.
     :param radius: radius of context which will be considered for replacement. Default: 3.
     :param min_atoms: minimum number of atoms in the fragment which will replace H

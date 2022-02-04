@@ -1,3 +1,10 @@
+0.2.8
+
+- add link to crem.imtm.cz to README
+- change default separator in fragmentation.py to tab
+- fix description of arguments for grow_mol
+- fix output of molecules identical to the input structure
+
 0.2.7
 
 - add to mutate and grow functions treatment of topologically equivalent atoms

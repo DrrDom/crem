@@ -1,3 +1,7 @@
+0.2.9
+
+- fix a lost molecule in output of grow and mutate
+
 0.2.8
 
 - add link to crem.imtm.cz to README

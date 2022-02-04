@@ -494,7 +494,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                                 min_freq=min_freq, symmetry_fixes=symmetry_fixes,
                                                                 **kwargs):
             for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, ids, None):
-                if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
+                if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
                     if smi not in products:
                         products.add(smi)
                         res = [smi]
@@ -517,7 +517,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                           **kwargs),
                             chunksize=100):
             for smi, m, rxn, freq in items:
-                if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
+                if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
                     if smi not in products:
                         products.add(smi)
                         res = [smi]

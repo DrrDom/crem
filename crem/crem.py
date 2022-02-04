@@ -469,7 +469,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
 
     """
 
-    products = set()
+    products = {Chem.MolToSmiles(mol)}
 
     protected_ids = set(protected_ids) if protected_ids else set()
 

@@ -394,7 +394,7 @@ def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_s
                                                             replace_cycles=replace_cycles,
                                                             protected_ids_1=protected_ids, protected_ids_2=None,
                                                             min_freq=min_freq, symmetry_fixes=symmetry_fixes,
-                                                            filter_func=None, **kwargs):
+                                                            filter_func=filter_func, **kwargs):
         yield mol, None, frag_sma, core_sma, radius, ids, None, freq
 
 

@@ -347,7 +347,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                     res = __get_replacements(cur, radius, row_ids)
                 else:
                     selected_row_ids = random.sample(list(row_ids), min(len(row_ids), preliminary_return))
-                    row_ids.difference_update(set(selected_row_ids))
+                    row_ids.difference_update(selected_row_ids)
                     replacements.update({i: (frag_sma, core, ids) for i in row_ids})
                     res = __get_replacements(cur, radius, selected_row_ids)
 

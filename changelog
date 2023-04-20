@@ -1,3 +1,7 @@
+0.2.10
+
+- fix to enable compatibility with python 3.11
+
 0.2.9
 
 - fix a lost molecule in output of grow and mutate

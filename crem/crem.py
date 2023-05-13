@@ -297,7 +297,8 @@ def __get_replacements(db_cur, radius, row_ids):
 
 def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_size=8, min_rel_size=0, max_rel_size=1,
                        min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
-                       protected_ids_1=None, protected_ids_2=None, min_freq=10, symmetry_fixes=False, **kwargs):
+                       protected_ids_1=None, protected_ids_2=None, min_freq=10, symmetry_fixes=False, filter_func=None,
+                       return_frag_smi_only=False, **kwargs):
 
     link = False
     if not isinstance(mol1, Chem.Mol):
@@ -343,6 +344,9 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
                 row_ids = __get_replacements_rowids(cur, env, dist, min_atoms, max_atoms, radius, min_freq, **kwargs)
 
+                if filter_func:
+                    row_ids = filter_func(row_ids, cur, radius)
+
                 if max_replacements is None:
                     res = __get_replacements(cur, radius, row_ids)
                 else:
@@ -353,10 +357,13 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
                 for row_id, core_smi, core_sma, freq in res:
                     if core_smi != core:
-                        if link:
-                            yield frag_sma, core_sma, freq, ids[0], ids[1]
+                        if return_frag_smi_only:
+                            yield core_smi
                         else:
-                            yield frag_sma, core_sma, freq, ids[0]
+                            if link:
+                                yield frag_sma, core_sma, freq, ids[0], ids[1]
+                            else:
+                                yield frag_sma, core_sma, freq, ids[0]
                         if max_replacements is not None:
                             returned_values += 1
                             if returned_values >= max_replacements:
@@ -367,10 +374,13 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
             res = __get_replacements(cur, radius, selected_row_ids)
             for row_id, core_smi, core_sma, freq in res:
                 if core_smi != replacements[row_id][1]:
-                    if link:
-                        yield replacements[row_id][0], core_sma, freq, replacements[row_id][2][0], replacements[row_id][2][1]
+                    if return_frag_smi_only:
+                        yield core_smi
                     else:
-                        yield replacements[row_id][0], core_sma, freq, replacements[row_id][2][0]
+                        if link:
+                            yield replacements[row_id][0], core_sma, freq, replacements[row_id][2][0], replacements[row_id][2][1]
+                        else:
+                            yield replacements[row_id][0], core_sma, freq, replacements[row_id][2][0]
 
 
 def __frag_replace_mp(items):
@@ -379,7 +389,7 @@ def __frag_replace_mp(items):
 
 
 def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
-               replace_cycles, protected_ids, min_freq, max_replacements, symmetry_fixes, **kwargs):
+               replace_cycles, protected_ids, min_freq, max_replacements, symmetry_fixes, filter_func=None, **kwargs):
     for frag_sma, core_sma, freq, ids in __gen_replacements(mol1=mol, mol2=None, db_name=db_name, radius=radius,
                                                             min_size=min_size, max_size=max_size,
                                                             min_rel_size=min_rel_size, max_rel_size=max_rel_size,
@@ -387,12 +397,14 @@ def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_s
                                                             max_replacements=max_replacements,
                                                             replace_cycles=replace_cycles,
                                                             protected_ids_1=protected_ids, protected_ids_2=None,
-                                                            min_freq=min_freq, symmetry_fixes=symmetry_fixes, **kwargs):
+                                                            min_freq=min_freq, symmetry_fixes=symmetry_fixes,
+                                                            filter_func=filter_func, return_frag_smi_only=False,
+                                                            **kwargs):
         yield mol, None, frag_sma, core_sma, radius, ids, None, freq
 
 
 def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, protected_ids_1, protected_ids_2, min_freq,
-                    max_replacements, **kwargs):
+                    max_replacements, filter_func=None, **kwargs):
     for frag_sma, core_sma, freq, ids_1, ids_2 in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name,
                                                                      radius=radius, dist=dist,
                                                                      min_size=0, max_size=0,
@@ -402,13 +414,15 @@ def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, pro
                                                                      replace_cycles=False,
                                                                      protected_ids_1=protected_ids_1,
                                                                      protected_ids_2=protected_ids_2,
-                                                                     min_freq=min_freq, **kwargs):
+                                                                     min_freq=min_freq, filter_func=filter_func,
+                                                                     return_frag_smi_only=False, **kwargs):
         yield mol1, mol2, frag_sma, core_sma, radius, ids_1, ids_2, freq
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
                max_replacements=None, replace_cycles=False, replace_ids=None, protected_ids=None, symmetry_fixes=False,
-               min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, **kwargs):
+               min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
+               **kwargs):
     """
     Generator of new molecules by replacement of fragments in the supplied molecule with fragments from DB.
 
@@ -454,6 +468,14 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
     :param ncores: number of cores. Default: 1.
+    :param filter_func: a function which will filter selected fragments by additional rules
+                        (in this way one may add arbitrary selection constrains). The function takes necessary first
+                        three arguments: row_ids (list or set of row_ids from the fragment database supplied to
+                        the mutate_mol function), cursor of that fragment database and radius (int). This is required
+                        access the selected fragments. Other arguments are custom and user-defined.
+                        It is the most convenient to define a filtering function, implement specific logic inside and
+                        pass it to mutate_mol using functools.partial. The filtering function should return a list/set
+                        of row ids which are a subset of the input row ids.
     :param **kwargs: named arguments to additionally filter replacing fragments. Name is a name of a column in
                      the radiusX table of the fragment database. Values are a single value or 2-item tuple with lower
                      and upper bound of the corresponding parameter of a fragment. This can be useful to annotate
@@ -492,6 +514,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                                 replace_cycles=replace_cycles,
                                                                 protected_ids_1=protected_ids, protected_ids_2=None,
                                                                 min_freq=min_freq, symmetry_fixes=symmetry_fixes,
+                                                                filter_func=filter_func, return_frag_smi_only=False,
                                                                 **kwargs):
             for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, ids, None):
                 if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
@@ -514,7 +537,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
         for items in p.imap(__frag_replace_mp, __get_data(mol, db_name, radius, min_size, max_size, min_rel_size,
                                                           max_rel_size, min_inc, max_inc, replace_cycles,
                                                           protected_ids, min_freq, max_replacements, symmetry_fixes,
-                                                          **kwargs),
+                                                          filter_func=filter_func, **kwargs),
                             chunksize=100):
             for smi, m, rxn, freq in items:
                 if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
@@ -535,8 +558,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
 
 
 def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, replace_ids=None,
-             protected_ids=None, symmetry_fixes=False, min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1,
-             **kwargs):
+             protected_ids=None, symmetry_fixes=False, min_freq=0, return_rxn=False, return_rxn_freq=False,
+             return_mol=False, ncores=1, filter_func=None, **kwargs):
     """
     Replace hydrogens with fragments from the database.
 
@@ -567,6 +590,14 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
     :param ncores: number of cores. Default: 1.
+    :param filter_func: a function which will filter selected fragments by additional rules
+                        (in this way one may add arbitrary selection constrains). The function takes necessary first
+                        three arguments: row_ids (list or set of row_ids from the fragment database supplied to
+                        the grow_mol function), cursor of that fragment database and radius (int). This is required
+                        access the selected fragments. Other arguments are custom and user-defined.
+                        It is the most convenient to define a filtering function, implement specific logic inside and
+                        pass it to grow_mol using functools.partial. The filtering function should return a list/set
+                        of row ids which are a subset of the input row ids.
     :param **kwargs: named arguments to additionally filter replacing fragments. Name is a name of a column in
                      the radiusX table of the fragment database. Values are a single value or 2-item tuple with lower
                      and upper bound of the corresponding parameter of a fragment. This can be useful to annotate
@@ -613,12 +644,13 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
     return mutate_mol(m, db_name, radius, min_size=0, max_size=0, min_inc=min_atoms, max_inc=max_atoms,
                       max_replacements=max_replacements, replace_ids=None, protected_ids=protected_ids,
                       min_freq=min_freq, return_rxn=return_rxn, return_rxn_freq=return_rxn_freq, return_mol=return_mol,
-                      ncores=ncores, symmetry_fixes=symmetry_fixes, **kwargs)
+                      ncores=ncores, symmetry_fixes=symmetry_fixes, filter_func=filter_func, **kwargs)
 
 
 def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2, max_replacements=None,
               replace_ids_1=None, replace_ids_2=None, protected_ids_1=None, protected_ids_2=None,
-              min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, **kwargs):
+              min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
+              **kwargs):
     """
     Link two molecules by a linker from the database.
 
@@ -652,6 +684,14 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
     :param ncores: number of cores. Default: 1.
+    :param filter_func: a function which will filter selected fragments by additional rules
+                        (in this way one may add arbitrary selection constrains). The function takes necessary first
+                        three arguments: row_ids (list or set of row_ids from the fragment database supplied to
+                        the link_mols function), cursor of that fragment database and radius (int). This is required
+                        access the selected fragments. Other arguments are custom and user-defined.
+                        It is the most convenient to define a filtering function, implement specific logic inside and
+                        pass it to link_mols using functools.partial. The filtering function should return a list/set
+                        of row ids which are a subset of the input row ids.
     :param **kwargs: named arguments to additionally filter replacing fragments. Name is a name of a column in
                      the radiusX table of the fragment database. Values are a single value or 2-item tuple with lower
                      and upper bound of the corresponding parameter of a fragment. This can be useful to annotate
@@ -713,7 +753,8 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                                                                          max_replacements=max_replacements,
                                                                          protected_ids_1=protected_ids_1,
                                                                          protected_ids_2=protected_ids_2,
-                                                                         min_freq=min_freq, **kwargs):
+                                                                         min_freq=min_freq, filter_func=filter_func,
+                                                                         return_frag_smi_only=False, **kwargs):
             for smi, m, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, ids_1, ids_2):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
@@ -735,7 +776,7 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
         p = Pool(min(ncores, cpu_count()))
         for items in p.imap(__frag_replace_mp, __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms,
                                                                protected_ids_1, protected_ids_2, min_freq,
-                                                               max_replacements, **kwargs),
+                                                               max_replacements, filter_func=filter_func, **kwargs),
                             chunksize=100):
             for smi, m, rxn, freq in items:
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
@@ -792,3 +833,95 @@ def link_mols2(*args, **kwargs):
 
     """
     return list(link_mols(*args, **kwargs))
+
+
+def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, max_size=8, min_rel_size=0,
+                     max_rel_size=1, min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
+                     protected_ids_1=None, protected_ids_2=None, replace_ids_1=None, replace_ids_2=None, min_freq=0,
+                     symmetry_fixes=False, filter_func=None, **kwargs):
+    """
+    An auxiliary function, which returns smiles of fragments in a DB which satisfy given criteria
+    :param mol1: RDKit Mol object
+    :param db_name: path to DB file with fragment replacements.
+    :param radius: radius of context which will be considered for replacement. Default: 3.
+    :param mol2: a second RDKit Mol object if searching for linking fragments
+    :param dist: topological distance between two attachment points in the fragment which will link molecules.
+                 Can be a single integer or a tuple of lower and upper bound values.
+    :param min_size: minimum number of heavy atoms in a fragment to replace. If 0 - hydrogens will be replaced
+                     (if they are explicit).
+    :param max_size: maximum number of heavy atoms in a fragment to replace.
+    :param min_rel_size: minimum relative size of a replaced fragment to the whole molecule
+                         (in terms of a number of heavy atoms)
+    :param max_rel_size: maximum relative size of a replaced fragment to the whole molecule
+                         (in terms of a number of heavy atoms)
+    :param min_inc: minimum change of a number of heavy atoms in replacing fragments to a number of heavy atoms in
+                    replaced one. Negative value means that the replacing fragments would be smaller than the replaced
+                    one on a specified number of heavy atoms.
+    :param max_inc: maximum change of a number of heavy atoms in replacing fragments to a number of heavy atoms in
+                    replaced one.
+    :param max_replacements: maximum number of replacements to make. If the number of replacements available in DB is
+                             greater than the specified value the specified number of randomly chosen replacements
+                             will be applied.
+    :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size.
+                           Default: False.
+
+    :param protected_ids_1: iterable with atom ids which will not be mutated in mol1. If the molecule was supplied with
+                            explicit hydrogen the ids of protected hydrogens should be supplied as well, otherwise they
+                            will be replaced.
+                            Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene
+                            ids of both carbons in meta-positions should be supplied)
+                            This argument has a higher priority over `replace_ids_1`.
+    :param protected_ids_2: iterable with atom ids which will not be mutated in mol2. If the molecule was supplied with
+                            explicit hydrogen the ids of protected hydrogens should be supplied as well, otherwise they
+                            will be replaced.
+                            Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene
+                            ids of both carbons in meta-positions should be supplied)
+                            This argument has a higher priority over `replace_ids_2`.
+    :param replace_ids_1: iterable with atom ids to replace in mol1, it has lower priority over `protected_ids`
+                          (replace_ids which are present in protected_ids would be protected).
+    :param replace_ids_2: iterable with atom ids to replace in mol2, it has lower priority over `protected_ids`
+                          (replace_ids which are present in protected_ids would be protected).
+    :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
+    :param symmetry_fixes: if set True duplicated fragments with equivalent atoms having different ids will be
+                           enumerated. This makes sense if one wants to replace particular atom(s) which have
+                           equivalent ones. By default, among equivalent atoms only those with the lowest ids
+                           are replaced. This will result in generation of duplicated molecules if several equivalent
+                           atoms are selected which will be filtered later nevertheless. So, it is not very reasonable
+                           to use this argument and select several equivalent atoms to replace.
+                           This solves the issue of rdkit MMPA fragmenter which removes duplicates internally.
+    :param filter_func: a function which will filter selected fragments by additional rules
+                        (in this way one may add arbitrary selection constrains). The function takes necessary first
+                        three arguments: row_ids (list or set of row_ids from the fragment database supplied to
+                        the mutate_mol function), cursor of that fragment database and radius (int). This is required
+                        access the selected fragments. Other arguments are custom and user-defined.
+                        It is the most convenient to define a filtering function, implement specific logic inside and
+                        pass it to mutate_mol using functools.partial. The filtering function should return a list/set
+                        of row ids which are a subset of the input row ids.
+    :param **kwargs: named arguments to additionally filter replacing fragments. Name is a name of a column in
+                     the radiusX table of the fragment database. Values are a single value or 2-item tuple with lower
+                     and upper bound of the corresponding parameter of a fragment. This can be useful to annotate
+                     fragments with additional custom properties (e.g. number of particular pharmacophore features,
+                     lipophilicity, etc) and use these parameters to additionally restrict selected fragments.
+    :return: generator over smiles of fragments in a DB which satisfy given criteria
+    """
+
+    protected_ids_1 = set(protected_ids_1) if protected_ids_1 else set()
+    if replace_ids_1:
+        replace_ids_1 = set(replace_ids_1) if replace_ids_1 else set()
+        protected_ids_1 = set(protected_ids_1) | set(range(mol1.GetNumAtoms())).difference(replace_ids_1)
+    if isinstance(mol2, Chem.Mol):
+        protected_ids_2 = set(protected_ids_2) if protected_ids_2 else set()
+        if replace_ids_2:
+            replace_ids_2 = set(replace_ids_2) if replace_ids_2 else set()
+            protected_ids_2 = set(protected_ids_2) | set(range(mol2.GetNumAtoms())).difference(replace_ids_2)
+    else:
+        protected_ids_2 = None
+
+    for frag_smi in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius, dist=dist,
+                                       min_size=min_size, max_size=max_size, min_rel_size=min_rel_size,
+                                       max_rel_size=max_rel_size, min_inc=min_inc, max_inc=max_inc,
+                                       max_replacements=max_replacements, replace_cycles=replace_cycles,
+                                       protected_ids_1=protected_ids_1, protected_ids_2=protected_ids_2,
+                                       min_freq=min_freq, symmetry_fixes=symmetry_fixes, filter_func=filter_func,
+                                       return_frag_smi_only=True, **kwargs):
+        yield frag_smi

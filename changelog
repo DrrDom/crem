@@ -1,3 +1,9 @@
+0.2.11
+
+- add support of custom functions to filter fragments chosen for attachment/replacing
+- add an example how to implement and use filtering function to README
+- add an auxiliary function get_replacements
+
 0.2.10
 
 - fix to enable compatibility with python 3.11

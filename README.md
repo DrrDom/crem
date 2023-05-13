@@ -134,7 +134,7 @@ output
 
 **Grow** molecule. Only hydrogens will be replaced. Hydrogens should not be added explicitly.
 ```python
-mols = list(grow_mol(m, db_name='replacements_sc2.db'))
+mols = list(grow_mol(m, db_name='replacements.db'))
 ```
 output
 ```text
@@ -163,6 +163,59 @@ output
 ```
 
 You can vary the size of a linker and specify the distance between two attachment points in a linking fragment. There are many other arguments available in these functions, look at their **docstrings** for details.
+
+##### Additional filters to control fragments chosen for replacing
+
+An example of a filtering function which will keep only fragments containing a specific atom to be chosen for replacing.
+
+```python
+from collections import defaultdict
+from functools import partial
+from rdkit import Chem
+
+def filter_function(row_ids, cur, radius, atom_number):
+
+    """
+    The first three arguments should be always the same as shown in the example. These parameters will be passed to a function from a main function, e.g. from mutate_mol. All other arguments are user-defined. The function should return the list of row ids of fragments which will be used for replacing. 
+
+    :param row_id: a list of row ids from CReM database of those fragments which satisfy other selection criteria
+    :param cur: cursor of CReM database
+    :param radius: radius of a context 
+    :param atom_number: an atomic number, fragments with this number will be discarded
+    :return list of remaining row ids
+    """
+
+    # this part may be kept intact, it collects from DB SMILES of fragments with given row ids
+    # since fragments may occur multiple times (due to different contexts) the results are collected in a dict
+    if not row_ids:
+        return []
+    batch_size = 32000  # SQLite has a limit on a number of passed values to a query
+    row_ids = list(row_ids)
+    smis = defaultdict(list)  # {smi_1: [rowid_1, rowid_5, ...], ...}
+    for start in range(0, len(row_ids), batch_size):
+        batch = row_ids[start:start + batch_size]
+        sql = f"SELECT rowid, core_smi FROM radius{radius} WHERE rowid IN ({','.join('?' * len(batch))})"
+        for i, smi in cur.execute(sql, batch).fetchall():
+            smis[smi].append(i)
+
+    output_row_ids = []
+    for smi, ids in smis.items():
+        for a in Chem.MolFromSmiles(smi).GetAtoms():
+            if a.GetAtomicNum() == atom_number:
+                output_row_ids.extend(ids)
+    return output_row_ids
+
+# only F-containing fragments will be chosen for replacing
+mol = Chem.MolFromSmiles('c1ccccc1C')
+mols = mutate_mol(mol, db_name='replacements.db', filter_func=partial(filter_function, atom_number=9), max_size=1, max_inc=3)
+```
+output
+```text
+['Fc1ccccc1', 
+ 'FC(F)(F)c1ccccc1',
+ 'FC(F)Oc1ccccc1',
+ 'FC(F)Sc1ccccc1']
+```
 
 ##### Multiprocessing
 All functions have an argument `ncores` and can make mupltile replacement in one molecule in parallel. If you want to process several molecules in parallel you have to write your own code. However, the described functions are generators and cannot be used with `multiprocessing` module. Therefore, three complementary functions `mutate_mol2`, `grow_mol2` and `link_mols2` were created. They return the list with results and can be pickled and used with `multiprocessing.Pool` or other tools.

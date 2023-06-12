@@ -217,6 +217,60 @@ output
  'FC(F)Sc1ccccc1']
 ```
 
+##### Iterative enumeration
+
+For convenience there is a function `enumerate_compounds` in `utils` module (added in version 0.2.6). It performs iterative growing (scaffold decoration) or mutation (analog enumeration) of a supplied molecule. More details are in docstring of the function.
+
+Example. Enumerate derivatives of 1-chloro-3-methylbenzene at positions 2 and 4 of the ring and at the methyl group at the same time. In this case one should choose `scaffold` mode, 3 iterations, specify atom ids (0-based indices) where fragments can be attached and set `protect_added_frag=True` to restrict enumeration only to selected positions.
+
+```python
+from crem.utils import enumerate_compounds
+
+mol = Chem.MolFromMolBlock("""
+  Mrv1922 05242309182D          
+
+  8  8  0  0  0  0            999 V2000
+   -3.2813    1.3161    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+   -3.9957    0.9036    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+   -3.9957    0.0786    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+   -3.2813   -0.3339    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+   -2.5668    0.0786    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+   -2.5668    0.9036    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+   -3.2813   -1.1589    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+   -1.8523    1.3161    0.0000 Cl  0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  2  0  0  0  0
+  3  4  1  0  0  0  0
+  4  5  2  0  0  0  0
+  5  6  1  0  0  0  0
+  1  6  2  0  0  0  0
+  4  7  1  0  0  0  0
+  6  8  1  0  0  0  0
+M  END
+""")
+
+mols = enumerate_compounds(mol, 'replacements_sa2.db', mode='scaffold', n_iterations=3,
+                           radius=3, max_replacements=2, replace_ids=[2,4,6], protect_added_frag=True, 
+                           return_smi=True)
+``` 
+output
+```
+['COc1c(C)cccc1Cl', 
+'Cc1cc(Cl)ccc1Cl', 
+'COc1ccc(Cl)c(OC)c1C', 
+'COc1c(Cl)cccc1CF', 
+'Cc1c(Cl)ccc(Cl)c1C', 
+'CSCc1cc(Cl)ccc1Cl', 
+'COc1ccc(Cl)c(OC)c1CC#N', 
+'COCc1c(OC)ccc(Cl)c1OC', 
+'COc1c(Cl)cccc1C(F)F', 
+'COc1c(Cl)ccc(CO)c1CF', 
+'Cc1c(Cl)ccc(Cl)c1CC#N', 
+'Cc1c(Cl)ccc(Cl)c1CCN', 
+'CSCc1c(Cl)ccc(Cl)c1C', 
+'CSCc1c(Cl)ccc(Cl)c1Cl']
+```
+
 ##### Multiprocessing
 All functions have an argument `ncores` and can make mupltile replacement in one molecule in parallel. If you want to process several molecules in parallel you have to write your own code. However, the described functions are generators and cannot be used with `multiprocessing` module. Therefore, three complementary functions `mutate_mol2`, `grow_mol2` and `link_mols2` were created. They return the list with results and can be pickled and used with `multiprocessing.Pool` or other tools.
 

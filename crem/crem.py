@@ -534,27 +534,30 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
     else:
 
         p = Pool(min(ncores, cpu_count()))
-        for items in p.imap(__frag_replace_mp, __get_data(mol, db_name, radius, min_size, max_size, min_rel_size,
-                                                          max_rel_size, min_inc, max_inc, replace_cycles,
-                                                          protected_ids, min_freq, max_replacements, symmetry_fixes,
-                                                          filter_func=filter_func, **kwargs),
-                            chunksize=100):
-            for smi, m, rxn, freq in items:
-                if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
-                    if smi not in products:
-                        products.add(smi)
-                        res = [smi]
-                        if return_rxn:
-                            res.append(rxn)
-                            if return_rxn_freq:
-                                res.append(freq)
-                        if return_mol:
-                            res.append(m)
-                        if len(res) == 1:
-                            yield res[0]
-                        else:
-                            yield res
-        p.close()
+        try:
+            for items in p.imap(__frag_replace_mp, __get_data(mol, db_name, radius, min_size, max_size, min_rel_size,
+                                                              max_rel_size, min_inc, max_inc, replace_cycles,
+                                                              protected_ids, min_freq, max_replacements, symmetry_fixes,
+                                                              filter_func=filter_func, **kwargs),
+                                chunksize=100):
+                for smi, m, rxn, freq in items:
+                    if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
+                        if smi not in products:
+                            products.add(smi)
+                            res = [smi]
+                            if return_rxn:
+                                res.append(rxn)
+                                if return_rxn_freq:
+                                    res.append(freq)
+                            if return_mol:
+                                res.append(m)
+                            if len(res) == 1:
+                                yield res[0]
+                            else:
+                                yield res
+        finally:
+            p.close()
+            p.join()
 
 
 def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, replace_ids=None,
@@ -774,26 +777,29 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
     else:
 
         p = Pool(min(ncores, cpu_count()))
-        for items in p.imap(__frag_replace_mp, __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms,
-                                                               protected_ids_1, protected_ids_2, min_freq,
-                                                               max_replacements, filter_func=filter_func, **kwargs),
-                            chunksize=100):
-            for smi, m, rxn, freq in items:
-                if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
-                    if smi not in products:
-                        products.add(smi)
-                        res = [smi]
-                        if return_rxn:
-                            res.append(rxn)
-                            if return_rxn_freq:
-                                res.append(freq)
-                        if return_mol:
-                            res.append(m)
-                        if len(res) == 1:
-                            yield res[0]
-                        else:
-                            yield res
-        p.close()
+        try:
+            for items in p.imap(__frag_replace_mp, __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms,
+                                                                   protected_ids_1, protected_ids_2, min_freq,
+                                                                   max_replacements, filter_func=filter_func, **kwargs),
+                                chunksize=100):
+                for smi, m, rxn, freq in items:
+                    if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
+                        if smi not in products:
+                            products.add(smi)
+                            res = [smi]
+                            if return_rxn:
+                                res.append(rxn)
+                                if return_rxn_freq:
+                                    res.append(freq)
+                            if return_mol:
+                                res.append(m)
+                            if len(res) == 1:
+                                yield res[0]
+                            else:
+                                yield res
+        finally:
+            p.close()
+            p.join()
 
 
 def mutate_mol2(*args, **kwargs):

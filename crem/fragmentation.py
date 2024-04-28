@@ -8,7 +8,7 @@ from rdkit import Chem
 from rdkit.Chem import rdMMPA
 
 
-def fragment_mol(smi, smi_id='', mode=0):
+def fragment_mol(smi, smi_id='', mode=0, sep_out=','):
 
     mol = Chem.MolFromSmiles(smi)
 
@@ -23,7 +23,7 @@ def fragment_mol(smi, smi_id='', mode=0):
             frags += rdMMPA.FragmentMol(mol, pattern="[!#1]!@!=!#[!#1]", maxCuts=3, resultsAsMols=False, maxCutBonds=30)
             frags = set(frags)
             for core, chains in frags:
-                output = '%s,%s,%s,%s\n' % (smi, smi_id, core, chains)
+                output = '%s%s%s%s%s%s%s\n' % (smi, sep_out, smi_id, sep_out,core, sep_out, chains)
                 outlines.add(output)
         # hydrogen splitting
         if mode == 1 or mode == 2:
@@ -32,23 +32,24 @@ def fragment_mol(smi, smi_id='', mode=0):
             if n < 60:
                 frags = rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=False, maxCutBonds=100)
                 for core, chains in frags:
-                    output = '%s,%s,%s,%s\n' % (smi, smi_id, core, chains)
+                    output = '%s%s%s%s%s%s%s\n' % (smi, sep_out, smi_id, sep_out,core, sep_out, chains)
+
                     outlines.add(output)
     return outlines
 
 
-def process_line(line, sep, mode):
+def process_line(line, sep, mode, sep_out):
     tmp = line.strip().split(sep)
     if tmp:
         if len(tmp) == 1:
-            return fragment_mol(tmp[0], mode=mode)
+            return fragment_mol(tmp[0], mode=mode, sep_out=sep_out)
         else:
-            return fragment_mol(tmp[0], tmp[1], mode=mode)
+            return fragment_mol(tmp[0], tmp[1], mode=mode, sep_out=sep_out)
     else:
         return None
 
 
-def main(input_fname, output_fname, mode, sep, ncpu, verbose):
+def main(input_fname, output_fname, mode, sep, ncpu, sep_out, verbose):
 
     ncpu = min(cpu_count(), max(ncpu, 1))
     p = Pool(ncpu)
@@ -57,7 +58,7 @@ def main(input_fname, output_fname, mode, sep, ncpu, verbose):
 
         with open(input_fname) as f:
 
-            for i, res in enumerate(p.imap_unordered(partial(process_line, sep=sep, mode=mode), f, chunksize=100), 1):
+            for i, res in enumerate(p.imap_unordered(partial(process_line, sep=sep, mode=mode, sep_out=sep_out), f, chunksize=100), 1):
 
                 if res:
                     out.write(''.join(res))
@@ -82,6 +83,8 @@ def entry_point():
                              '2 - hydrogen atoms only. Default: 0.')
     parser.add_argument('-c', '--ncpu', metavar='NUMBER', required=False, default=1,
                         help='number of cpus used for computation. Default: 1.')
+    parser.add_argument('-d', '--sep_out', metavar='STRING', required=False, default=',',
+                        help='separator in output file.It sets the delimiter to save the output of rdMMPA.FragmentMol. Default: ,')
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
                         help='print progress.')
 
@@ -92,6 +95,7 @@ def entry_point():
         if o == "verbose": verbose = v
         if o == "ncpu": ncpu = int(v)
         if o == "sep": sep = v
+        if o == "sep_out": sep_out = v
         if o == "mode": mode = v
 
     main(input_fname=input_fname,
@@ -99,6 +103,7 @@ def entry_point():
          sep=sep,
          mode=mode,
          ncpu=ncpu,
+         sep_out=sep_out,
          verbose=verbose)
 
 

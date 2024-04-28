@@ -14,7 +14,7 @@ def process_line(line):
     # returns env_smi, core_smi, heavy_atoms_num, core_smarts
 
     output = []
-    smi, id, core, context = line.strip().split(',')
+    smi, id, core, context = line.strip().split(_sep)
 
     if (not core and not context) or (_keep_mols and id not in _keep_mols):
         return output
@@ -54,25 +54,27 @@ def process_line(line):
         return output
 
 
-def init(keep_mols, radius, keep_stereo, max_heavy_atoms, store_comp_id):
+def init(keep_mols, radius, keep_stereo, max_heavy_atoms, store_comp_id, sep):
     global _keep_mols
     global _radius
     global _keep_stereo
     global _max_heavy_atoms
     global _store_comp_id
+    global _sep
     _keep_mols = set([line.strip() for line in open(keep_mols).readlines()]) if keep_mols else set()
     _radius = radius
     _keep_stereo = keep_stereo
     _max_heavy_atoms = max_heavy_atoms
     _store_comp_id = store_comp_id
+    _sep = sep
 
 
-def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_atoms, ncpu, store_comp_id, verbose):
+def main(input_fname, output_fname, keep_mols, radius, keep_stereo, max_heavy_atoms, ncpu, store_comp_id, sep, verbose):
 
     # radius and remove_stereo are supplied to process_context_core via global environment (ugly but working solution)
 
     ncpu = min(cpu_count(), max(ncpu, 1))
-    p = Pool(ncpu, initializer=init, initargs=(keep_mols, radius, keep_stereo, max_heavy_atoms, store_comp_id))
+    p = Pool(ncpu, initializer=init, initargs=(keep_mols, radius, keep_stereo, max_heavy_atoms, store_comp_id, sep))
 
     try:
         with open(output_fname, 'wt') as out:
@@ -115,6 +117,8 @@ def entry_point():
                         help='number of cpus used for computation. Default: 1.')
     parser.add_argument('--store_comp_id', action='store_true', default=False,
                         help='store compound id in output (only for debug).')
+    parser.add_argument('-d', '--sep', metavar='STRING', required=False, default=',',
+                        help='Seperator/delimiter to split the saved output from rdMMPA.FragmentMol in fragmentation.py. Default: ,')
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
                         help='print progress.')
 
@@ -129,6 +133,7 @@ def entry_point():
         if o == "max_heavy_atoms": max_heavy_atoms = int(v)
         if o == "keep_mols": keep_mols = v
         if o == "store_comp_id": store_comp_id = v
+        if o == "sep": sep = v
 
     main(input_fname=input_fname,
          output_fname=output_fname,
@@ -138,6 +143,7 @@ def entry_point():
          max_heavy_atoms=max_heavy_atoms,
          ncpu=ncpu,
          store_comp_id=store_comp_id,
+         sep=sep,
          verbose=verbose)
 
 

@@ -104,6 +104,8 @@ def entry_point():
                         help='fragmented molecules.')
     parser.add_argument('-o', '--out', metavar='output.txt', required=True,
                         help='output text file.')
+    parser.add_argument('-d', '--sep', metavar='STRING', required=False, default=',',
+                        help='separator/delimiter in the input file. Default: comma')
     parser.add_argument('-k', '--keep_mols', metavar='molnames.txt', required=False, default=None,
                         help='file with mol names to keep. Molecules which are not in the list will be ignored.')
     parser.add_argument('-r', '--radius', metavar='NUMBER', required=False, default=1,
@@ -117,8 +119,6 @@ def entry_point():
                         help='number of cpus used for computation. Default: 1.')
     parser.add_argument('--store_comp_id', action='store_true', default=False,
                         help='store compound id in output (only for debug).')
-    parser.add_argument('-d', '--sep', metavar='STRING', required=False, default=',',
-                        help='Seperator/delimiter to split the saved output from rdMMPA.FragmentMol in fragmentation.py. Default: ,')
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
                         help='print progress.')
 

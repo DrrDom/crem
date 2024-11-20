@@ -1,3 +1,8 @@
+0.2.13
+
+- add sample_func argument to control fragment sampling and biasing the selection
+- add utils.sample_csp3 function implementing fragment selection biased by the fraction of sp3-carbon atoms
+
 0.2.12
 
 - add support of tab-delimited files with fragments and environments (useful if names/SMILES contain commas)

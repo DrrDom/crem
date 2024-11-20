@@ -1,3 +1,7 @@
+0.2.12
+
+- add support of tab-delimited files with fragments and environments (useful if names/SMILES contain commas)
+
 0.2.11
 
 - add support of custom functions to filter fragments chosen for attachment/replacing

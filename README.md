@@ -217,6 +217,64 @@ output
  'FC(F)Sc1ccccc1']
 ```
 
+##### Custom sampling of randomly chosen fragments
+
+If not all possible derivatives are necessary to generate a user may limit the number of returned compounds by `max_replacements` argument which enable uniform sampling of a desired number of molecules. To enable custom sampling and bias selection to more desired chemotypes there is an argument `sample_func` which takes a function implementing the selection. This function should take four necessary arguments: row_ids (list or set of row_ids from the fragment database), cursor of that fragment database, radius (int) and the number of returned items (int). An example of such a function is implemented in `utils` module and showed below. Other biases can be introduced via this option. Please not, using of complex sampling functions may slow down structure generation.
+```python
+def sample_csp3(row_ids, cur, radius, n):
+    """
+    Performs random selection of fragments proportionally to a squared fraction of sp3 carbon atoms.
+    :param row_ids: the list of row ids of fragments to consider
+    :param cur: cursor to the fragment database
+    :param radius: context radius
+    :param n: the number of fragments to select
+    :return: the list of row ids of selected fragments
+    """
+    d = defaultdict(list)
+    for rowid, core_smi, _, _ in _get_replacements(cur, radius, row_ids):
+        d[core_smi].append(rowid)
+    smis = list(d.keys())
+    values = [rdMolDescriptors.CalcFractionCSP3(Chem.MolFromSmiles(smi)) ** 2 for smi in smis]
+    values = [v + 1e-8 for v in values]
+    values = np.array(values) / sum(values)
+    selected_smiles = np.random.choice(smis, n, replace=False, p=values).tolist()
+    ids = []
+    for smi in selected_smiles:
+        ids.extend(d[smi])
+    ids = random.sample(ids, n)
+    return ids
+```
+Example of `sample_func` application. F atom is replaced and 10 derivatives is returned biased by the fraction of sp3 carbons and not.
+```python
+m = Chem.MolFromSmiles('c1ccccc1F')
+
+res = list(mutate_mol(m, 'replacements_sa2_f5.db',
+                      radius=3, min_inc=0, max_inc=10, max_replacements=10,
+                      replace_ids=[6]))
+values = sorted(round(rdMolDescriptors.CalcFractionCSP3(Chem.MolFromSmiles(smi)), 4) for smi in res)
+print(res)
+print(values)
+
+res = list(mutate_mol(m, 'replacements_sa2_f5.db',
+                      radius=3, min_inc=0, max_inc=10, max_replacements=10,
+                      replace_ids=[6], sample_func=sample_csp3))
+values = sorted(round(rdMolDescriptors.CalcFractionCSP3(Chem.MolFromSmiles(smi)), 4) for smi in res)
+print(res)
+print(values)
+```
+output
+```text
+# uniform sampling
+['c1ccc(-c2ccc(-c3csnn3)cc2)cc1', 'c1ccc(COc2cccnc2)cc1', 'CCCc1ccc(OCc2ccccc2)cc1', 'CC(C)(O)C(=O)NCCc1ccccc1', 'CN(C)C(=O)CNC(=O)OCc1ccccc1', 'COc1ccc(-c2ccccc2)cc1C(N)=O', 'Fc1ccccc1-c1ccccc1', 'Nc1cccnc1Sc1ccccc1', 'O=C(Nc1ccc(F)c(F)c1)c1ccccc1', 'O=C(COC(=O)c1ccco1)c1ccccc1']
+[0.0, 0.0, 0.0, 0.0, 0.0714, 0.0769, 0.0833, 0.25, 0.3333, 0.4167]
+
+# sampling biased by the fraction of sp3 carbons
+['c1ccc(CNCc2ccncc2)cc1', 'Cc1cccc(CSc2ccccc2)n1', 'CC(=Cc1ccccc1)CN1CCN(C)CC1', 'CC(C)N(CCOc1ccccc1)C(C)C', 'CCN(CCC#N)C(=O)Nc1ccccc1', 'CSCc1ccccc1', 'O=C(Cc1ccccc1)NCCc1ccoc1', 'O=C(CCc1ccccc1)NC1CCCCC1', 'O=C(CN1CCCC1)NCCc1ccccc1', 'O=C(CSc1ccccc1)NC1CC1']
+[0.1538, 0.1538, 0.2143, 0.25, 0.3333, 0.3636, 0.4667, 0.5, 0.5333, 0.5714]
+```
+In the latter case there are molecules having the greater fraction of sp3-carbon atoms.
+
+
 ##### Iterative enumeration
 
 For convenience there is a function `enumerate_compounds` in `utils` module (added in version 0.2.6). It performs iterative growing (scaffold decoration) or mutation (analog enumeration) of a supplied molecule. More details are in docstring of the function.

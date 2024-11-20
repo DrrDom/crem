@@ -1,8 +1,14 @@
+import joblib
+import numpy as np
+import random
 import sys
-from collections import OrderedDict
+
+from collections import OrderedDict, defaultdict
 from multiprocessing import cpu_count
 
-import joblib
+from crem.crem import _get_replacements
+from rdkit import Chem
+from rdkit.Chem import rdMolDescriptors
 
 from .crem import grow_mol2, mutate_mol2
 
@@ -171,3 +177,27 @@ def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3
         return list(generated_mols.values())
     else:
         return list(generated_mols.keys())
+
+
+def sample_csp3(row_ids, cur, radius, n):
+    """
+    Performs random selection of fragments proportionally to a squared fraction of sp3 carbon atoms.
+    :param row_ids: the list of row ids of fragments to consider
+    :param cur: cursor to the fragment database
+    :param radius: context radius
+    :param n: the number of fragments to select
+    :return: the list of row ids of selected fragments
+    """
+    d = defaultdict(list)
+    for rowid, core_smi, _, _ in _get_replacements(cur, radius, row_ids):
+        d[core_smi].append(rowid)
+    smis = list(d.keys())
+    values = [rdMolDescriptors.CalcFractionCSP3(Chem.MolFromSmiles(smi)) ** 2 for smi in smis]
+    values = [v + 1e-8 for v in values]
+    values = np.array(values) / sum(values)
+    selected_smiles = np.random.choice(smis, n, replace=False, p=values).tolist()
+    ids = []
+    for smi in selected_smiles:
+        ids.extend(d[smi])
+    ids = random.sample(ids, n)
+    return ids

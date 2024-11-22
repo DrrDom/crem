@@ -201,3 +201,28 @@ def sample_csp3(row_ids, cur, radius, n):
         ids.extend(d[smi])
     ids = random.sample(ids, n)
     return ids
+
+
+def filter_max_ring_size(row_ids, cur, radius, max_size=6):
+    """
+    Remove fragments having a ring size greater than a maximum threshold value
+    :param row_ids: the list of row ids of fragments to consider
+    :param cur: cursor to the fragment database
+    :param radius: context radius
+    :param max_size: maximum allowed ring size
+    :return: the list of row ids of selected fragments
+    """
+    d = defaultdict(list)
+    for rowid, core_smi, _, _ in _get_replacements(cur, radius, row_ids):
+        d[core_smi].append(rowid)
+    smis = list(d.keys())
+    for smi in smis:
+        mol = Chem.MolFromSmiles(smi)
+        w = mol.GetRingInfo()
+        rings = w.AtomRings()
+        if rings and max(len(atom_ids) for atom_ids in rings) > max_size:
+            del d[smi]
+    ids = []
+    for v in d.values():
+        ids.extend(v)
+    return ids

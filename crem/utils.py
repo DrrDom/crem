@@ -193,7 +193,7 @@ def sample_csp3(row_ids, cur, radius, n):
         d[core_smi].append(rowid)
     smis = list(d.keys())
     values = [rdMolDescriptors.CalcFractionCSP3(Chem.MolFromSmiles(smi)) ** 2 for smi in smis]
-    values = [v + 1e-8 for v in values]
+    values = [v + 0.01 for v in values]
     values = np.array(values) / sum(values)
     selected_smiles = np.random.choice(smis, n, replace=False, p=values).tolist()
     ids = []

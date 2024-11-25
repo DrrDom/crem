@@ -345,7 +345,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                 row_ids = __get_replacements_rowids(cur, env, dist, min_atoms, max_atoms, radius, min_freq, **kwargs)
 
                 if filter_func:
-                    row_ids = filter_func(row_ids, cur, radius)
+                    row_ids = set(filter_func(row_ids, cur, radius))
 
                 if max_replacements is None:
                     res = _get_replacements(cur, radius, row_ids)

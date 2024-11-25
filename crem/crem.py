@@ -875,7 +875,7 @@ def link_mols2(*args, **kwargs):
 def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, max_size=8, min_rel_size=0,
                      max_rel_size=1, min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
                      protected_ids_1=None, protected_ids_2=None, replace_ids_1=None, replace_ids_2=None, min_freq=0,
-                     symmetry_fixes=False, filter_func=None, **kwargs):
+                     symmetry_fixes=False, filter_func=None, sample_func=None, **kwargs):
     """
     An auxiliary function, which returns smiles of fragments in a DB which satisfy given criteria
     :param mol1: RDKit Mol object
@@ -934,6 +934,12 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                         It is the most convenient to define a filtering function, implement specific logic inside and
                         pass it to mutate_mol using functools.partial. The filtering function should return a list/set
                         of row ids which are a subset of the input row ids.
+    :param sample_func: a function which will sample selected fragments if max_replacements is supplied. If omitted
+                        uniform sampling will be used. The function takes necessary first four arguments: row_ids
+                        (list or set of row_ids from the fragment database), cursor of that fragment database,
+                        radius (int) and the number of returned items (int). This is required to access the selected
+                        fragments. Other arguments can be custom and user-defined. The function should return
+                        a list/set of selected row ids.
     :param **kwargs: named arguments to additionally filter replacing fragments. Name is a name of a column in
                      the radiusX table of the fragment database. Values are a single value or 2-item tuple with lower
                      and upper bound of the corresponding parameter of a fragment. This can be useful to annotate
@@ -960,5 +966,5 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                                        max_replacements=max_replacements, replace_cycles=replace_cycles,
                                        protected_ids_1=protected_ids_1, protected_ids_2=protected_ids_2,
                                        min_freq=min_freq, symmetry_fixes=symmetry_fixes, filter_func=filter_func,
-                                       return_frag_smi_only=True, **kwargs):
+                                       sample_func=sample_func, return_frag_smi_only=True, **kwargs):
         yield frag_smi

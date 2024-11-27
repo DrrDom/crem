@@ -188,6 +188,8 @@ def sample_csp3(row_ids, cur, radius, n):
     :param n: the number of fragments to select
     :return: the list of row ids of selected fragments
     """
+    if n >= len(row_ids):
+        return row_ids
     d = defaultdict(list)
     for rowid, core_smi, _, _ in _get_replacements(cur, radius, row_ids):
         d[core_smi].append(rowid)

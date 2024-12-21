@@ -1,3 +1,9 @@
+0.2.14
+
+- add utils.filter_max_ring_size function implemementing fragment filtration
+- add filter_func argument to all main functions to control fragment selection
+- change the delta value used in sample_csp3
+
 0.2.13
 
 - add sample_func argument to control fragment sampling and biasing the selection

@@ -314,10 +314,12 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
         mol = mol1
         f = __fragment_mol(mol, radius, protected_ids=protected_ids_1, symmetry_fixes=symmetry_fixes)
 
-    if f:
-        mol_hac = mol.GetNumHeavyAtoms()
+    if not f:
+        return
 
-        con = sqlite3.connect(db_name)
+    mol_hac = mol.GetNumHeavyAtoms()
+
+    with sqlite3.connect(db_name) as con:
         cur = con.cursor()
 
         replacements = dict()  # to store unused   row_id: (frag_sma, core, ids)

@@ -37,15 +37,9 @@ def __get_additional_data(data, pool):
     return res
 
 
-def main(input_fname, output_fname, radius, counts, ncpu, verbose):
-
-    pool = Pool(min(ncpu, cpu_count())) if ncpu > 1 else None
-
-    table_name = 'radius%i' % radius
-
-    with sqlite3.connect(output_fname) as conn:
+def create_table(fname, table_name, counts):
+    with sqlite3.connect(fname) as conn:
         cur = conn.cursor()
-
         cur.execute("DROP TABLE IF EXISTS %s" % table_name)
         if counts:
             cur.execute("CREATE TABLE %s("
@@ -63,6 +57,17 @@ def main(input_fname, output_fname, radius, counts, ncpu, verbose):
                         "core_sma TEXT NOT NULL,"
                         "dist2 INTEGER NOT NULL)" % table_name)
         conn.commit()
+
+
+def main(input_fname, output_fname, radius, counts, ncpu, verbose):
+
+    pool = Pool(min(ncpu, cpu_count())) if ncpu > 1 else None
+
+    table_name = 'radius%i' % radius
+    create_table(output_fname, table_name, counts)
+
+    with sqlite3.connect(output_fname) as conn:
+        cur = conn.cursor()
 
         buf = []
         with open(input_fname) as f:
@@ -112,32 +117,24 @@ def entry_point():
                         help='a comma-separated  text file with env_smi, core_smi, core_atom_num and core_sma.')
     parser.add_argument('-o', '--out', metavar='output.db', required=True,
                         help='output SQLite DB file.')
-    parser.add_argument('-r', '--radius', metavar='RADIUS', required=True,
+    parser.add_argument('-r', '--radius', metavar='RADIUS', required=True, type=int,
                         help='radius of environment. If table for this radius value exists in output DB '
                              'it will be dropped.')
     parser.add_argument('-c', '--counts', action='store_true', default=False,
                         help='set if the input file contains number of occurrences as a first column '
                              '(output of sort | uniq -c). This will add a column freq to the output DB.')
-    parser.add_argument('-n', '--ncpu', default=1,
+    parser.add_argument('-n', '--ncpu', default=1, type=int,
                         help='number of cpus. Default: 1.')
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
                         help='print progress.')
 
-    args = vars(parser.parse_args())
-    for o, v in args.items():
-        if o == "input": input_fname = v
-        if o == "out": output_fname = v
-        if o == "verbose": verbose = v
-        if o == "radius": radius = int(v)
-        if o == "counts": counts = v
-        if o == "ncpu": ncpu = int(v)
-
-    main(input_fname=input_fname,
-         output_fname=output_fname,
-         radius=radius,
-         counts=counts,
-         ncpu=ncpu,
-         verbose=verbose)
+    args = parser.parse_args()
+    main(input_fname=args.input,
+         output_fname=args.out,
+         radius=args.radius,
+         counts=args.counts,
+         ncpu=args.ncpu,
+         verbose=args.verbose)
 
 
 if __name__ == '__main__':

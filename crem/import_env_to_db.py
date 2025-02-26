@@ -37,7 +37,8 @@ def __get_additional_data(data, pool):
     return res
 
 
-def create_table(fname, table_name, counts):
+def create_table(fname, radius, counts):
+    table_name = 'radius%i' % radius
     with sqlite3.connect(fname) as conn:
         cur = conn.cursor()
         cur.execute("DROP TABLE IF EXISTS %s" % table_name)
@@ -57,14 +58,14 @@ def create_table(fname, table_name, counts):
                         "core_sma TEXT NOT NULL,"
                         "dist2 INTEGER NOT NULL)" % table_name)
         conn.commit()
+    return table_name
 
 
 def main(input_fname, output_fname, radius, counts, ncpu, verbose):
 
     pool = Pool(min(ncpu, cpu_count())) if ncpu > 1 else None
 
-    table_name = 'radius%i' % radius
-    create_table(output_fname, table_name, counts)
+    table_name = create_table(output_fname, radius, counts)
 
     with sqlite3.connect(output_fname) as conn:
         cur = conn.cursor()

@@ -509,7 +509,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
 
     """
 
-    products = {Chem.MolToSmiles(mol)}
+    products = {Chem.MolToSmiles(Chem.RemoveHs(mol))}
 
     protected_ids = set(protected_ids) if protected_ids else set()
 
@@ -599,7 +599,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                           Ids of all equivalent atoms should be supplied (e.g. to protect meta-position in toluene
                           ids of both carbons in meta-positions should be supplied).
                           This argument has a higher priority over `replace_ids`. Default: None.
-    :param symmetry_fixes: if set True duplicated fragments with equivalent atoms having different ids will be
+    :param symmetry_fixes: if Sset True duplicated fragments with equivalent atoms having different ids will be
                            enumerated. This makes sense if one wants to replace particular atom(s) which have
                            equivalent ones. By default, among equivalent atoms only those with the lowest ids
                            are replaced. This will result in generation of duplicated molecules if several equivalent

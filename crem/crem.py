@@ -259,12 +259,11 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
             for p in y:
                 e = Chem.SanitizeMol(p, catchErrors=True)
                 if e:
-                    sys.stderr.write("Molecule %s caused sanitization error %i. Transfomration %s was applied to $s and %s\n" %
-                                     (Chem.MolToSmiles(p, isomericSmiles=True),
-                                      e,
-                                      rxn_sma,
-                                      Chem.MolToSmiles(mol1, isomericSmiles=True),
-                                      Chem.MolToSmiles(mol2, isomericSmiles=True) if link else 'None'))
+                    sys.stderr.write(f"Molecule {Chem.MolToSmiles(p, isomericSmiles=True)} caused "
+                                     f"sanitization error {e}. "
+                                     f"Transformation {rxn_sma} was applied to "
+                                     f"{Chem.MolToSmiles(mol1, isomericSmiles=True)} and "
+                                     f"{Chem.MolToSmiles(mol2, isomericSmiles=True) if link else 'None'}\n")
                     sys.stderr.flush()
                 else:
                     smi = Chem.MolToSmiles(Chem.RemoveHs(p), isomericSmiles=True)

@@ -6,7 +6,7 @@ import sys
 from functools import partial
 from multiprocessing import Pool
 
-from arg_types import filepath_type, cpu_type
+from crem.arg_types import filepath_type, cpu_type
 from rdkit import Chem
 from rdkit.Chem.Descriptors import MolWt
 from rdkit.Chem.Crippen import MolLogP

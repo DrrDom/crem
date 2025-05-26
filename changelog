@@ -1,3 +1,7 @@
+0.2.15
+
+- minor refactoring of some functions and the package
+
 0.2.14
 
 - add utils.filter_max_ring_size function implemementing fragment filtration

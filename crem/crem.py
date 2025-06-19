@@ -1,5 +1,6 @@
 # Pavel Polishchuk, 2017
 
+import os
 import sys
 import re
 from collections import defaultdict
@@ -16,6 +17,11 @@ from crem.mol_context import patt_remove_map
 cycle_pattern = re.compile("[a-zA-Z\]][1-9]+")
 Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 patt_remove_brackets = re.compile('\(\)')
+
+
+def __check_db_existence(fname):
+    if not os.path.exists(fname):
+        raise FileNotFoundError(f'Database {fname} does not exist. ')
 
 
 def __extend_output_by_equivalent_atoms(mol, output):
@@ -513,6 +519,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
 
     """
 
+    __check_db_existence(db_name)
     products = {Chem.MolToSmiles(Chem.RemoveHs(mol))}
 
     protected_ids = set(protected_ids) if protected_ids else set()
@@ -642,6 +649,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
 
     """
 
+    __check_db_existence(db_name)
     m = Chem.AddHs(mol)
 
     # create the list of ids of protected Hs only would be enough, however in the first case (replace_ids) the full list
@@ -773,6 +781,7 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
 
         return protected_ids
 
+    __check_db_existence(db_name)
     products = set()
 
     mol1 = Chem.AddHs(mol1)

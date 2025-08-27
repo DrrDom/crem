@@ -1,3 +1,8 @@
+0.2.16
+
+- add checking for existence of a fragment database
+- suppress warnings "not removing hydrogen atom with dummy atom neighbors"
+
 0.2.15
 
 - minor refactoring of some functions and the package

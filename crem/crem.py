@@ -4,7 +4,7 @@ import os
 import sys
 import re
 from collections import defaultdict
-from rdkit import Chem
+from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdMMPA
 from crem.mol_context import get_canon_context_core, combine_core_env_to_rxn_smarts
@@ -343,8 +343,10 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
         for env, core, *ids in f:  # if link = True ids is two tuples, if link = False ids is a single tuple
 
+            RDLogger.DisableLog('rdApp.warning')
             num_heavy_atoms = Chem.MolFromSmiles(core).GetNumHeavyAtoms()
             hac_ratio = num_heavy_atoms / mol_hac
+            RDLogger.EnableLog('rdApp.warning')
 
             if (min_size <= num_heavy_atoms <= max_size and min_rel_size <= hac_ratio <= max_rel_size) \
                     or (replace_cycles and cycle_pattern.search(core)):

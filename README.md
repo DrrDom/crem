@@ -172,6 +172,7 @@ An example of a filtering function which will keep only fragments containing a s
 from collections import defaultdict
 from functools import partial
 from rdkit import Chem
+from crem.crem import _get_replacements
 
 def filter_function(row_ids, cur, radius, atom_number):
 
@@ -185,18 +186,13 @@ def filter_function(row_ids, cur, radius, atom_number):
     :return list of remaining row ids
     """
 
-    # this part may be kept intact, it collects from DB SMILES of fragments with given row ids
-    # since fragments may occur multiple times (due to different contexts) the results are collected in a dict
     if not row_ids:
         return []
-    batch_size = 32000  # SQLite has a limit on a number of passed values to a query
-    row_ids = list(row_ids)
+
+    # collect fragment SMILES and corresponding row ids from a database
     smis = defaultdict(list)  # {smi_1: [rowid_1, rowid_5, ...], ...}
-    for start in range(0, len(row_ids), batch_size):
-        batch = row_ids[start:start + batch_size]
-        sql = f"SELECT rowid, core_smi FROM radius{radius} WHERE rowid IN ({','.join('?' * len(batch))})"
-        for i, smi in cur.execute(sql, batch).fetchall():
-            smis[smi].append(i)
+    for rowid, core_smi, _, _ in _get_replacements(cur, radius, row_ids):
+        smis[core_smi].append(rowid)
 
     output_row_ids = []
     for smi, ids in smis.items():

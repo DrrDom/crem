@@ -299,8 +299,8 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
 
 def _get_replacements(db_cur, radius, row_ids):
     sql = f"""SELECT rowid, core_smi, core_sma, freq
-             FROM radius{radius}
-             WHERE rowid IN ({','.join(map(str, row_ids))})"""
+              FROM radius{radius}
+              WHERE rowid IN ({','.join(map(str, row_ids))})"""
     db_cur.execute(sql)
     return db_cur.fetchall()
 

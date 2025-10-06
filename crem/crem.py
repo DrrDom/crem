@@ -892,7 +892,7 @@ def link_mols2(*args, **kwargs):
 def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, max_size=8, min_rel_size=0,
                      max_rel_size=1, min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
                      protected_ids_1=None, protected_ids_2=None, replace_ids_1=None, replace_ids_2=None, min_freq=0,
-                     symmetry_fixes=False, filter_func=None, sample_func=None, **kwargs):
+                     symmetry_fixes=False, filter_func=None, sample_func=None, return_frag_smi_only=True, **kwargs):
     """
     An auxiliary function, which returns smiles of fragments in a DB which satisfy given criteria
     :param mol1: RDKit Mol object
@@ -957,6 +957,8 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                         radius (int) and the number of returned items (int). This is required to access the selected
                         fragments. Other arguments can be custom and user-defined. The function should return
                         a list/set of selected row ids.
+    :param return_frag_smi_only: control whether to return only SMILES of fragments selected from a database or return
+                                 a whole tuple of data which can be further passed to
     :param **kwargs: named arguments to additionally filter replacing fragments. Name is a name of a column in
                      the radiusX table of the fragment database. Values are a single value or 2-item tuple with lower
                      and upper bound of the corresponding parameter of a fragment. This can be useful to annotate
@@ -977,7 +979,7 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
     else:
         protected_ids_2 = None
 
-    for frag_smi in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius, dist=dist,
+    for res in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius, dist=dist,
                                        min_size=min_size, max_size=max_size, min_rel_size=min_rel_size,
                                        max_rel_size=max_rel_size, min_inc=min_inc, max_inc=max_inc,
                                        max_replacements=max_replacements, replace_cycles=replace_cycles,
@@ -985,3 +987,37 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                                        min_freq=min_freq, symmetry_fixes=symmetry_fixes, filter_func=filter_func,
                                        sample_func=sample_func, return_frag_smi_only=True, **kwargs):
         yield frag_smi
+                                       sample_func=sample_func, return_frag_smi_only=return_frag_smi_only, **kwargs):
+        yield res   # res = frag_smi if return_frag_smi_only=True else (frag_sma, core_sma, freq, ids[0], ids[1]) where ids[1] only for link
+
+
+def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn=False, return_rxn_freq=False,
+                               return_mol=False):
+
+    if isinstance(mol2, Chem.Mol):
+        products = set()
+    else:
+        products = {Chem.MolToSmiles(Chem.RemoveHs(mol1))}
+
+    for items in replacements:
+
+        if 4 <= len(items) <= 5:
+            frag_sma, core_sma, freq, ids1, *rest = items
+            ids2 = rest[0] if rest else None
+        else:
+            raise ValueError('The number of items in each tuple in the variable "replacements" should be either 4 or 5\n')
+
+        for smi, m, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, ids1, ids2):
+            if smi not in products:
+                products.add(smi)
+                res = [smi]
+                if return_rxn:
+                    res.append(rxn)
+                    if return_rxn_freq:
+                        res.append(freq)
+                if return_mol:
+                    res.append(m)
+                if len(res) == 1:
+                    yield res[0]
+                else:
+                    yield res

@@ -985,8 +985,6 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                                        max_replacements=max_replacements, replace_cycles=replace_cycles,
                                        protected_ids_1=protected_ids_1, protected_ids_2=protected_ids_2,
                                        min_freq=min_freq, symmetry_fixes=symmetry_fixes, filter_func=filter_func,
-                                       sample_func=sample_func, return_frag_smi_only=True, **kwargs):
-        yield frag_smi
                                        sample_func=sample_func, return_frag_smi_only=return_frag_smi_only, **kwargs):
         yield res   # res = frag_smi if return_frag_smi_only=True else (frag_sma, core_sma, freq, ids[0], ids[1]) where ids[1] only for link
 
@@ -1021,3 +1019,12 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
                     yield res[0]
                 else:
                     yield res
+
+
+def make_macrocycle(mol, db_name, radius=3, dist=None, min_size=1, max_size=10, max_replacements=None,
+                    replace_cycles=False, replace_ids=None, protected_ids=None, symmetry_fixes=False,
+                    min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
+                    sample_func=None, **kwargs):
+
+    pass
+

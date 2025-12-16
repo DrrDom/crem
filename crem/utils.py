@@ -201,7 +201,8 @@ def sample_csp3(row_ids, cur, radius, n):
     ids = []
     for smi in selected_smiles:
         ids.extend(d[smi])
-    ids = random.sample(ids, n)
+    if len(ids) < n:
+        ids = random.sample(ids, n)
     return ids
 
 

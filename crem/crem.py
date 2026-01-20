@@ -291,7 +291,7 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
     for k, v in kwargs.items():
         if isinstance(v, tuple) and len(v) == 2:
             sql += f" AND {k} BETWEEN {v[0]} AND {v[1]}"
-        else:
+        elif isinstance(v, (int, float, complex)) and not isinstance(v, bool):
             sql += f" AND {k} = {v}"
     db_cur.execute(sql)
     return set(i[0] for i in db_cur.fetchall())

@@ -431,6 +431,15 @@ def verify_conversion(old_db_path: str, new_db_path: str, radius: int = 3,
     new_cur = new_conn.cursor()
 
     try:
+        table_check = old_cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (f'radius{radius}',)
+        ).fetchone()
+
+        if not table_check:
+            print(f"Warning: radius{radius} table not found in old database, skipping verification")
+            return False
+
         # Get total counts
         old_count = old_cur.execute(f"SELECT COUNT(*) FROM radius{radius}").fetchone()[0]
         new_count = new_cur.execute(f"SELECT COUNT(*) FROM radius{radius}").fetchone()[0]

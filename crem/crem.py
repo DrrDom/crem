@@ -278,29 +278,87 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
                         yield smi, p, rxn_sma
 
 
-def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, **kwargs):
-    sql = f"""SELECT rowid
-              FROM radius{radius}
-              WHERE env = '{env}' AND 
-                    freq >= {min_freq} AND
-                    core_num_atoms BETWEEN {min_atoms} AND {max_atoms}"""
-    if isinstance(dist, int):
-        sql += f" AND dist2 = {dist}"
-    elif isinstance(dist, tuple) and len(dist) == 2:
-        sql += f" AND dist2 BETWEEN {dist[0]} AND {dist[1]}"
-    for k, v in kwargs.items():
-        if isinstance(v, tuple) and len(v) == 2:
-            sql += f" AND {k} BETWEEN {v[0]} AND {v[1]}"
-        elif isinstance(v, (int, float, complex)) and not isinstance(v, bool):
-            sql += f" AND {k} = {v}"
+def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, set_name='undefined', **kwargs):
+    user_version = db_cur.execute("PRAGMA user_version").fetchone()[0]
+    if user_version == 0:
+        sql = f"""SELECT rowid
+                  FROM radius{radius}
+                  WHERE env = '{env}' AND 
+                        freq >= {min_freq} AND
+                        core_num_atoms BETWEEN {min_atoms} AND {max_atoms}"""
+        if isinstance(dist, int):
+            sql += f" AND dist2 = {dist}"
+        elif isinstance(dist, tuple) and len(dist) == 2:
+            sql += f" AND dist2 BETWEEN {dist[0]} AND {dist[1]}"
+        for k, v in kwargs.items():
+            if isinstance(v, tuple) and len(v) == 2:
+                sql += f" AND {k} BETWEEN {v[0]} AND {v[1]}"
+            elif isinstance(v, (int, float, complex)) and not isinstance(v, bool):
+                sql += f" AND {k} = {v}"
+    elif user_version == 1:
+        def _sql_value(value):
+            if isinstance(value, str):
+                return "'" + value.replace("'", "''") + "'"
+            if isinstance(value, bool):
+                return "1" if value else "0"
+            if value is None:
+                return "NULL"
+            return str(value)
+
+        frags_columns = {row[1] for row in db_cur.execute("PRAGMA table_info(frags)").fetchall()}
+        frags_h_columns = {row[1] for row in db_cur.execute("PRAGMA table_info(frags_h)").fetchall()}
+
+        sql = f"""SELECT r.rowid
+                  FROM radius{radius} r
+                  JOIN envs e ON r.env_id = e.env_id
+                  JOIN frags f ON r.core_smi_id = f.core_smi_id
+                  JOIN frags_h h ON f.core_smi_h_id = h.core_smi_h_id
+                  WHERE e.env = {_sql_value(env)} AND
+                        r.{set_name} >= {_sql_value(min_freq)} AND
+                        f.core_num_atoms BETWEEN {_sql_value(min_atoms)} AND {_sql_value(max_atoms)}"""
+
+        if dist is not None:
+            if isinstance(dist, tuple):
+                if len(dist) != 2:
+                    raise ValueError("dist must be a single value or a tuple of two values")
+                sql += f" AND f.dist2 BETWEEN {_sql_value(dist[0])} AND {_sql_value(dist[1])}"
+            else:
+                sql += f" AND f.dist2 = {_sql_value(dist)}"
+
+        for k, v in kwargs.items():
+            if k in frags_columns:
+                column = f"f.{k}"
+            elif k in frags_h_columns:
+                column = f"h.{k}"
+            else:
+                raise ValueError(f"Column {k} not found in frags or frags_h")
+
+            if isinstance(v, tuple):
+                if len(v) != 2:
+                    raise ValueError(f"Value for {k} must be a single value or a tuple of two values")
+                sql += f" AND {column} BETWEEN {_sql_value(v[0])} AND {_sql_value(v[1])}"
+            else:
+                sql += f" AND {column} = {_sql_value(v)}"
+    else:
+        raise NotImplementedError('Not implemented for database version other than 0 and 1')
     db_cur.execute(sql)
     return set(i[0] for i in db_cur.fetchall())
 
 
 def _get_replacements(db_cur, radius, row_ids):
-    sql = f"""SELECT rowid, core_smi, core_sma, freq
-              FROM radius{radius}
-              WHERE rowid IN ({','.join(map(str, row_ids))})"""
+    user_version = db_cur.execute("PRAGMA user_version").fetchone()[0]
+    if user_version == 0:
+        sql = f"""SELECT rowid, core_smi, core_sma, freq
+                      FROM radius{radius}
+                      WHERE rowid IN ({','.join(map(str, row_ids))})"""
+    elif user_version == 1:
+        # Note: freq was removed from DB, therefore 0 is returned (maybe None is better)
+        sql = f"""SELECT r.rowid, f.core_smi, f.core_sma, 0
+                  FROM radius{radius} r, frags f 
+                  WHERE r.rowid IN ({','.join(map(str, row_ids))}) AND 
+                        r.core_smi_id = f.core_smi_id"""
+    else:
+        raise NotImplementedError('Not implemented for database version other than 0 and 1')
     db_cur.execute(sql)
     return db_cur.fetchall()
 
@@ -1027,4 +1085,3 @@ def make_macrocycle(mol, db_name, radius=3, dist=None, min_size=1, max_size=10, 
                     sample_func=None, **kwargs):
 
     pass
-

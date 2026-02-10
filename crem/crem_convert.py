@@ -6,7 +6,7 @@ Old format (per radius table):
     CREATE TABLE radiusN(env TEXT, core_smi TEXT, core_sma TEXT, dist2 INTEGER, ...)
 
 New format:
-    CREATE TABLE radiusN(env_id INTEGER NOT NULL, core_smi_id INTEGER NOT NULL)
+    CREATE TABLE radiusN(env_id INTEGER NOT NULL, core_smi_id INTEGER NOT NULL[, set_name ...])
     CREATE TABLE envs(env_id INTEGER PRIMARY KEY AUTOINCREMENT, env TEXT NOT NULL UNIQUE)
     CREATE TABLE frags(core_smi_id INTEGER PRIMARY KEY AUTOINCREMENT,
                       core_smi TEXT NOT NULL UNIQUE,
@@ -17,7 +17,7 @@ New format:
                         smi TEXT NOT NULL UNIQUE)
 
 Usage:
-    python convert_crem_db.py old_database.db new_database.db [--radii 1,2,3]
+    python convert_crem_db.py old_database.db new_database.db [--radii 1,2,3] [--set-name NAME]
 """
 
 import sqlite3
@@ -26,6 +26,7 @@ import traceback
 from collections import defaultdict
 from typing import Dict, List, Tuple, Set
 import sys
+import re
 from tqdm import tqdm
 from rdkit import Chem, RDLogger
 from rdkit.Chem import inchi
@@ -45,13 +46,45 @@ def replace_attachment_points_with_h(smiles: str) -> str:
     return Chem.CanonSmiles(smiles.replace('*', 'H'))
 
 
-def create_new_schema(new_conn: sqlite3.Connection, old_conn: sqlite3.Connection, radii: List[int]):
+def _validate_set_name(set_name: str) -> str:
+    if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', set_name):
+        raise ValueError(
+            "set name must be a valid SQLite identifier (letters, numbers, underscores; cannot start with a number)"
+        )
+    if set_name in ('env_id', 'core_smi_id'):
+        raise ValueError("set name cannot be env_id or core_smi_id")
+    return set_name
+
+
+def _get_freq_column_type(old_conn: sqlite3.Connection, radius: int) -> str:
+    table_name = f"radius{radius}"
+    table_check = old_conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,)
+    ).fetchone()
+    if not table_check:
+        return "INTEGER"
+    schema = old_conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    for col in schema:
+        if col[1] == 'freq':
+            return col[2] or "INTEGER"
+    raise ValueError(f"Missing required column 'freq' in {table_name}")
+
+
+def create_new_schema(
+    new_conn: sqlite3.Connection,
+    old_conn: sqlite3.Connection,
+    radii: List[int],
+    set_name: str = "undefined",
+):
     """
     Create the new database schema.
 
     Args:
         new_conn: SQLite connection to new database
+        old_conn: SQLite connection to old database
         radii: List of radius values to create tables for
+        set_name: Optional column name to add to radius tables
     """
     cur = new_conn.cursor()
 
@@ -89,10 +122,16 @@ def create_new_schema(new_conn: sqlite3.Connection, old_conn: sqlite3.Connection
 
     # Create radius tables
     for radius in radii:
+        column_defs = [
+            "env_id INTEGER NOT NULL",
+            "core_smi_id INTEGER NOT NULL",
+        ]
+        if set_name:
+            freq_type = _get_freq_column_type(old_conn, radius)
+            column_defs.append(f"{set_name} {freq_type} DEFAULT 0")
         cur.execute(f"""
             CREATE TABLE IF NOT EXISTS radius{radius}(
-                env_id INTEGER NOT NULL,
-                core_smi_id INTEGER NOT NULL,
+                {", ".join(column_defs)},
                 FOREIGN KEY (env_id) REFERENCES envs(env_id),
                 FOREIGN KEY (core_smi_id) REFERENCES frags(core_smi_id),
                 UNIQUE (env_id, core_smi_id)
@@ -115,8 +154,14 @@ def create_new_schema(new_conn: sqlite3.Connection, old_conn: sqlite3.Connection
                 new_conn.execute(sql)
 
 
-def convert_database(old_db_path: str, new_db_path: str, radii: List[int],
-                     batch_size: int = 10000, verbose: bool = True):
+def convert_database(
+    old_db_path: str,
+    new_db_path: str,
+    radii: List[int],
+    batch_size: int = 10000,
+    set_name: str = "undefined",
+    verbose: bool = True,
+):
     """
     Convert old database format to new deduplicated format.
 
@@ -125,10 +170,12 @@ def convert_database(old_db_path: str, new_db_path: str, radii: List[int],
         new_db_path: Path to new database (will be created)
         radii: List of radius values to convert
         batch_size: Number of rows to process in each batch
+        set_name: column name to add to radius tables and fill from freq column from old db
         verbose: Print progress information
     """
 
     RDLogger.DisableLog('rdApp.warning')
+    set_name = _validate_set_name(set_name)
 
     if verbose:
         print(f"Converting database from {old_db_path} to {new_db_path}")
@@ -143,7 +190,7 @@ def convert_database(old_db_path: str, new_db_path: str, radii: List[int],
 
     try:
         # Create new schema
-        create_new_schema(new_conn, old_conn, radii)
+        create_new_schema(new_conn, old_conn, radii, set_name)
 
         # Dictionaries to map unique values to IDs
         env_to_id: Dict[str, int] = {}
@@ -184,23 +231,22 @@ def convert_database(old_db_path: str, new_db_path: str, radii: List[int],
             missing_cols = [col for col in required_cols if col not in column_names]
             if missing_cols:
                 raise ValueError(f"Missing required columns in radius{radius}: {missing_cols}")
+            if set_name and 'freq' not in column_names:
+                raise ValueError(f"Missing required column 'freq' in radius{radius} for set-name")
 
             # Process in batches
             offset = 0
             pbar = tqdm(total=total_rows, disable=not verbose, desc=f"radius{radius}")
 
-            # make a specific order: env, core_smi, other columns ...
-            column_names_tranfer = column_names
-            column_names_tranfer.remove('freq')
-            column_names_tranfer.remove('env')
-            column_names_tranfer.insert(0, 'env')
-            column_names_tranfer.remove('core_smi')
-            column_names_tranfer.insert(1, 'core_smi')
+            frags_columns = [col for col in column_names if col not in ('env', 'core_smi', 'freq')]
+            column_names_transfer = ['env', 'core_smi'] + frags_columns
+            if set_name:
+                column_names_transfer.append('freq')
 
             while offset < total_rows:
                 # Fetch batch
                 rows = old_cur.execute(
-                    f'SELECT {",".join(column_names_tranfer)} FROM radius{radius} LIMIT ? OFFSET ?',
+                    f'SELECT {",".join(column_names_transfer)} FROM radius{radius} LIMIT ? OFFSET ?',
                     (batch_size, offset)
                 ).fetchall()
 
@@ -237,11 +283,17 @@ def convert_database(old_db_path: str, new_db_path: str, radii: List[int],
                     if core_smi not in core_smi_to_id:
                         frag_counter += 1
                         core_smi_to_id[core_smi] = frag_counter
-                        new_rows_frags.append(row[2:] + (core_smi_h_id, frag_counter, core_smi))
+                        new_rows_frags.append(
+                            row[2:2 + len(frags_columns)] + (core_smi_h_id, frag_counter, core_smi)
+                        )
                     core_smi_id = core_smi_to_id[core_smi]
 
                     # Add to radius table
-                    new_rows_radius.append((env_id, core_smi_id))
+                    if set_name:
+                        freq_value = row[2 + len(frags_columns)]
+                        new_rows_radius.append((env_id, core_smi_id, freq_value))
+                    else:
+                        new_rows_radius.append((env_id, core_smi_id))
 
                 # Batch insert into radius table
                 new_cur.executemany("INSERT INTO envs (env_id, env) VALUES (?, ?)",
@@ -250,14 +302,20 @@ def convert_database(old_db_path: str, new_db_path: str, radii: List[int],
                 new_cur.executemany("INSERT INTO frags_h (core_smi_h_id, smi, inchi) VALUES (?, ?, ?)",
                                     new_rows_frags_h)
 
-                sql = (f"INSERT INTO frags ({','.join(column_names_tranfer[2:])}, core_smi_h_id, core_smi_id, core_smi) "
-                       f"VALUES ({','.join('?' * (len(column_names_tranfer[2:]) + 3))})")
+                sql = (f"INSERT INTO frags ({','.join(frags_columns)}, core_smi_h_id, core_smi_id, core_smi) "
+                       f"VALUES ({','.join('?' * (len(frags_columns) + 3))})")
                 new_cur.executemany(sql, new_rows_frags)
 
-                new_cur.executemany(
-                    f"INSERT INTO radius{radius} (env_id, core_smi_id) VALUES (?, ?)",
-                    new_rows_radius
-                )
+                if set_name:
+                    new_cur.executemany(
+                        f"INSERT INTO radius{radius} (env_id, core_smi_id, {set_name}) VALUES (?, ?, ?)",
+                        new_rows_radius
+                    )
+                else:
+                    new_cur.executemany(
+                        f"INSERT INTO radius{radius} (env_id, core_smi_id) VALUES (?, ?)",
+                        new_rows_radius
+                    )
 
                 # Commit batch
                 new_conn.commit()
@@ -433,6 +491,7 @@ Example usage:
   python convert_crem_db.py old.db new.db
   python convert_crem_db.py old.db new.db --radii 1,2,3,4,5
   python convert_crem_db.py old.db new.db --batch-size 5000 --verify
+  python convert_crem_db.py old.db new.db --set-name my_set
         """
     )
 
@@ -442,6 +501,8 @@ Example usage:
                        help='Comma-separated list of radii to convert (default: 1,2,3,4,5)')
     parser.add_argument('--batch-size', type=int, default=10000,
                        help='Number of rows to process per batch (default: 10000)')
+    parser.add_argument('--set-name', default="undefined",
+                        help='Name of the new column to create in radius tables and populate from the freq column of old_db')
     parser.add_argument('--verify', action='store_true',
                        help='Verify conversion after completion')
     parser.add_argument('--quiet', action='store_true',
@@ -465,7 +526,12 @@ Example usage:
     verbose = not args.quiet
 
     try:
-        convert_database(args.old_db, args.new_db, radii, args.batch_size, verbose)
+        convert_database(old_db_path=args.old_db,
+                         new_db_path=args.new_db,
+                         radii=radii,
+                         batch_size=args.batch_size,
+                         set_name=args.set_name,
+                         verbose=verbose)
 
         # Verify if requested
         if args.verify:

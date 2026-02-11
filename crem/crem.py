@@ -353,10 +353,10 @@ def _get_replacements(db_cur, radius, row_ids):
                       WHERE rowid IN ({','.join(map(str, row_ids))})"""
     elif user_version == 1:
         # Note: freq was removed from DB, therefore 0 is returned (maybe None is better)
-        sql = f"""SELECT r.rowid, f.core_smi, f.core_sma, 0
-                  FROM radius{radius} r, frags f 
-                  WHERE r.rowid IN ({','.join(map(str, row_ids))}) AND 
-                        r.core_smi_id = f.core_smi_id"""
+        sql = f"""SELECT r.rowid, f.core_smi, r.core_sma, 0
+                  FROM radius{radius} r
+                  JOIN frags f ON r.core_smi_id = f.core_smi_id
+                  WHERE r.rowid IN ({','.join(map(str, row_ids))})"""
     else:
         raise NotImplementedError('Not implemented for database version other than 0 and 1')
     db_cur.execute(sql)

@@ -353,13 +353,17 @@ def _get_replacements(db_cur, radius, row_ids):
                       WHERE rowid IN ({','.join(map(str, row_ids))})"""
     elif user_version == 1:
         # Note: freq was removed from DB, therefore 0 is returned (maybe None is better)
-        sql = f"""SELECT r.rowid, f.core_smi, r.core_sma, 0
+        sql = f"""SELECT r.rowid, f.core_smi, e.env
                   FROM radius{radius} r
                   JOIN frags f ON r.core_smi_id = f.core_smi_id
+                  JOIN envs e ON r.env_id = e.env_id
                   WHERE r.rowid IN ({','.join(map(str, row_ids))})"""
     else:
         raise NotImplementedError('Not implemented for database version other than 0 and 1')
     db_cur.execute(sql)
+    if user_version == 1:
+        return [(row_id, core_smi, combine_core_env_to_rxn_smarts(core_smi, env, False), 0)
+                for row_id, core_smi, env in db_cur.fetchall()]
     return db_cur.fetchall()
 
 

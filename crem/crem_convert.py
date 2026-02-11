@@ -6,7 +6,7 @@ Old format (per radius table):
     CREATE TABLE radiusN(env TEXT, core_smi TEXT, core_sma TEXT, dist2 INTEGER, ...)
 
 New format:
-    CREATE TABLE radiusN(env_id INTEGER NOT NULL, core_smi_id INTEGER NOT NULL, core_sma TEXT NOT NULL[, set_name ...])
+    CREATE TABLE radiusN(env_id INTEGER NOT NULL, core_smi_id INTEGER NOT NULL[, set_name ...])
     CREATE TABLE envs(env_id INTEGER PRIMARY KEY AUTOINCREMENT, env TEXT NOT NULL UNIQUE)
     CREATE TABLE frags(core_smi_id INTEGER PRIMARY KEY AUTOINCREMENT,
                       core_smi TEXT NOT NULL UNIQUE,
@@ -29,6 +29,7 @@ import re
 from tqdm import tqdm
 from rdkit import Chem, RDLogger
 from rdkit.Chem import inchi
+from crem.mol_context import combine_core_env_to_rxn_smarts
 
 
 def replace_attachment_points_with_h(smiles: str) -> str:
@@ -55,23 +56,19 @@ def _validate_set_name(set_name: str) -> str:
     return set_name
 
 
-def _get_column_type(old_conn: sqlite3.Connection, radius: int, column: str, default: str) -> str:
+def _get_freq_column_type(old_conn: sqlite3.Connection, radius: int) -> str:
     table_name = f"radius{radius}"
     table_check = old_conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
         (table_name,)
     ).fetchone()
     if not table_check:
-        return default
+        return "INTEGER"
     schema = old_conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     for col in schema:
-        if col[1] == column:
-            return col[2] or default
-    raise ValueError(f"Missing required column '{column}' in {table_name}")
-
-
-def _get_freq_column_type(old_conn: sqlite3.Connection, radius: int) -> str:
-    return _get_column_type(old_conn, radius, "freq", "INTEGER")
+        if col[1] == 'freq':
+            return col[2] or "INTEGER"
+    raise ValueError(f"Missing required column 'freq' in {table_name}")
 
 
 def create_new_schema(
@@ -128,8 +125,6 @@ def create_new_schema(
             "env_id INTEGER NOT NULL",
             "core_smi_id INTEGER NOT NULL",
         ]
-        core_sma_type = _get_column_type(old_conn, radius, "core_sma", "TEXT")
-        column_defs.append(f"core_sma {core_sma_type} NOT NULL")
         if set_name:
             freq_type = _get_freq_column_type(old_conn, radius)
             column_defs.append(f"{set_name} {freq_type} DEFAULT 0")
@@ -243,7 +238,7 @@ def convert_database(
             pbar = tqdm(total=total_rows, disable=not verbose, desc=f"radius{radius}")
 
             frags_columns = [col for col in column_names if col not in ('env', 'core_smi', 'core_sma', 'freq')]
-            column_names_transfer = ['env', 'core_smi'] + frags_columns + ['core_sma']
+            column_names_transfer = ['env', 'core_smi'] + frags_columns
             if set_name:
                 column_names_transfer.append('freq')
 
@@ -293,12 +288,11 @@ def convert_database(
                     core_smi_id = core_smi_to_id[core_smi]
 
                     # Add to radius table
-                    core_sma = row[2 + len(frags_columns)]
                     if set_name:
-                        freq_value = row[3 + len(frags_columns)]
-                        new_rows_radius.append((env_id, core_smi_id, core_sma, freq_value))
+                        freq_value = row[2 + len(frags_columns)]
+                        new_rows_radius.append((env_id, core_smi_id, freq_value))
                     else:
-                        new_rows_radius.append((env_id, core_smi_id, core_sma))
+                        new_rows_radius.append((env_id, core_smi_id))
 
                 # Batch insert into radius table
                 new_cur.executemany("INSERT INTO envs (env_id, env) VALUES (?, ?)",
@@ -313,12 +307,12 @@ def convert_database(
 
                 if set_name:
                     new_cur.executemany(
-                        f"INSERT INTO radius{radius} (env_id, core_smi_id, core_sma, {set_name}) VALUES (?, ?, ?, ?)",
+                        f"INSERT INTO radius{radius} (env_id, core_smi_id, {set_name}) VALUES (?, ?, ?)",
                         new_rows_radius
                     )
                 else:
                     new_cur.executemany(
-                        f"INSERT INTO radius{radius} (env_id, core_smi_id, core_sma) VALUES (?, ?, ?)",
+                        f"INSERT INTO radius{radius} (env_id, core_smi_id) VALUES (?, ?)",
                         new_rows_radius
                     )
 
@@ -467,7 +461,7 @@ def verify_conversion(old_db_path: str, new_db_path: str, radius: int = 3,
         for env, core_smi, core_sma, dist2 in sample_rows:
             # Query new database
             result = new_cur.execute(f"""
-                SELECT f.core_smi, r.core_sma, f.dist2
+                SELECT f.core_smi, f.dist2
                 FROM radius{radius} r
                 JOIN frags f ON r.core_smi_id = f.core_smi_id
                 JOIN envs e ON r.env_id = e.env_id
@@ -478,10 +472,12 @@ def verify_conversion(old_db_path: str, new_db_path: str, radius: int = 3,
                 mismatches += 1
                 if verbose:
                     print(f"Missing entry: env={env[:50]}..., core_smi={core_smi}")
-            elif result != (core_smi, core_sma, dist2):
-                mismatches += 1
-                if verbose:
-                    print(f"Data mismatch: expected {(core_smi, core_sma, dist2)}, got {result}")
+            else:
+                new_core_sma = combine_core_env_to_rxn_smarts(core_smi, env, False)
+                if result != (core_smi, dist2) or new_core_sma != core_sma:
+                    mismatches += 1
+                    if verbose:
+                        print(f"Data mismatch: expected {(core_smi, core_sma, dist2)}, got {result}")
 
         if mismatches == 0:
             if verbose:

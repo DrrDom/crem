@@ -74,30 +74,77 @@ def entry_point():
 
     with sqlite3.connect(args.input) as conn:
         cur = conn.cursor()
-        tables = cur.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'radius%'")
-        tables = [i[0] for i in tables]
+        all_tables = cur.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        all_tables = {i[0] for i in all_tables}
+        user_version = cur.execute("PRAGMA user_version").fetchone()[0]
 
-        for table in tables:
+        if user_version == 1 and 'frags' not in all_tables:
+            raise RuntimeError("Detected new schema (user_version = 1) but missing frags table")
+
+        if user_version == 1:
             for prop in args.properties:
                 try:
-                    cur.execute(f"ALTER TABLE {table} ADD COLUMN {prop} NUMERIC DEFAULT NULL")
+                    cur.execute(f"ALTER TABLE frags ADD COLUMN {prop} NUMERIC DEFAULT NULL")
                     conn.commit()
                 except sqlite3.OperationalError as e:
                     sys.stderr.write(str(e) + '\n')
-            sql = f"SELECT rowid, core_smi FROM {table} WHERE " + \
+
+            sql = "SELECT core_smi_id, core_smi FROM frags WHERE " + \
                   " OR ".join([f"{prop} IS NULL" for prop in args.properties])
             cur.execute(sql)
             res = cur.fetchall()
 
-            for i, (rowid, upd_str) in enumerate(pool.imap_unordered(partial(calc, mw=mw, logp=logp, rtb=rtb, tpsa=tpsa, fcsp3=fcsp3), res), 1):
-                cur.execute(f"UPDATE {table} SET {upd_str} WHERE rowid = '{rowid}'")
+            for i, (rowid, upd_str) in enumerate(
+                pool.imap_unordered(
+                    partial(calc, mw=mw, logp=logp, rtb=rtb, tpsa=tpsa, fcsp3=fcsp3),
+                    res,
+                ),
+                1,
+            ):
+                cur.execute(f"UPDATE frags SET {upd_str} WHERE core_smi_id = '{rowid}'")
                 if i % 10000 == 0:
                     conn.commit()
                     if args.verbose:
                         sys.stderr.write(f'\r{i} fragments processed')
             conn.commit()
+            sys.stderr.write(f'\nProperties were successfully added to frags in {args.input}\n')
+
+        # Old schema: add properties to each radius table
+        elif user_version == 0:
+            radius_tables = cur.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'radius%'"
+            ).fetchall()
+            radius_tables = [i[0] for i in radius_tables]
+            for table in radius_tables:
+                for prop in args.properties:
+                    try:
+                        cur.execute(f"ALTER TABLE {table} ADD COLUMN {prop} NUMERIC DEFAULT NULL")
+                        conn.commit()
+                    except sqlite3.OperationalError as e:
+                        sys.stderr.write(str(e) + '\n')
+                sql = f"SELECT rowid, core_smi FROM {table} WHERE " + \
+                      " OR ".join([f"{prop} IS NULL" for prop in args.properties])
+                cur.execute(sql)
+                res = cur.fetchall()
+
+                for i, (rowid, upd_str) in enumerate(
+                    pool.imap_unordered(
+                        partial(calc, mw=mw, logp=logp, rtb=rtb, tpsa=tpsa, fcsp3=fcsp3),
+                        res,
+                    ),
+                    1,
+                ):
+                    cur.execute(f"UPDATE {table} SET {upd_str} WHERE rowid = '{rowid}'")
+                    if i % 10000 == 0:
+                        conn.commit()
+                        if args.verbose:
+                            sys.stderr.write(f'\r{i} fragments processed')
+                conn.commit()
 
             sys.stderr.write(f'\nProperties were successfully added to {args.input}\n')
+
+        else:
+            sys.stderr.write(f'Detected database version {user_version} is not supported\n')
 
 
 if __name__ == '__main__':

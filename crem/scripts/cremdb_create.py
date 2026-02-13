@@ -21,6 +21,7 @@ from rdkit import Chem, RDLogger
 from rdkit.Chem import inchi, rdMMPA
 
 from crem.mol_context import get_std_context_core_permutations
+from crem.scripts.cremdb_convert import create_indices
 
 
 def _validate_set_name(set_name):
@@ -390,105 +391,107 @@ def main():
 
     RDLogger.DisableLog("rdApp.warning")
 
-    conn = sqlite3.connect(args.output_db)
-    _ensure_schema(conn, radii, set_name)
-    _init_temp_tables(conn)
-    cur = conn.cursor()
+    with sqlite3.connect(args.output_db) as conn:
+        _ensure_schema(conn, radii, set_name)
+        _init_temp_tables(conn)
+        cur = conn.cursor()
 
-    processed_handle = None
-    if args.processed_chunks:
-        processed_handle = open(args.processed_chunks, "a", encoding="utf-8")
+        processed_handle = None
+        if args.processed_chunks:
+            processed_handle = open(args.processed_chunks, "a", encoding="utf-8")
 
-    input_handle, zstd_handle = _open_input(args.input, args.zstd)
+        input_handle, zstd_handle = _open_input(args.input, args.zstd)
 
-    total_stats = {"lines": 0, "fragments": 0, "pairs": 0}
-    chunks_processed = 0
-    chunks_skipped = 0
-    start_time = time.time()
+        total_stats = {"lines": 0, "fragments": 0, "pairs": 0}
+        chunks_processed = 0
+        chunks_skipped = 0
+        start_time = time.time()
 
-    ncpu = min(cpu_count(), max(args.ncpu, 1))
-    pool = Pool(
-        ncpu,
-        initializer=_init_worker,
-        initargs=(radii, args.keep_stereo, args.max_heavy_atoms, args.mode, args.sep),
-    )
+        ncpu = min(cpu_count(), max(args.ncpu, 1))
+        pool = Pool(
+            ncpu,
+            initializer=_init_worker,
+            initargs=(radii, args.keep_stereo, args.max_heavy_atoms, args.mode, args.sep),
+        )
 
-    try:
-        def task_iter():
-            nonlocal chunks_skipped
-            for chunk_id, lines in enumerate(_iter_chunks(input_handle, args.chunk_size)):
-                if chunk_id in skip_chunks:
-                    chunks_skipped += 1
-                    continue
-                yield (chunk_id, lines)
+        try:
+            def task_iter():
+                nonlocal chunks_skipped
+                for chunk_id, lines in enumerate(_iter_chunks(input_handle, args.chunk_size)):
+                    if chunk_id in skip_chunks:
+                        chunks_skipped += 1
+                        continue
+                    yield (chunk_id, lines)
 
-        for chunk_id, envs, core_info, counts, stats in pool.imap_unordered(
-            _process_chunk, task_iter(), chunksize=1
-        ):
-            chunk_start_time = time.time()
+            for chunk_id, envs, core_info, counts, stats in pool.imap_unordered(
+                _process_chunk, task_iter(), chunksize=1
+            ):
+                chunk_start_time = time.time()
 
-            conn.execute("BEGIN")
-            _clear_temp_tables(conn)
-            _load_tmp_envs(conn, envs)
-            _load_tmp_cores(conn, core_info)
-            _ensure_env_ids(conn)
-            _ensure_inchi_ids(conn)
-            _ensure_core_ids(conn)
-            _update_radius_counts(conn, counts, set_name)
-            conn.commit()
+                conn.execute("BEGIN")
+                _clear_temp_tables(conn)
+                _load_tmp_envs(conn, envs)
+                _load_tmp_cores(conn, core_info)
+                _ensure_env_ids(conn)
+                _ensure_inchi_ids(conn)
+                _ensure_core_ids(conn)
+                _update_radius_counts(conn, counts, set_name)
+                conn.commit()
 
-            print(f"{chunk_id}: {time.time() - chunk_start_time} | n_envs: {len(envs)}")
+                print(f"{chunk_id}: {time.time() - chunk_start_time} | n_envs: {len(envs)}")
 
-            chunks_processed += 1
-            total_stats["lines"] += stats["lines"]
-            total_stats["fragments"] += stats["fragments"]
-            total_stats["pairs"] += stats["pairs"]
+                chunks_processed += 1
+                total_stats["lines"] += stats["lines"]
+                total_stats["fragments"] += stats["fragments"]
+                total_stats["pairs"] += stats["pairs"]
 
+                if processed_handle:
+                    processed_handle.write(f"{chunk_id}\n")
+                    processed_handle.flush()
+
+                # if args.log_every and chunks_processed % args.log_every == 0:
+                #     elapsed = time.time() - start_time
+                #     rate = total_stats["lines"] / elapsed if elapsed > 0 else 0
+                #     sys.stderr.write(
+                #         f"\rChunks: {chunks_processed} processed, {chunks_skipped} skipped | "
+                #         f"mols: {total_stats['lines']} | frags: {total_stats['fragments']} | "
+                #         f"pairs: {total_stats['pairs']} | {rate:.1f} mol/s"
+                #     )
+                #     sys.stderr.flush()
+
+            create_indices(conn, radii, True)
+
+        finally:
+            pool.close()
+            pool.join()
+            input_handle.close()
+            if zstd_handle:
+                zstd_handle.close()
             if processed_handle:
-                processed_handle.write(f"{chunk_id}\n")
-                processed_handle.flush()
+                processed_handle.close()
 
-            # if args.log_every and chunks_processed % args.log_every == 0:
-            #     elapsed = time.time() - start_time
-            #     rate = total_stats["lines"] / elapsed if elapsed > 0 else 0
-            #     sys.stderr.write(
-            #         f"\rChunks: {chunks_processed} processed, {chunks_skipped} skipped | "
-            #         f"mols: {total_stats['lines']} | frags: {total_stats['fragments']} | "
-            #         f"pairs: {total_stats['pairs']} | {rate:.1f} mol/s"
-            #     )
-            #     sys.stderr.flush()
+        sys.stderr.write("\n")
 
-    finally:
-        pool.close()
-        pool.join()
-        input_handle.close()
-        if zstd_handle:
-            zstd_handle.close()
-        if processed_handle:
-            processed_handle.close()
+        env_count = cur.execute("SELECT COUNT(*) FROM envs").fetchone()[0]
+        frag_count = cur.execute("SELECT COUNT(*) FROM frags").fetchone()[0]
+        frag_h_count = cur.execute("SELECT COUNT(*) FROM frags_h").fetchone()[0]
+        radius_counts = {}
+        for radius in radii:
+            radius_counts[radius] = cur.execute(f"SELECT COUNT(rowid) FROM radius{radius}").fetchone()[0]
 
-    sys.stderr.write("\n")
-
-    env_count = cur.execute("SELECT COUNT(*) FROM envs").fetchone()[0]
-    frag_count = cur.execute("SELECT COUNT(*) FROM frags").fetchone()[0]
-    frag_h_count = cur.execute("SELECT COUNT(*) FROM frags_h").fetchone()[0]
-    radius_counts = {}
-    for radius in radii:
-        radius_counts[radius] = cur.execute(f"SELECT COUNT(rowid) FROM radius{radius}").fetchone()[0]
-
-    elapsed = time.time() - start_time
-    print("Done.")
-    print(f"Chunks processed: {chunks_processed}")
-    print(f"Chunks skipped: {chunks_skipped}")
-    print(f"Molecules processed: {total_stats['lines']}")
-    print(f"Fragments generated: {total_stats['fragments']}")
-    print(f"Env/core pairs: {total_stats['pairs']}")
-    print(f"Unique envs: {env_count}")
-    print(f"Unique frags: {frag_count}")
-    print(f"Unique frags_h: {frag_h_count}")
-    for radius, count in radius_counts.items():
-        print(f"radius{radius} rows: {count}")
-    print(f"Elapsed: {elapsed:.1f}s")
+        elapsed = time.time() - start_time
+        print("Done.")
+        print(f"Chunks processed: {chunks_processed}")
+        print(f"Chunks skipped: {chunks_skipped}")
+        print(f"Molecules processed: {total_stats['lines']}")
+        print(f"Fragments generated: {total_stats['fragments']}")
+        print(f"Env/core pairs: {total_stats['pairs']}")
+        print(f"Unique envs: {env_count}")
+        print(f"Unique frags: {frag_count}")
+        print(f"Unique frags_h: {frag_h_count}")
+        for radius, count in radius_counts.items():
+            print(f"radius{radius} rows: {count}")
+        print(f"Elapsed: {elapsed:.1f}s")
 
 
 if __name__ == "__main__":

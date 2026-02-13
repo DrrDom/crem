@@ -374,7 +374,6 @@ def main():
         help="Space-separated radii (default: 1 2 3 4 5)",
     )
     parser.add_argument("--chunk-size", type=int, default=100, help="Lines per chunk (default: 100)")
-    parser.add_argument("--ncpu", type=int, default=1, help="Number of worker processes (default: 1)")
     parser.add_argument("--max-heavy-atoms", type=int, default=15, help="Max heavy atoms in core (default: 15)")
     parser.add_argument("--keep-stereo", action="store_true", help="Keep stereo in env/core")
     parser.add_argument("--mode", type=int, choices=[0, 1, 2], default=0, help="Fragmentation mode: 0 - all atoms, 1 - only heavy atoms, 2 - only hydrogen atoms (default: 0)")
@@ -382,8 +381,9 @@ def main():
     parser.add_argument("--processed-chunks", default=None, help="Path to processed chunks file (append)")
     parser.add_argument("--exclude-chunks", default=None, help="Path to chunk list to skip")
     parser.add_argument("--zstd", action="store_true", help="Force zstd input")
-    parser.add_argument("--log-every", type=int, default=1, help="Log progress every N chunks (default: 1)")
+    parser.add_argument("--log-every", type=int, default=None, help="Log progress every N chunks (default: None)")
     parser.add_argument("--batch-size", type=int, default=500, help="DB lookup batch size (default: 500)")
+    parser.add_argument("--ncpu", type=int, default=1, help="Number of worker processes (default: 1)")
     args = parser.parse_args()
 
     set_name = _validate_set_name(args.set_name)
@@ -444,8 +444,6 @@ def main():
                 _update_radius_counts(conn, counts, set_name)
                 conn.commit()
 
-                print(f"{chunk_id}: {time.time() - chunk_start_time} | n_envs: {len(envs)}")
-
                 chunks_processed += 1
                 total_stats["lines"] += stats["lines"]
                 total_stats["fragments"] += stats["fragments"]
@@ -455,15 +453,15 @@ def main():
                     processed_handle.write(f"{chunk_id}\n")
                     processed_handle.flush()
 
-                # if args.log_every and chunks_processed % args.log_every == 0:
-                #     elapsed = time.time() - start_time
-                #     rate = total_stats["lines"] / elapsed if elapsed > 0 else 0
-                #     sys.stderr.write(
-                #         f"\rChunks: {chunks_processed} processed, {chunks_skipped} skipped | "
-                #         f"mols: {total_stats['lines']} | frags: {total_stats['fragments']} | "
-                #         f"pairs: {total_stats['pairs']} | {rate:.1f} mol/s"
-                #     )
-                #     sys.stderr.flush()
+                if args.log_every and chunks_processed % args.log_every == 0:
+                    elapsed = time.time() - start_time
+                    rate = total_stats["lines"] / elapsed if elapsed > 0 else 0
+                    sys.stderr.write(
+                        f"\rChunks: {chunks_processed} processed, {chunks_skipped} skipped | "
+                        f"mols: {total_stats['lines']} | frags: {total_stats['fragments']} | "
+                        f"pairs: {total_stats['pairs']} | {rate:.1f} mol/s"
+                    )
+                    sys.stderr.flush()
 
             create_indices(conn, radii, True)
 

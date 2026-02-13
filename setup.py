@@ -34,6 +34,8 @@ setuptools.setup(
                        'frag_to_env = crem.frag_to_env_mp:entry_point',
                        'env_to_db = crem.import_env_to_db:entry_point',
                        'guacamol_test = crem.guacamol_crem_test:entry_point',
-                       'crem_add_prop = crem.scripts.crem_add_prop:entry_point']},
+                       'crem_add_prop = crem.scripts.crem_add_prop:entry_point',
+                       'cremdb_create = crem.scripts.cremdb_create:main',
+                       'cremdb_convert = crem.scripts.cremdb_convert:main',]},
     scripts=['crem/scripts/crem_create_frag_db.sh']
 )

@@ -26,7 +26,7 @@ def fragment_mol(smi, smi_id='', mode=0, sep_out=','):
                 output = sep_out.join((smi, smi_id, core, chains)) + '\n'
                 outlines.add(output)
         # hydrogen splitting
-        if mode == 1 or mode == 2:
+        if mode == 0 or mode == 2:
             mol = Chem.AddHs(mol)
             n = mol.GetNumAtoms() - mol.GetNumHeavyAtoms()
             if n < 60:

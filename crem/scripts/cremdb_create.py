@@ -90,7 +90,7 @@ def _fragment_mol(smi, smi_id, mode):
         for core, chains in frags:
             outlines.add((smi, smi_id, core, chains))
 
-    if mode == 1 or mode == 2:
+    if mode == 0 or mode == 2:
         mol = Chem.AddHs(mol)
         n = mol.GetNumAtoms() - mol.GetNumHeavyAtoms()
         if n < 60:  # TODO: remove this limit, it is not very reasonable
@@ -371,7 +371,7 @@ def main():
     parser.add_argument("--ncpu", type=int, default=1, help="Number of worker processes (default: 1)")
     parser.add_argument("--max-heavy-atoms", type=int, default=15, help="Max heavy atoms in core (default: 15)")
     parser.add_argument("--keep-stereo", action="store_true", help="Keep stereo in env/core")
-    parser.add_argument("--mode", type=int, choices=[0, 1, 2], default=1, help="Fragmentation mode (default: 1)")
+    parser.add_argument("--mode", type=int, choices=[0, 1, 2], default=0, help="Fragmentation mode: 0 - all atoms, 1 - only heavy atoms, 2 - only hydrogen atoms (default: 0)")
     parser.add_argument("--sep", default=None, help="Input delimiter (default: whitespace)")
     parser.add_argument("--processed-chunks", default=None, help="Path to processed chunks file (append)")
     parser.add_argument("--exclude-chunks", default=None, help="Path to chunk list to skip")

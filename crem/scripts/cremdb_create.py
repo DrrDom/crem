@@ -366,8 +366,14 @@ def main():
     parser.add_argument("input", help="Input SMILES file (text or .zst)")
     parser.add_argument("output_db", help="Output SQLite DB file")
     parser.add_argument("set_name", help="Set name (column) to accumulate frequencies")
-    parser.add_argument("--radii", default="1,2,3,4,5", help="Comma-separated radii (default: 1,2,3,4,5)")
-    parser.add_argument("--chunk-size", type=int, default=10000, help="Lines per chunk (default: 10000)")
+    parser.add_argument(
+        "--radii",
+        nargs="+",
+        type=int,
+        default=[1, 2, 3, 4, 5],
+        help="Space-separated radii (default: 1 2 3 4 5)",
+    )
+    parser.add_argument("--chunk-size", type=int, default=100, help="Lines per chunk (default: 100)")
     parser.add_argument("--ncpu", type=int, default=1, help="Number of worker processes (default: 1)")
     parser.add_argument("--max-heavy-atoms", type=int, default=15, help="Max heavy atoms in core (default: 15)")
     parser.add_argument("--keep-stereo", action="store_true", help="Keep stereo in env/core")
@@ -381,7 +387,7 @@ def main():
     args = parser.parse_args()
 
     set_name = _validate_set_name(args.set_name)
-    radii = [int(r.strip()) for r in args.radii.split(",") if r.strip()]
+    radii = sorted(set(args.radii))
     if not radii:
         raise ValueError("At least one radius must be specified")
 

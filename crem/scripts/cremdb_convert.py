@@ -16,7 +16,7 @@ New format:
                         smi TEXT NOT NULL UNIQUE)
 
 Usage:
-    python convert_crem_db.py old_database.db new_database.db [--radii 1,2,3] [--set-name NAME]
+    python convert_crem_db.py old_database.db new_database.db [--radii 1 2 3] [--set-name NAME]
 """
 
 import sqlite3
@@ -499,7 +499,7 @@ def main():
         epilog="""
 Example usage:
   python convert_crem_db.py old.db new.db
-  python convert_crem_db.py old.db new.db --radii 1,2,3,4,5
+  python convert_crem_db.py old.db new.db --radii 1 2 3 4 5
   python convert_crem_db.py old.db new.db --batch-size 5000 --verify
   python convert_crem_db.py old.db new.db --set-name my_set
         """
@@ -507,8 +507,13 @@ Example usage:
 
     parser.add_argument('old_db', help='Path to existing database')
     parser.add_argument('new_db', help='Path to new database (will be created)')
-    parser.add_argument('--radii', default='1,2,3,4,5',
-                       help='Comma-separated list of radii to convert (default: 1,2,3,4,5)')
+    parser.add_argument(
+        '--radii',
+        nargs='+',
+        type=int,
+        default=[1, 2, 3, 4, 5],
+        help='Space-separated list of radii to convert (default: 1 2 3 4 5)',
+    )
     parser.add_argument('--batch-size', type=int, default=10000,
                        help='Number of rows to process per batch (default: 10000)')
     parser.add_argument('--set-name', default="undefined",
@@ -521,7 +526,7 @@ Example usage:
     args = parser.parse_args()
 
     # Parse radii
-    radii = [int(r.strip()) for r in args.radii.split(',')]
+    radii = sorted(set(args.radii))
 
     # Check if output file exists
     import os

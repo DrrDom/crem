@@ -264,91 +264,87 @@ def _ensure_schema(conn, radii, set_name):
     conn.commit()
 
 
-def _batched(seq, size):
-    for i in range(0, len(seq), size):
-        yield seq[i:i + size]
-
-
-def _ensure_env_ids(conn, envs, cache, batch_size):
-    new_envs = [env for env in envs if env not in cache]
-    if new_envs:
-        conn.executemany("INSERT OR IGNORE INTO envs (env) VALUES (?)", [(e,) for e in new_envs])
-        for batch in _batched(new_envs, batch_size):
-            placeholders = ",".join("?" * len(batch))
-            for env_id, env in conn.execute(
-                f"SELECT env_id, env FROM envs WHERE env IN ({placeholders})",
-                batch,
-            ):
-                cache[env] = env_id
-
-
-def _ensure_inchi_ids(conn, core_info, cache, batch_size):
-    new_inchis = []
-    for core_smi, (_, _, core_smi_h, inchi_val) in core_info.items():
-        if inchi_val and inchi_val not in cache:
-            new_inchis.append((core_smi_h, inchi_val))
-
-    if new_inchis:
-        conn.executemany(
-            "INSERT OR IGNORE INTO frags_h (smi, inchi) VALUES (?, ?)",
-            new_inchis,
+def _init_temp_tables(conn):
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS tmp_envs(env TEXT PRIMARY KEY)")
+    conn.execute("""
+        CREATE TEMP TABLE IF NOT EXISTS tmp_cores(
+            core_smi TEXT PRIMARY KEY,
+            core_num_atoms INTEGER NOT NULL,
+            dist2 INTEGER NOT NULL,
+            core_smi_h TEXT NOT NULL,
+            inchi TEXT NOT NULL
         )
-        inchi_vals = [i for _, i in new_inchis]
-        for batch in _batched(inchi_vals, batch_size):
-            placeholders = ",".join("?" * len(batch))
-            for core_smi_h_id, inchi_val in conn.execute(
-                f"SELECT core_smi_h_id, inchi FROM frags_h WHERE inchi IN ({placeholders})",
-                batch,
-            ):
-                cache[inchi_val] = core_smi_h_id
+    """)
+    conn.execute("""
+        CREATE TEMP TABLE IF NOT EXISTS tmp_counts(
+            env TEXT NOT NULL,
+            core_smi TEXT NOT NULL,
+            cnt INTEGER NOT NULL
+        )
+    """)
 
 
-def _ensure_core_ids(conn, core_info, core_cache, inchi_cache, batch_size):
-    new_cores = []
-    for core_smi, (core_num_atoms, dist2, _, inchi_val) in core_info.items():
-        if core_smi in core_cache:
-            continue
+def _clear_temp_tables(conn):
+    conn.execute("DELETE FROM tmp_envs")
+    conn.execute("DELETE FROM tmp_cores")
+    conn.execute("DELETE FROM tmp_counts")
+
+
+def _load_tmp_envs(conn, envs):
+    if envs:
+        conn.executemany("INSERT OR IGNORE INTO tmp_envs (env) VALUES (?)", [(e,) for e in envs])
+
+
+def _load_tmp_cores(conn, core_info):
+    rows = []
+    for core_smi, (core_num_atoms, dist2, core_smi_h, inchi_val) in core_info.items():
         if not inchi_val:
             continue
-        core_smi_h_id = inchi_cache.get(inchi_val)
-        if core_smi_h_id is None:
-            continue
-        new_cores.append((core_smi, core_num_atoms, dist2, core_smi_h_id))
-
-    if new_cores:
+        rows.append((core_smi, core_num_atoms, dist2, core_smi_h, inchi_val))
+    if rows:
         conn.executemany(
-            "INSERT OR IGNORE INTO frags (core_smi, core_num_atoms, dist2, core_smi_h_id) VALUES (?, ?, ?, ?)",
-            new_cores,
+            "INSERT OR IGNORE INTO tmp_cores (core_smi, core_num_atoms, dist2, core_smi_h, inchi) "
+            "VALUES (?, ?, ?, ?, ?)",
+            rows,
         )
-        core_vals = [c for c, _, _, _ in new_cores]
-        for batch in _batched(core_vals, batch_size):
-            placeholders = ",".join("?" * len(batch))
-            for core_smi_id, core_smi in conn.execute(
-                f"SELECT core_smi_id, core_smi FROM frags WHERE core_smi IN ({placeholders})",
-                batch,
-            ):
-                core_cache[core_smi] = core_smi_id
 
 
-def _update_radius_counts(conn, counts, env_cache, core_cache, set_name):
+def _ensure_env_ids(conn):
+    conn.execute("INSERT OR IGNORE INTO envs (env) SELECT env FROM tmp_envs")
+
+
+def _ensure_inchi_ids(conn):
+    conn.execute("INSERT OR IGNORE INTO frags_h (smi, inchi) SELECT core_smi_h, inchi FROM tmp_cores")
+
+
+def _ensure_core_ids(conn):
+    conn.execute("""
+        INSERT OR IGNORE INTO frags (core_smi, core_num_atoms, dist2, core_smi_h_id)
+        SELECT t.core_smi, t.core_num_atoms, t.dist2, h.core_smi_h_id
+        FROM tmp_cores t
+        JOIN frags_h h ON t.inchi = h.inchi
+    """)
+
+
+def _update_radius_counts(conn, counts, set_name):
     for radius, mapping in counts.items():
-        rows = []
-        for (env, core_smi), cnt in mapping.items():
-            env_id = env_cache.get(env)
-            core_id = core_cache.get(core_smi)
-            if env_id is None or core_id is None:
-                continue
-            rows.append((env_id, core_id, cnt))
-        if rows:
-            conn.executemany(
-                f"""
-                INSERT INTO radius{radius} (env_id, core_smi_id, {set_name})
-                VALUES (?, ?, ?)
-                ON CONFLICT(env_id, core_smi_id)
-                DO UPDATE SET {set_name} = {set_name} + excluded.{set_name}
-                """,
-                rows,
-            )
+        if not mapping:
+            continue
+        conn.execute("DELETE FROM tmp_counts")
+        conn.executemany(
+            "INSERT INTO tmp_counts (env, core_smi, cnt) VALUES (?, ?, ?)",
+            [(env, core_smi, cnt) for (env, core_smi), cnt in mapping.items()],
+        )
+        conn.execute(f"""
+            INSERT INTO radius{radius} (env_id, core_smi_id, {set_name})
+            SELECT e.env_id, f.core_smi_id, SUM(tc.cnt)
+            FROM tmp_counts tc
+            JOIN envs e ON e.env = tc.env
+            JOIN frags f ON f.core_smi = tc.core_smi
+            GROUP BY e.env_id, f.core_smi_id
+            ON CONFLICT(env_id, core_smi_id)
+            DO UPDATE SET {set_name} = {set_name} + excluded.{set_name}
+        """)
 
 
 def _open_input(path, force_zstd):
@@ -396,11 +392,8 @@ def main():
 
     conn = sqlite3.connect(args.output_db)
     _ensure_schema(conn, radii, set_name)
+    _init_temp_tables(conn)
     cur = conn.cursor()
-
-    env_cache = {}
-    inchi_cache = {}
-    core_cache = {}
 
     processed_handle = None
     if args.processed_chunks:
@@ -432,12 +425,19 @@ def main():
         for chunk_id, envs, core_info, counts, stats in pool.imap_unordered(
             _process_chunk, task_iter(), chunksize=1
         ):
+            chunk_start_time = time.time()
+
             conn.execute("BEGIN")
-            _ensure_env_ids(conn, envs, env_cache, args.batch_size)
-            _ensure_inchi_ids(conn, core_info, inchi_cache, args.batch_size)
-            _ensure_core_ids(conn, core_info, core_cache, inchi_cache, args.batch_size)
-            _update_radius_counts(conn, counts, env_cache, core_cache, set_name)
+            _clear_temp_tables(conn)
+            _load_tmp_envs(conn, envs)
+            _load_tmp_cores(conn, core_info)
+            _ensure_env_ids(conn)
+            _ensure_inchi_ids(conn)
+            _ensure_core_ids(conn)
+            _update_radius_counts(conn, counts, set_name)
             conn.commit()
+
+            print(f"{chunk_id}: {time.time() - chunk_start_time} | n_envs: {len(envs)}")
 
             chunks_processed += 1
             total_stats["lines"] += stats["lines"]
@@ -448,15 +448,15 @@ def main():
                 processed_handle.write(f"{chunk_id}\n")
                 processed_handle.flush()
 
-            if args.log_every and chunks_processed % args.log_every == 0:
-                elapsed = time.time() - start_time
-                rate = total_stats["lines"] / elapsed if elapsed > 0 else 0
-                sys.stderr.write(
-                    f"\rChunks: {chunks_processed} processed, {chunks_skipped} skipped | "
-                    f"mols: {total_stats['lines']} | frags: {total_stats['fragments']} | "
-                    f"pairs: {total_stats['pairs']} | {rate:.1f} mol/s"
-                )
-                sys.stderr.flush()
+            # if args.log_every and chunks_processed % args.log_every == 0:
+            #     elapsed = time.time() - start_time
+            #     rate = total_stats["lines"] / elapsed if elapsed > 0 else 0
+            #     sys.stderr.write(
+            #         f"\rChunks: {chunks_processed} processed, {chunks_skipped} skipped | "
+            #         f"mols: {total_stats['lines']} | frags: {total_stats['fragments']} | "
+            #         f"pairs: {total_stats['pairs']} | {rate:.1f} mol/s"
+            #     )
+            #     sys.stderr.flush()
 
     finally:
         pool.close()

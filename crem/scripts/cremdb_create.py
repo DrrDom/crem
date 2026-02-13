@@ -365,7 +365,8 @@ def main():
     parser = argparse.ArgumentParser(description="Stream-like fragment DB creation for new schema")
     parser.add_argument("input", help="Input SMILES file (text or .zst)")
     parser.add_argument("output_db", help="Output SQLite DB file")
-    parser.add_argument("set_name", help="Set name (column) to accumulate frequencies")
+    parser.add_argument("set_name", default="undefined",
+                        help="Fragment set name (column) to accumulate frequencies (default: undefined)")
     parser.add_argument(
         "--radii",
         nargs="+",

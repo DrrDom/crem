@@ -461,7 +461,6 @@ def main():
     parser.add_argument("--exclude-chunks", default=None, help="Path to chunk list to skip")
     parser.add_argument("--zstd", action="store_true", help="Force zstd input")
     parser.add_argument("--log-every", type=int, default=None, help="Log progress every N chunks (default: None)")
-    parser.add_argument("--batch-size", type=int, default=500, help="DB lookup batch size (default: 500)")
     parser.add_argument("--ncpu", type=int, default=1, help="Number of worker processes (default: 1)")
     args = parser.parse_args()
 

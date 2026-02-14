@@ -272,17 +272,16 @@ def _process_chunk(task):
 def _read_chunk_ids(path):
     if not path or not os.path.exists(path):
         return set()
-    ids = set()
+    ids = []
     with open(path) as handle:
         for line in handle:
             line = line.strip()
-            if not line:
-                continue
-            try:
-                ids.add(int(line))
-            except ValueError:
-                continue
-    return ids
+            if line:
+                try:
+                    ids.append(int(line))
+                except ValueError:
+                    continue
+    return set(ids)
 
 
 def _ensure_schema(conn, radii, set_names):
@@ -458,7 +457,6 @@ def main():
     parser.add_argument("--mode", type=int, choices=[0, 1, 2], default=0, help="Fragmentation mode: 0 - all atoms, 1 - only heavy atoms, 2 - only hydrogen atoms (default: 0)")
     parser.add_argument("--sep", default=None, help="Input delimiter (default: whitespace)")
     parser.add_argument("--processed-chunks", default=None, help="Path to processed chunks file (append)")
-    parser.add_argument("--exclude-chunks", default=None, help="Path to chunk list to skip")
     parser.add_argument("--zstd", action="store_true", help="Force zstd input")
     parser.add_argument("--log-every", type=int, default=None, help="Log progress every N chunks (default: None)")
     parser.add_argument("--ncpu", type=int, default=1, help="Number of worker processes (default: 1)")
@@ -469,9 +467,7 @@ def main():
     if not radii:
         raise ValueError("At least one radius must be specified")
 
-    exclude_chunks = _read_chunk_ids(args.exclude_chunks)
-    processed_chunks = _read_chunk_ids(args.processed_chunks)
-    skip_chunks = exclude_chunks | processed_chunks
+    skip_chunks = _read_chunk_ids(args.processed_chunks)
 
     RDLogger.DisableLog("rdApp.warning")
 

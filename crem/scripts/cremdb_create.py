@@ -4,6 +4,7 @@ Stream-like fragment DB creation for the new schema.
 
 Processes input SMILES in chunks, aggregates counts per chunk, and updates
 the output DB on the fly. A processed-chunks file can be used to resume.
+The set name can be a single column name or one or more files with SMILES ids.
 """
 
 import argparse
@@ -32,6 +33,46 @@ def _validate_set_name(set_name):
     if set_name in ('env_id', 'core_smi_id'):
         raise ValueError("set_name cannot be env_id or core_smi_id")
     return set_name
+
+
+def _read_ids(path):
+    ids = []
+    with open(path, "rt", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            ids.append(line)
+    return set(ids)
+
+
+def _resolve_set_names(values):
+    if not values:
+        raise ValueError("At least one set name or set file must be specified")
+
+    existing = [os.path.basename(os.path.splitext(v)[0]) for v in values if os.path.exists(v)]
+    if existing:
+        if len(existing) < len(values):
+            raise ValueError(
+                f"Mixed set names and files are not allowed. Missing files: "
+                f"{', '.join([v for v in values if v not in existing])}"
+            )
+
+        set_names = []
+        set_ids = {}
+        for path in values:
+            base = os.path.basename(path)
+            name = os.path.splitext(base)[0]
+            name = _validate_set_name(name)
+            if name in set_ids:
+                raise ValueError(f"Duplicate set name derived from files: {name}")
+            set_names.append(name)
+            set_ids[name] = _read_ids(path)
+        return set_names, set_ids
+
+    if len(values) != 1:
+        raise ValueError("Provide a single set name or one or more set files")
+    return [_validate_set_name(values[0])], None
 
 
 def _replace_attachment_points_with_h(smiles):
@@ -146,17 +187,21 @@ def _env_core_from_fragment(core, context, radius, keep_stereo, max_heavy_atoms)
     return output
 
 
-def _init_worker(radii, keep_stereo, max_heavy_atoms, mode, sep):
+def _init_worker(radii, keep_stereo, max_heavy_atoms, mode, sep, set_names, set_ids):
     global _RADII
     global _KEEP_STEREO
     global _MAX_HEAVY_ATOMS
     global _MODE
     global _SEP
+    global _SET_NAMES
+    global _SET_IDS
     _RADII = radii
     _KEEP_STEREO = keep_stereo
     _MAX_HEAVY_ATOMS = max_heavy_atoms
     _MODE = mode
     _SEP = sep
+    _SET_NAMES = set_names
+    _SET_IDS = set_ids
     RDLogger.DisableLog('rdApp.warning')
 
 
@@ -164,7 +209,7 @@ def _process_chunk(task):
     chunk_id, lines = task
     envs = set()
     core_info = {}
-    counts = {r: defaultdict(int) for r in _RADII}
+    counts = {name: {r: defaultdict(int) for r in _RADII} for name in _SET_NAMES}
     stats = {
         "lines": 0,
         "fragments": 0,
@@ -176,6 +221,13 @@ def _process_chunk(task):
         if not smi:
             continue
         stats["lines"] += 1
+        if _SET_IDS is None:
+            member_sets = _SET_NAMES
+        else:
+            member_sets = [name for name, ids in _SET_IDS.items() if smi_id in ids]
+            if not member_sets:
+                continue
+
         frags = _fragment_mol(smi, smi_id, _MODE)
         stats["fragments"] += len(frags)
         for _, _, core, context in frags:
@@ -187,7 +239,8 @@ def _process_chunk(task):
                     _KEEP_STEREO,
                     _MAX_HEAVY_ATOMS,
                 ):
-                    counts[radius][(env, core_smi)] += 1
+                    for set_name in member_sets:
+                        counts[set_name][radius][(env, core_smi)] += 1
                     envs.add(env)
                     if core_smi not in core_info:
                         dist2 = _core_dist2(core_smi)
@@ -216,7 +269,7 @@ def _read_chunk_ids(path):
     return ids
 
 
-def _ensure_schema(conn, radii, set_name):
+def _ensure_schema(conn, radii, set_names):
     conn.execute("PRAGMA user_version = 1")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
@@ -252,15 +305,15 @@ def _ensure_schema(conn, radii, set_name):
             CREATE TABLE IF NOT EXISTS radius{radius}(
                 env_id INTEGER NOT NULL,
                 core_smi_id INTEGER NOT NULL,
-                {set_name} INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (env_id) REFERENCES envs(env_id),
                 FOREIGN KEY (core_smi_id) REFERENCES frags(core_smi_id),
                 UNIQUE (env_id, core_smi_id)
             )
         """)
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info(radius{radius})")}
-        if set_name not in cols:
-            conn.execute(f"ALTER TABLE radius{radius} ADD COLUMN {set_name} INTEGER NOT NULL DEFAULT 0")
+        for set_name in set_names:
+            if set_name not in cols:
+                conn.execute(f"ALTER TABLE radius{radius} ADD COLUMN {set_name} INTEGER NOT NULL DEFAULT 0")
 
     conn.commit()
 
@@ -327,25 +380,27 @@ def _ensure_core_ids(conn):
     """)
 
 
-def _update_radius_counts(conn, counts, set_name):
-    for radius, mapping in counts.items():
-        if not mapping:
-            continue
-        conn.execute("DELETE FROM tmp_counts")
-        conn.executemany(
-            "INSERT INTO tmp_counts (env, core_smi, cnt) VALUES (?, ?, ?)",
-            [(env, core_smi, cnt) for (env, core_smi), cnt in mapping.items()],
-        )
-        conn.execute(f"""
-            INSERT INTO radius{radius} (env_id, core_smi_id, {set_name})
-            SELECT e.env_id, f.core_smi_id, SUM(tc.cnt)
-            FROM tmp_counts tc
-            JOIN envs e ON e.env = tc.env
-            JOIN frags f ON f.core_smi = tc.core_smi
-            GROUP BY e.env_id, f.core_smi_id
-            ON CONFLICT(env_id, core_smi_id)
-            DO UPDATE SET {set_name} = {set_name} + excluded.{set_name}
-        """)
+def _update_radius_counts(conn, counts, set_names):
+    for set_name in set_names:
+        per_set = counts.get(set_name, {})
+        for radius, mapping in per_set.items():
+            if not mapping:
+                continue
+            conn.execute("DELETE FROM tmp_counts")
+            conn.executemany(
+                "INSERT INTO tmp_counts (env, core_smi, cnt) VALUES (?, ?, ?)",
+                [(env, core_smi, cnt) for (env, core_smi), cnt in mapping.items()],
+            )
+            conn.execute(f"""
+                INSERT INTO radius{radius} (env_id, core_smi_id, {set_name})
+                SELECT e.env_id, f.core_smi_id, SUM(tc.cnt)
+                FROM tmp_counts tc
+                JOIN envs e ON e.env = tc.env
+                JOIN frags f ON f.core_smi = tc.core_smi
+                GROUP BY e.env_id, f.core_smi_id
+                ON CONFLICT(env_id, core_smi_id)
+                DO UPDATE SET {set_name} = {set_name} + excluded.{set_name}
+            """)
 
 
 def _open_input(path, force_zstd):
@@ -365,8 +420,11 @@ def main():
     parser = argparse.ArgumentParser(description="Stream-like fragment DB creation for new schema")
     parser.add_argument("input", help="Input SMILES file (text or .zst)")
     parser.add_argument("output_db", help="Output SQLite DB file")
-    parser.add_argument("set_name", default="undefined",
-                        help="Fragment set name (column) to accumulate frequencies (default: undefined)")
+    parser.add_argument(
+        "set_name",
+        nargs="+",
+        help="Set name (single) or one or more files with SMILES ids; column name is file basename without extension",
+    )
     parser.add_argument(
         "--radii",
         nargs="+",
@@ -387,7 +445,7 @@ def main():
     parser.add_argument("--ncpu", type=int, default=1, help="Number of worker processes (default: 1)")
     args = parser.parse_args()
 
-    set_name = _validate_set_name(args.set_name)
+    set_names, set_ids = _resolve_set_names(args.set_name)
     radii = sorted(set(args.radii))
     if not radii:
         raise ValueError("At least one radius must be specified")
@@ -399,7 +457,7 @@ def main():
     RDLogger.DisableLog("rdApp.warning")
 
     with sqlite3.connect(args.output_db) as conn:
-        _ensure_schema(conn, radii, set_name)
+        _ensure_schema(conn, radii, set_names)
         _init_temp_tables(conn)
         cur = conn.cursor()
 
@@ -418,7 +476,15 @@ def main():
         pool = Pool(
             ncpu,
             initializer=_init_worker,
-            initargs=(radii, args.keep_stereo, args.max_heavy_atoms, args.mode, args.sep),
+            initargs=(
+                radii,
+                args.keep_stereo,
+                args.max_heavy_atoms,
+                args.mode,
+                args.sep,
+                set_names,
+                set_ids,
+            ),
         )
 
         try:
@@ -442,7 +508,7 @@ def main():
                 _ensure_env_ids(conn)
                 _ensure_inchi_ids(conn)
                 _ensure_core_ids(conn)
-                _update_radius_counts(conn, counts, set_name)
+                _update_radius_counts(conn, counts, set_names)
                 conn.commit()
 
                 chunks_processed += 1

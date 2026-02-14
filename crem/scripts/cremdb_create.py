@@ -50,17 +50,19 @@ def _resolve_set_names(values):
     if not values:
         raise ValueError("At least one set name or set file must be specified")
 
-    existing = [os.path.basename(os.path.splitext(v)[0]) for v in values if os.path.exists(v)]
-    if existing:
-        if len(existing) < len(values):
+    existing_files = [v for v in values if os.path.exists(v)]
+    missing_files = [v for v in values if not os.path.exists(v)]
+
+    if existing_files:
+        if len(missing_files) > 1:
             raise ValueError(
-                f"Mixed set names and files are not allowed. Missing files: "
-                f"{', '.join([v for v in values if v not in existing])}"
+                "Mixed set names and files are not allowed. "
+                f"Missing files: {', '.join(missing_files)}"
             )
 
         set_names = []
         set_ids = {}
-        for path in values:
+        for path in existing_files:
             base = os.path.basename(path)
             name = os.path.splitext(base)[0]
             name = _validate_set_name(name)
@@ -68,6 +70,15 @@ def _resolve_set_names(values):
                 raise ValueError(f"Duplicate set name derived from files: {name}")
             set_names.append(name)
             set_ids[name] = _read_ids(path)
+
+        if len(missing_files) == 1:
+            base = os.path.basename(missing_files[0])
+            default_name = _validate_set_name(os.path.splitext(base)[0])
+            if default_name in set_ids:
+                raise ValueError(f"Duplicate set name: {default_name}")
+            set_names.append(default_name)
+            set_ids[default_name] = None
+
         return set_names, set_ids
 
     if len(values) != 1:
@@ -224,7 +235,12 @@ def _process_chunk(task):
         if _SET_IDS is None:
             member_sets = _SET_NAMES
         else:
-            member_sets = [name for name, ids in _SET_IDS.items() if smi_id in ids]
+            member_sets = []
+            for name, ids in _SET_IDS.items():
+                if ids is None:
+                    member_sets.append(name)
+                elif smi_id in ids:
+                    member_sets.append(name)
             if not member_sets:
                 continue
 
@@ -423,7 +439,11 @@ def main():
     parser.add_argument(
         "set_name",
         nargs="+",
-        help="Set name (single) or one or more files with SMILES ids; column name is file basename without extension",
+        help=(
+            "Set name (single) and/or one or more files with SMILES ids; file basenames "
+            "become set names in the DB, so they must follow SQLite column naming rules "
+            "(letters, numbers, underscores; cannot start with a number)"
+        ),
     )
     parser.add_argument(
         "--radii",

@@ -1151,13 +1151,55 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
                     yield res
 
 
-def make_macrocycle(mol, db_name, radius=3, dist=None, min_size=1, max_size=10, max_replacements=None,
+def make_macrocycle(mol, db_name, radius=3, dist=None, min_atoms=1, max_atoms=10, max_replacements=None,
                     replace_ids=None, protected_ids=None, min_freq=0, return_rxn=False, return_rxn_freq=False,
                     return_mol=False, ncores=1, filter_func=None, sample_func=None, set_name='undefined', **kwargs):
     """
     Generate macrocycles by linking two atoms in the same molecule with a linker from DB.
 
-    Atoms available for linking are controlled with replace_ids/protected_ids similarly to link_mols.
+    :param mol: RDKit Mol object.
+    :param db_name: path to DB file with fragment replacements.
+    :param radius: radius of context which will be considered for replacement. Default: 3.
+    :param dist: topological distance between two attachment points in the linking fragment.
+                 Can be a single integer or a tuple of lower and upper bound values.
+    :param min_atoms: minimum number of heavy atoms in the linker. Default: 1.
+    :param max_atoms: maximum number of heavy atoms in the linker. Default: 10.
+    :param max_replacements: maximum number of replacements to make. If the number of replacements available in DB is
+                             greater than the specified value the specified number of randomly chosen replacements
+                             will be applied. Default: None.
+    :param replace_ids: iterable with ids of heavy atom with replaceable Hs or/and ids of H atoms to replace,
+                        it has lower priority over `protected_ids` (replace_ids
+                        which are present in protected_ids would be protected). Default: None.
+    :param protected_ids: iterable with ids of heavy atoms at which no H replacement should be made and/or ids of
+                          protected hydrogens. This argument has a higher priority over `replace_ids`. Default: None.
+    :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
+    :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
+    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB. Default: False.
+    :param return_mol: whether to additionally return RDKit Mol object of a generated molecule. Default: False.
+    :param ncores: number of cores. Default: 1.
+    :param filter_func: a function which will filter selected fragments by additional rules
+                        (in this way one may add arbitrary selection constrains). The function takes necessary first
+                        three arguments: row_ids (list or set of row_ids from the fragment database supplied to
+                        make_macrocycle), cursor of that fragment database and radius (int). This is required to
+                        access the selected fragments. Other arguments are custom and user-defined.
+                        It is the most convenient to define a filtering function, implement specific logic inside and
+                        pass it using functools.partial. The filtering function should return a list/set
+                        of row ids which are a subset of the input row ids.
+    :param sample_func: a function which will sample selected fragments if max_replacements is supplied. If omitted
+                        uniform sampling will be used. The function takes necessary first four arguments: row_ids
+                        (list or set of row_ids from the fragment database), cursor of that fragment database,
+                        radius (int) and the number of returned items (int). This is required to access the selected
+                        fragments. Other arguments can be custom and user-defined. The function should return
+                        a list/set of selected row ids.
+    :param set_name: column name in radius tables defining the name of a set of fragments to use with min_freq in v1
+                     databases. Default: undefined.
+    :param **kwargs: named arguments to additionally filter replacing fragments. For v0 DB use columns from radiusX,
+                     for v1 DB use columns from frags or frags_h. Values are a single value or 2-item tuple with lower
+                     and upper bound of the corresponding parameter of a fragment.
+    :return: generator over new molecules. If no additional return arguments were requested this is a generator over
+             SMILES of new molecules. If additional return values were requested, the function yields a list where
+             the first item is SMILES, then rxn string (optional), frequency (optional), RDKit Mol object (optional).
+             Only entries with distinct SMILES will be returned.
     """
 
     def __get_protected_ids(m, replace_ids, protected_ids):
@@ -1200,7 +1242,7 @@ def make_macrocycle(mol, db_name, radius=3, dist=None, min_size=1, max_size=10, 
     if ncores == 1:
 
         for _, _, frag_sma, core_sma, _, ids_1, ids_2, freq, intramol in __get_data_macrocycle(
-                mol, db_name, radius, dist, min_size, max_size, protected_ids, min_freq, set_name, max_replacements,
+                mol, db_name, radius, dist, min_atoms, max_atoms, protected_ids, min_freq, set_name, max_replacements,
                 filter_func=filter_func, sample_func=sample_func, **kwargs):
             for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, ids_1, ids_2, intramol=intramol):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
@@ -1223,7 +1265,7 @@ def make_macrocycle(mol, db_name, radius=3, dist=None, min_size=1, max_size=10, 
         p = Pool(min(ncores, cpu_count()))
         try:
             for items in p.imap(__frag_replace_mp, __get_data_macrocycle(mol, db_name, radius, dist,
-                                                                         min_size, max_size, protected_ids,
+                                                                         min_atoms, max_atoms, protected_ids,
                                                                          min_freq, set_name, max_replacements,
                                                                          filter_func=filter_func,
                                                                          sample_func=sample_func, **kwargs),

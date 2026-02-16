@@ -202,7 +202,7 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
     return output  # list of tuples (env smiles, core smiles, list of atom ids)
 
 
-def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, frag_ids_2=None):
+def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, frag_ids_2=None, intramol=False):
     """
     INPUT
         mol1:        mol for mutate, grow or link,
@@ -244,17 +244,34 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
     if isinstance(mol1, Chem.Mol) and isinstance(mol2, Chem.Mol):
         link = True
 
+    if intramol and link:
+        raise ValueError("Intramolecular replacement expects a single reactant molecule")
+
     frag_sma = frag_sma.replace('*', '!#1')  # to avoid map H in mol with explicit H (lead to wrong replacement)
-    rxn_sma = "%s>>%s" % (frag_sma, replace_sma)
+    if intramol:
+        # Parentheses force matching all reactant fragments in a single molecule.
+        rxn_sma = "(%s)>>%s" % (frag_sma, replace_sma)
+    else:
+        rxn_sma = "%s>>%s" % (frag_sma, replace_sma)
     rxn = AllChem.ReactionFromSmarts(rxn_sma)
 
-    set_protected_atoms(mol1, frag_ids_1, radius)
-    if link:
+    if intramol:
+        ids = set()
+        if frag_ids_1:
+            ids.update(frag_ids_1)
+        if frag_ids_2:
+            ids.update(frag_ids_2)
+        set_protected_atoms(mol1, ids, radius)
+    else:
+        set_protected_atoms(mol1, frag_ids_1, radius)
+    if link and not intramol:
         set_protected_atoms(mol2, frag_ids_2, radius)
 
-    if link:
+    if intramol:
+        reactants = [[mol1]]
+    elif link:
         reactants = [[mol1, mol2], [mol2, mol1]]   # separate parts in SMARTS match only the corresponding molecule
-                                                   # in C.O C will match only the first reactnt and O - only the second
+                                                   # in C.O C will match only the first reactфnt and O - only the second
     else:
         reactants = [[mol1]]
 
@@ -470,7 +487,15 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
 def __frag_replace_mp(items):
     # return smi, rxn_smarts, rxn_smarts_freq, mol
-    return [(*item, items[-1]) for item in __frag_replace(*items[:-1])]
+    if len(items) == 9:
+        freq = items[-2]
+        intramol = items[-1]
+        args = items[:-2]
+    else:
+        freq = items[-1]
+        intramol = False
+        args = items[:-1]
+    return [(*item, freq) for item in __frag_replace(*args, intramol=intramol)]
 
 
 def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
@@ -506,6 +531,33 @@ def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, pro
                                                                      sample_func=sample_func,
                                                                      return_frag_smi_only=False, **kwargs):
         yield mol1, mol2, frag_sma, core_sma, radius, ids_1, ids_2, freq
+
+
+def __get_data_macrocycle(mol, db_name, radius, dist, min_size, max_size, protected_ids, min_freq, set_name,
+                          max_replacements, filter_func=None, sample_func=None, **kwargs):
+    seen_pairs = set()
+    for frag_sma, core_sma, freq, ids_1, ids_2 in __gen_replacements(mol1=mol, mol2=mol, db_name=db_name,
+                                                                      radius=radius, dist=dist,
+                                                                      min_size=0, max_size=0,
+                                                                      min_rel_size=0, max_rel_size=1,
+                                                                      min_inc=min_size, max_inc=max_size,
+                                                                      max_replacements=max_replacements,
+                                                                      replace_cycles=False,
+                                                                      protected_ids_1=protected_ids,
+                                                                      protected_ids_2=protected_ids,
+                                                                      min_freq=min_freq, set_name=set_name,
+                                                                      filter_func=filter_func,
+                                                                      sample_func=sample_func,
+                                                                      return_frag_smi_only=False, **kwargs):
+        ids_1 = tuple(ids_1) if ids_1 else tuple()
+        ids_2 = tuple(ids_2) if ids_2 else tuple()
+        if ids_1 == ids_2:
+            continue
+        pair_key = (frag_sma, core_sma, frozenset((ids_1, ids_2)))
+        if pair_key in seen_pairs:
+            continue
+        seen_pairs.add(pair_key)
+        yield mol, None, frag_sma, core_sma, radius, ids_1, ids_2, freq, True
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
@@ -1100,8 +1152,97 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
 
 
 def make_macrocycle(mol, db_name, radius=3, dist=None, min_size=1, max_size=10, max_replacements=None,
-                    replace_cycles=False, replace_ids=None, protected_ids=None, symmetry_fixes=False,
-                    min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1,
-                    filter_func=None, sample_func=None, set_name='undefined', **kwargs):
+                    replace_ids=None, protected_ids=None, min_freq=0, return_rxn=False, return_rxn_freq=False,
+                    return_mol=False, ncores=1, filter_func=None, sample_func=None, set_name='undefined', **kwargs):
+    """
+    Generate macrocycles by linking two atoms in the same molecule with a linker from DB.
 
-    pass
+    Atoms available for linking are controlled with replace_ids/protected_ids similarly to link_mols.
+    """
+
+    def __get_protected_ids(m, replace_ids, protected_ids):
+        # the list of ids of heavy atoms with protected hydrogens should be returned
+
+        if protected_ids:
+
+            ids = set()
+            for i in protected_ids:
+                if m.GetAtomWithIdx(i).GetAtomicNum() == 1:
+                    ids.update(a.GetIdx() for a in m.GetAtomWithIdx(i).GetNeighbors())
+                else:
+                    ids.add(i)
+            protected_ids = ids
+
+        else:
+            protected_ids = set()
+
+        if replace_ids:
+
+            ids = set()
+            for i in replace_ids:
+                if m.GetAtomWithIdx(i).GetAtomicNum() == 1:
+                    ids.update(a.GetIdx() for a in m.GetAtomWithIdx(i).GetNeighbors())
+                else:
+                    ids.add(i)
+            heavy_atom_ids = set(a.GetIdx() for a in m.GetAtoms() if a.GetAtomicNum() > 1)
+            ids = heavy_atom_ids.difference(ids)  # ids of heavy atoms which should be protected
+            protected_ids.update(ids)  # since protected_ids has a higher priority add them anyway
+
+        return protected_ids
+
+    __check_db_existence(db_name)
+    products = set()
+
+    mol = Chem.AddHs(mol)
+    source_smi = Chem.MolToSmiles(Chem.RemoveHs(mol), isomericSmiles=True)
+    protected_ids = __get_protected_ids(mol, replace_ids, protected_ids)
+
+    if ncores == 1:
+
+        for _, _, frag_sma, core_sma, _, ids_1, ids_2, freq, intramol in __get_data_macrocycle(
+                mol, db_name, radius, dist, min_size, max_size, protected_ids, min_freq, set_name, max_replacements,
+                filter_func=filter_func, sample_func=sample_func, **kwargs):
+            for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, ids_1, ids_2, intramol=intramol):
+                if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
+                    if smi != source_smi and smi not in products:
+                        products.add(smi)
+                        res = [smi]
+                        if return_rxn:
+                            res.append(rxn)
+                            if return_rxn_freq:
+                                res.append(freq)
+                        if return_mol:
+                            res.append(m)
+                        if len(res) == 1:
+                            yield res[0]
+                        else:
+                            yield res
+
+    else:
+
+        p = Pool(min(ncores, cpu_count()))
+        try:
+            for items in p.imap(__frag_replace_mp, __get_data_macrocycle(mol, db_name, radius, dist,
+                                                                         min_size, max_size, protected_ids,
+                                                                         min_freq, set_name, max_replacements,
+                                                                         filter_func=filter_func,
+                                                                         sample_func=sample_func, **kwargs),
+                                chunksize=100):
+                for smi, m, rxn, freq in items:
+                    if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
+                        if smi != source_smi and smi not in products:
+                            products.add(smi)
+                            res = [smi]
+                            if return_rxn:
+                                res.append(rxn)
+                                if return_rxn_freq:
+                                    res.append(freq)
+                            if return_mol:
+                                res.append(m)
+                            if len(res) == 1:
+                                yield res[0]
+                            else:
+                                yield res
+        finally:
+            p.close()
+            p.join()

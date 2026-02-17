@@ -5,9 +5,9 @@ import sys
 import re
 from collections import defaultdict
 from rdkit import Chem, RDLogger
-from rdkit.Chem import AllChem
+from rdkit.Chem import rdmolops
 from rdkit.Chem import rdMMPA
-from crem.mol_context import get_canon_context_core, combine_core_env_to_rxn_smarts
+from crem.mol_context import get_canon_context_core
 from multiprocessing import Pool, cpu_count
 import sqlite3
 import random
@@ -207,36 +207,74 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
     INPUT
         mol1:        mol for mutate, grow or link,
         mol2:        for link,
-        frag_sma:    SMARTS of a fragment,
-        replace_sma: SMARTS of a replacement (from DB),
+        frag_sma:    SMILES of a source fragment core,
+        replace_sma: SMILES of a replacement core (from DB),
         radius:      context radius considered,
-        frag_ids_1, frag_ids_2: atom ids of a fragment if you need to make exact replacement, if None all possible
-                                matches will be replaced
+        frag_ids_1, frag_ids_2: atom ids of a fragment(s) to be replaced
     OUTPUT
         generator returns canonical isomeric SMILES, RDKit Mol and rxn rule
     """
 
-    def set_protected_atoms(mol, ids, radius):
+    def _collect_boundary_bonds(m, core_ids):
+        boundary = []
+        cut_id = 1
+        core_ids = set(core_ids)
+        for b in m.GetBonds():
+            i = b.GetBeginAtomIdx()
+            j = b.GetEndAtomIdx()
+            i_in = i in core_ids
+            j_in = j in core_ids
+            if i_in ^ j_in:
+                core_idx = i if i_in else j
+                ctx_idx = j if i_in else i
+                boundary.append((cut_id, core_idx, ctx_idx, b.GetBondType()))
+                cut_id += 1
+        return boundary
 
-        def extend_ids(mol, atom_id, r, ids):
-            if r:
-                for a in mol.GetAtomWithIdx(atom_id).GetNeighbors():
-                    a_id = a.GetIdx()
-                    if a_id not in ids:
-                        ids.add(a_id)
-                    extend_ids(mol, a_id, r-1, ids)
+    def _add_dummies_and_remove_atoms(m, boundary, remove_atom_ids, attach_to_core):
+        rw = Chem.RWMol(m)
+        for cut_id, core_idx, ctx_idx, bond_type in boundary:
+            anchor = core_idx if attach_to_core else ctx_idx
+            a = Chem.Atom(0)
+            a.SetIsotope(cut_id)
+            dummy_idx = rw.AddAtom(a)
+            rw.AddBond(anchor, dummy_idx, bond_type)
+        for idx in sorted(remove_atom_ids, reverse=True):
+            rw.RemoveAtom(idx)
+        out = rw.GetMol()
+        out.UpdatePropertyCache(strict=False)
+        return out
 
-        if ids:
-            ids_ext = set(ids)
-            # extend atom ids on neighbour atoms
-            for i in ids:
-                extend_ids(mol, i, radius + 1, ids_ext)
-            # protect untouched atoms
-            for a in mol.GetAtoms():
-                if a.GetAtomicNum() > 1 and a.GetIdx() not in ids_ext:
-                    a.SetProp('_protected', '1')
-                else:
-                    a.ClearProp('_protected')
+    def _iter_labeled_scaffolds(scaffold_base, site_core, src_core):
+        map_atoms = [a.GetIdx() for a in src_core.GetAtoms() if a.GetAtomicNum() == 0 and a.GetAtomMapNum()]
+        if not map_atoms:
+            return
+        for match in site_core.GetSubstructMatches(src_core, uniquify=False):
+            cut_to_map = {}
+            for q_idx in map_atoms:
+                map_num = src_core.GetAtomWithIdx(q_idx).GetAtomMapNum()
+                t_idx = match[q_idx]
+                cut_id = site_core.GetAtomWithIdx(t_idx).GetIsotope()
+                if cut_id:
+                    cut_to_map[cut_id] = map_num
+            if len(cut_to_map) != len(map_atoms):
+                continue
+
+            rw = Chem.RWMol(scaffold_base)
+            ok = True
+            for a in rw.GetAtoms():
+                if a.GetAtomicNum() == 0 and a.GetIsotope():
+                    cut_id = a.GetIsotope()
+                    map_num = cut_to_map.get(cut_id)
+                    if map_num is None:
+                        ok = False
+                        break
+                    a.SetAtomMapNum(map_num)
+                    a.SetIsotope(0)
+            if ok:
+                labeled = rw.GetMol()
+                labeled.UpdatePropertyCache(strict=False)
+                yield labeled
 
     link = False
     if not isinstance(mol1, Chem.Mol):
@@ -247,52 +285,59 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
     if intramol and link:
         raise ValueError("Intramolecular replacement expects a single reactant molecule")
 
-    frag_sma = frag_sma.replace('*', '!#1')  # to avoid map H in mol with explicit H (lead to wrong replacement)
     if intramol:
-        # Parentheses force matching all reactant fragments in a single molecule.
-        rxn_sma = "(%s)>>%s" % (frag_sma, replace_sma)
-    else:
-        rxn_sma = "%s>>%s" % (frag_sma, replace_sma)
-    rxn = AllChem.ReactionFromSmarts(rxn_sma)
-
-    if intramol:
-        ids = set()
-        if frag_ids_1:
-            ids.update(frag_ids_1)
+        work_mol = mol1
+        core_ids = set(frag_ids_1) if frag_ids_1 else set()
         if frag_ids_2:
-            ids.update(frag_ids_2)
-        set_protected_atoms(mol1, ids, radius)
-    else:
-        set_protected_atoms(mol1, frag_ids_1, radius)
-    if link and not intramol:
-        set_protected_atoms(mol2, frag_ids_2, radius)
-
-    if intramol:
-        reactants = [[mol1]]
+            core_ids.update(frag_ids_2)
     elif link:
-        reactants = [[mol1, mol2], [mol2, mol1]]   # separate parts in SMARTS match only the corresponding molecule
-                                                   # in C.O C will match only the first reactфnt and O - only the second
+        work_mol = Chem.CombineMols(mol1, mol2)
+        offset = mol1.GetNumAtoms()
+        core_ids = set(frag_ids_1) if frag_ids_1 else set()
+        if frag_ids_2:
+            core_ids.update(i + offset for i in frag_ids_2)
     else:
-        reactants = [[mol1]]
+        work_mol = mol1
+        core_ids = set(frag_ids_1) if frag_ids_1 else set()
+
+    if not core_ids:
+        return
+
+    boundary = _collect_boundary_bonds(work_mol, core_ids)
+    if not boundary:
+        return
+
+    src_core_mol = Chem.MolFromSmiles(frag_sma)
+    repl_core_mol = Chem.MolFromSmiles(replace_sma)
+    if src_core_mol is None or repl_core_mol is None:
+        return
+
+    all_ids = set(range(work_mol.GetNumAtoms()))
+    context_ids = all_ids.difference(core_ids)
+
+    scaffold_base = _add_dummies_and_remove_atoms(work_mol, boundary, core_ids, attach_to_core=False)
+    site_core = _add_dummies_and_remove_atoms(work_mol, boundary, context_ids, attach_to_core=True)
+
+    rxn_sma = f"{frag_sma}>>{replace_sma}"
+    params = rdmolops.MolzipParams()
+    params.label = rdmolops.MolzipLabel.AtomMapNumber
 
     products = set()
-    for r in reactants:
-        ps = rxn.RunReactants(r)
-        for y in ps:
-            for p in y:
-                e = Chem.SanitizeMol(p, catchErrors=True)
-                if e:
-                    sys.stderr.write(f"Molecule {Chem.MolToSmiles(p, isomericSmiles=True)} caused "
-                                     f"sanitization error {e}. "
-                                     f"Transformation {rxn_sma} was applied to "
-                                     f"{Chem.MolToSmiles(mol1, isomericSmiles=True)} and "
-                                     f"{Chem.MolToSmiles(mol2, isomericSmiles=True) if link else 'None'}\n")
-                    sys.stderr.flush()
-                else:
-                    smi = Chem.MolToSmiles(Chem.RemoveHs(p), isomericSmiles=True)
-                    if smi not in products:
-                        products.add(smi)
-                        yield smi, p, rxn_sma
+    for scaffold in _iter_labeled_scaffolds(scaffold_base, site_core, src_core_mol):
+        p = rdmolops.molzip(Chem.CombineMols(scaffold, repl_core_mol), params)
+        e = Chem.SanitizeMol(p, catchErrors=True)
+        if e:
+            sys.stderr.write(f"Molecule {Chem.MolToSmiles(p, isomericSmiles=True)} caused "
+                             f"sanitization error {e}. "
+                             f"Transformation {rxn_sma} was applied to "
+                             f"{Chem.MolToSmiles(mol1, isomericSmiles=True)} and "
+                             f"{Chem.MolToSmiles(mol2, isomericSmiles=True) if link else 'None'}\n")
+            sys.stderr.flush()
+        else:
+            smi = Chem.MolToSmiles(Chem.RemoveHs(p), isomericSmiles=True)
+            if smi not in products:
+                products.add(smi)
+                yield smi, p, rxn_sma
 
 
 def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, set_name='undefined', **kwargs):
@@ -379,8 +424,8 @@ def _get_replacements(db_cur, radius, row_ids):
         raise NotImplementedError('Not implemented for database version other than 0 and 1')
     db_cur.execute(sql)
     if user_version == 1:
-        return [(row_id, core_smi, combine_core_env_to_rxn_smarts(core_smi, env, False), 0)
-                for row_id, core_smi, env in db_cur.fetchall()]
+        # Keep tuple shape identical to user_version 0 for compatibility.
+        return [(row_id, core_smi, core_smi, 0) for row_id, core_smi, env in db_cur.fetchall()]
     return db_cur.fetchall()
 
 
@@ -411,7 +456,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
     with sqlite3.connect(db_name) as con:
         cur = con.cursor()
 
-        replacements = dict()  # to store unused   row_id: (frag_sma, core, ids)
+        replacements = dict()  # to store unused row_id: (source_core_smi, ids)
         returned_values = 0
         preliminary_return = 0
         if max_replacements is not None:
@@ -429,8 +474,6 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
             if (min_size <= num_heavy_atoms <= max_size and min_rel_size <= hac_ratio <= max_rel_size) \
                     or (replace_cycles and cycle_pattern.search(core)):
-
-                frag_sma = combine_core_env_to_rxn_smarts(core, env)
 
                 min_atoms = num_heavy_atoms + min_inc
                 max_atoms = num_heavy_atoms + max_inc
@@ -450,18 +493,18 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                     else:
                         selected_row_ids = random.sample(list(row_ids), n)
                     row_ids.difference_update(selected_row_ids)
-                    replacements.update({i: (frag_sma, core, ids) for i in row_ids})
+                    replacements.update({i: (core, ids) for i in row_ids})
                     res = _get_replacements(cur, radius, selected_row_ids)
 
-                for row_id, core_smi, core_sma, freq in res:
+                for row_id, core_smi, _, freq in res:
                     if core_smi != core:
                         if return_frag_smi_only:
                             yield core_smi
                         else:
                             if link:
-                                yield frag_sma, core_sma, freq, ids[0], ids[1]
+                                yield core, core_smi, freq, ids[0], ids[1]
                             else:
-                                yield frag_sma, core_sma, freq, ids[0]
+                                yield core, core_smi, freq, ids[0]
                         if max_replacements is not None:
                             returned_values += 1
                             if returned_values >= max_replacements:
@@ -474,19 +517,19 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
             else:
                 selected_row_ids = random.sample(list(replacements.keys()), n)
             res = _get_replacements(cur, radius, selected_row_ids)
-            for row_id, core_smi, core_sma, freq in res:
-                if core_smi != replacements[row_id][1]:
+            for row_id, core_smi, _, freq in res:
+                if core_smi != replacements[row_id][0]:
                     if return_frag_smi_only:
                         yield core_smi
                     else:
                         if link:
-                            yield replacements[row_id][0], core_sma, freq, replacements[row_id][2][0], replacements[row_id][2][1]
+                            yield replacements[row_id][0], core_smi, freq, replacements[row_id][1][0], replacements[row_id][1][1]
                         else:
-                            yield replacements[row_id][0], core_sma, freq, replacements[row_id][2][0]
+                            yield replacements[row_id][0], core_smi, freq, replacements[row_id][1][0]
 
 
 def __frag_replace_mp(items):
-    # return smi, rxn_smarts, rxn_smarts_freq, mol
+    # return smi, transformation, transformation_freq, mol
     if len(items) == 9:
         freq = items[-2]
         intramol = items[-1]
@@ -1087,7 +1130,8 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                         fragments. Other arguments can be custom and user-defined. The function should return
                         a list/set of selected row ids.
     :param return_frag_smi_only: control whether to return only SMILES of fragments selected from a database or return
-                                 a whole tuple of data which can be further passed to
+                                 a whole tuple of data `(source_core_smi, replacement_core_smi, freq, ids1[, ids2])`
+                                 which can be further passed to `get_mols_from_replacements`.
     :param **kwargs: named arguments to additionally filter replacing fragments. For v0 DB use columns from radiusX,
                      for v1 DB use columns from frags or frags_h. Values are a single value or 2-item tuple with lower
                      and upper bound of the corresponding parameter of a fragment. This can be useful to annotate
@@ -1116,7 +1160,7 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                                        min_freq=min_freq, set_name=set_name, symmetry_fixes=symmetry_fixes,
                                        filter_func=filter_func, sample_func=sample_func,
                                        return_frag_smi_only=return_frag_smi_only, **kwargs):
-        yield res   # res = frag_smi if return_frag_smi_only=True else (frag_sma, core_sma, freq, ids[0], ids[1]) where ids[1] only for link
+        yield res   # res = frag_smi if return_frag_smi_only=True else (source_core_smi, replacement_core_smi, freq, ids[0], ids[1]); ids[1] only for link
 
 
 def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn=False, return_rxn_freq=False,
@@ -1152,8 +1196,9 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
 
 
 def make_macrocycle(mol, db_name, radius=3, dist=None, min_atoms=1, max_atoms=10, max_replacements=None,
-                    replace_ids=None, protected_ids=None, min_freq=0, return_rxn=False, return_rxn_freq=False,
-                    return_mol=False, ncores=1, filter_func=None, sample_func=None, set_name='undefined', **kwargs):
+                    replace_cycles=False, replace_ids=None, protected_ids=None, symmetry_fixes=False, min_freq=0,
+                    return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
+                    sample_func=None, set_name='undefined', **kwargs):
     """
     Generate macrocycles by linking two atoms in the same molecule with a linker from DB.
 
@@ -1167,11 +1212,13 @@ def make_macrocycle(mol, db_name, radius=3, dist=None, min_atoms=1, max_atoms=10
     :param max_replacements: maximum number of replacements to make. If the number of replacements available in DB is
                              greater than the specified value the specified number of randomly chosen replacements
                              will be applied. Default: None.
+    :param replace_cycles: accepted for API compatibility with mutate/grow functions but not used for macrocyclization.
     :param replace_ids: iterable with ids of heavy atom with replaceable Hs or/and ids of H atoms to replace,
                         it has lower priority over `protected_ids` (replace_ids
                         which are present in protected_ids would be protected). Default: None.
     :param protected_ids: iterable with ids of heavy atoms at which no H replacement should be made and/or ids of
                           protected hydrogens. This argument has a higher priority over `replace_ids`. Default: None.
+    :param symmetry_fixes: accepted for API compatibility with mutate/grow functions but not used for macrocyclization.
     :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB. Default: False.

@@ -46,14 +46,16 @@ def __extend_output_by_equivalent_atoms(mol, output):
 
     extended_output = []
     for item in output:
-        if all(i in atom_eq.keys() for i in item[2]):  # if all atoms of a fragment have equivalent atoms
+        core_ids = item[2]
+        tail = item[3:] if len(item) > 3 else tuple()
+        if all(i in atom_eq.keys() for i in core_ids):  # if all atoms of a fragment have equivalent atoms
             smi = patt_remove_map.sub('', item[1])
             smi = patt_remove_brackets.sub('', smi)
             ids_list = [set(i) for i in mol.GetSubstructMatches(Chem.MolFromSmarts(smi))]
             for ids_matched in ids_list:
-                for ids_eq in product(*(atom_eq[i] for i in item[2])):  # enumerate all combinations of equivalent atoms
+                for ids_eq in product(*(atom_eq[i] for i in core_ids)):  # enumerate all combinations of equivalent atoms
                     if ids_matched == set(ids_eq):
-                        extended_output.append((item[0], item[1], tuple(sorted(ids_eq))))
+                        extended_output.append((item[0], item[1], tuple(sorted(ids_eq)), *tail))
     return extended_output
 
 
@@ -69,9 +71,9 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
                          replaced)
 
     OUTPUT:
-        list of tuples (env_smi, core_smi, tuple of core atom ids)
-        ('C[*:1].C[*:2]', 'CC(C(=O)O)c1ccc(CC([*:1])[*:2])c(Br)c1', (1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15))
-        ('Cc(c)c(cc)[*:1]', '[H][*:1]', (25,))
+        list of tuples (env_smi, core_smi, tuple of attachment atom ids)
+        Attachment atom ids correspond to atom map numbers in `core_smi`.
+        The first id in a tuple corresponds to `[*:1]`, the second to `[*:2]`, etc.
 
     If input mol has explicit hydrogens the output will contain also fragments where core = [H][*:1].
     Smiles of fragments with heavy atoms will contain only heavy atoms
@@ -84,8 +86,25 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
                 res.append(a.GetIntProp(prop))
         return tuple(sorted(res))
 
+    def get_att_ids(context_mol, old_to_new_map):
+        old_map_to_anchor_id = {}
+        for a in context_mol.GetAtoms():
+            if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
+                for n in a.GetNeighbors():
+                    if n.GetAtomicNum() != 0 and n.HasProp("Index"):
+                        old_map_to_anchor_id[a.GetAtomMapNum()] = n.GetIntProp("Index")
+                        break
+        new_map_to_anchor_id = {}
+        for old_map, anchor_id in old_map_to_anchor_id.items():
+            new_map = old_to_new_map.get(old_map)
+            if new_map is not None:
+                new_map_to_anchor_id[new_map] = anchor_id
+        return tuple(new_map_to_anchor_id[i] for i in sorted(new_map_to_anchor_id))
+
     if protected_ids:
         return_ids = True
+
+    protected_ids = set(protected_ids) if protected_ids else set()
 
     # due to the bug https://github.com/rdkit/rdkit/issues/3040
     # outputs of rdMMPA.FragmentMol calls will contain duplicated fragments
@@ -103,66 +122,74 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
     # hydrogen atoms
     frags += rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
 
-    for i, (core, chains) in enumerate(frags):
+    def add_output(context_mol, core_mol):
+        if Chem.MolToSmiles(context_mol) == '[H][*:1]':  # context cannot be H
+            return
+        env, frag, old_to_new_map = get_canon_context_core(context_mol, core_mol, radius, keep_stereo,
+                                                            return_att_map=True)
+        if env is None or frag is None:
+            return
+        core_ids = get_atom_prop(core_mol) if return_ids else tuple()
+        if protected_ids and not protected_ids.isdisjoint(core_ids):
+            return
+        att_ids = get_att_ids(context_mol, old_to_new_map)
+        if not att_ids:
+            return
+        output.add((env, frag, core_ids, att_ids))
+
+    for core, chains in frags:
         if core is None:  # single cut
             components = list(Chem.GetMolFrags(chains, asMols=True))
-            ids_0 = get_atom_prop(components[0]) if return_ids else tuple()
-            ids_1 = get_atom_prop(components[1]) if return_ids else tuple()
-            if Chem.MolToSmiles(components[0]) != '[H][*:1]':  # context cannot be H
-                env, frag = get_canon_context_core(components[0], components[1], radius, keep_stereo)
-                output.add((env, frag, ids_1))
-            if Chem.MolToSmiles(components[1]) != '[H][*:1]':  # context cannot be H
-                env, frag = get_canon_context_core(components[1], components[0], radius, keep_stereo)
-                output.add((env, frag, ids_0))
+            add_output(components[0], components[1])
+            add_output(components[1], components[0])
         else:  # multiple cuts
-            # there are no checks for H needed because H can be present only in single cuts
-            env, frag = get_canon_context_core(chains, core, radius, keep_stereo)
-            output.add((env, frag, get_atom_prop(core) if return_ids else tuple()))
+            add_output(chains, core)
 
     if symmetry_fixes:
         extended_output = __extend_output_by_equivalent_atoms(mol, output)
         if extended_output:
             output.update(extended_output)
 
-    if protected_ids:
-        protected_ids = set(protected_ids)
-        output = [item for item in output if protected_ids.isdisjoint(item[2])]
-
-    return list(output)  # list of tuples (env smiles, core smiles, list of atom ids)
+    return [(env, frag, att_ids) for env, frag, _, att_ids in output]
 
 
 def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1=None, protected_ids_2=None,
                         return_ids=True):
-
-    def filter_frags(frags, protected_ids):
+    def _prepare_single_cut_contexts(frags, protected_ids):
+        protected_ids = set(protected_ids) if protected_ids else set()
         output = []
-        protected_ids = set(protected_ids)
-        for _, chains in frags:
-            for atom in chains.GetAtoms():
-                if atom.GetAtomicNum() == 0:
-                    for d in atom.GetNeighbors():
-                        if d.GetAtomicNum() != 1 and d.GetIdx() not in protected_ids:
-                            output.append((None, chains))
+        for core, chains in frags:
+            if core is not None:
+                continue
+            components = list(Chem.GetMolFrags(chains, asMols=True))
+            if len(components) != 2:
+                continue
+            if Chem.MolToSmiles(components[0]) == '[H][*:1]':
+                context = components[1]
+            else:
+                context = components[0]
+
+            old_map_to_anchor = {}
+            for a in context.GetAtoms():
+                if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
+                    for n in a.GetNeighbors():
+                        if n.GetAtomicNum() != 0 and n.HasProp("Index"):
+                            anchor_id = n.GetIntProp("Index")
+                            if protected_ids and anchor_id in protected_ids:
+                                old_map_to_anchor = {}
+                            else:
+                                old_map_to_anchor[a.GetAtomMapNum()] = anchor_id
+                            break
+            if old_map_to_anchor:
+                output.append((context, old_map_to_anchor))
         return output
 
-    def prep_frags(frags, keep_stereo=False):
-        # frags is a list of tuples [(None, frag_mol_1), (None, frag_mol_2), ...]
-        ls = []
-        for _, chains in frags:
-            ids = []
-            for atom in chains.GetAtoms():
-                if atom.GetAtomicNum() == 0:
-                    for d in atom.GetNeighbors():
-                        if d.GetAtomicNum() == 1:
-                            ids = [d.GetIntProp('Index')]
-                if ids:
-                    break   # only one such occurrence can be
-            a, b = Chem.MolToSmiles(chains, isomericSmiles=keep_stereo).split('.')
-            if a == '[H][*:1]':
-                ls.append([b, ids])
-            else:
-                ls.append([a, ids])
-        return ls
+    def _renumber_context_map(context_mol, old_to_new_map):
+        m = Chem.Mol(context_mol)
+        for a in m.GetAtoms():
+            if a.GetAtomicNum() == 0 and a.GetAtomMapNum() in old_to_new_map:
+                a.SetAtomMapNum(old_to_new_map[a.GetAtomMapNum()])
+        return m
 
     if protected_ids_1 or protected_ids_2:
         return_ids = True
@@ -176,28 +203,34 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
     frags_1 = rdMMPA.FragmentMol(mol1, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
     frags_2 = rdMMPA.FragmentMol(mol2, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
 
-    if protected_ids_1:
-        frags_1 = filter_frags(frags_1, protected_ids_1)
-
-    if protected_ids_2:
-        frags_2 = filter_frags(frags_2, protected_ids_2)
-
-    frags_1 = prep_frags(frags_1, keep_stereo)
-    frags_2 = prep_frags(frags_2, keep_stereo)
-
-    for i in range(len(frags_1)):
-        frags_1[i][0] = frags_1[i][0].replace('*:1', '*:2')
-
-    q = []
-    for (fr1, ids1), (fr2, ids2) in product(frags_1, frags_2):
-        q.append(['%s.%s' % (fr1, fr2), ids1, ids2])
-
+    frags_1 = _prepare_single_cut_contexts(frags_1, protected_ids_1)
+    frags_2 = _prepare_single_cut_contexts(frags_2, protected_ids_2)
     fake_core = '[*:1]C[*:2]'
     output = []
 
-    for (chains, ids_1, ids_2) in q:
-        env, frag = get_canon_context_core(chains, fake_core, radius=radius, keep_stereo=keep_stereo)
-        output.append((env, '[H][*:1].[H][*:2]', ids_1, ids_2))
+    for (ctx_1, map_to_anchor_1), (ctx_2, map_to_anchor_2) in product(frags_1, frags_2):
+        # keep historical convention: attachment from mol1 starts with map 2
+        ctx_1 = _renumber_context_map(ctx_1, {1: 2})
+        map_to_anchor_1 = {2: v for _, v in map_to_anchor_1.items()}
+        map_to_anchor_2 = {1: v for _, v in map_to_anchor_2.items()}
+
+        chains = Chem.CombineMols(ctx_1, ctx_2)
+        env, frag, old_to_new_map = get_canon_context_core(chains, fake_core, radius=radius, keep_stereo=keep_stereo,
+                                                            return_att_map=True)
+        if env is None or frag is None or not old_to_new_map:
+            continue
+
+        n_att = max(old_to_new_map.values())
+        ids_1 = [None] * n_att
+        ids_2 = [None] * n_att
+        for old_map, new_map in old_to_new_map.items():
+            if old_map in map_to_anchor_1:
+                ids_1[new_map - 1] = map_to_anchor_1[old_map]
+            elif old_map in map_to_anchor_2:
+                ids_2[new_map - 1] = map_to_anchor_2[old_map]
+        if not any(i is not None for i in ids_1) or not any(i is not None for i in ids_2):
+            continue
+        output.append((env, '[H][*:1].[H][*:2]', tuple(ids_1), tuple(ids_2)))
 
     return output  # list of tuples (env smiles, core smiles, list of atom ids)
 
@@ -215,66 +248,138 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
         generator returns canonical isomeric SMILES, RDKit Mol and rxn rule
     """
 
-    def _collect_boundary_bonds(m, core_ids):
-        boundary = []
-        cut_id = 1
-        core_ids = set(core_ids)
-        for b in m.GetBonds():
-            i = b.GetBeginAtomIdx()
-            j = b.GetEndAtomIdx()
-            i_in = i in core_ids
-            j_in = j in core_ids
-            if i_in ^ j_in:
-                core_idx = i if i_in else j
-                ctx_idx = j if i_in else i
-                boundary.append((cut_id, core_idx, ctx_idx, b.GetBondType()))
-                cut_id += 1
-        return boundary
+    def _collect_core_atoms(m, seed_ids, anchor_ids):
+        stack = list(seed_ids)
+        seen = set(seed_ids)
+        anchor_ids = set(anchor_ids)
+        while stack:
+            i = stack.pop()
+            for n in m.GetAtomWithIdx(i).GetNeighbors():
+                j = n.GetIdx()
+                if j in anchor_ids or j in seen:
+                    continue
+                seen.add(j)
+                stack.append(j)
+        return seen
 
-    def _add_dummies_and_remove_atoms(m, boundary, remove_atom_ids, attach_to_core):
+    def _build_map_to_anchor(map_nums, ids_1, ids_2, link_mode=False, intramol_mode=False, offset=0):
+        ids_1 = tuple(ids_1) if ids_1 else tuple()
+        ids_2 = tuple(ids_2) if ids_2 else tuple()
+        out = {}
+
+        if link_mode:
+            for i, map_num in enumerate(map_nums):
+                a1 = ids_1[i] if i < len(ids_1) else None
+                a2 = ids_2[i] if i < len(ids_2) else None
+                if a1 is not None and a2 is not None:
+                    return None
+                if a1 is not None:
+                    out[map_num] = a1
+                elif a2 is not None:
+                    out[map_num] = a2 + offset
+            return out if len(out) == len(map_nums) else None
+
+        if intramol_mode:
+            for i, map_num in enumerate(map_nums):
+                a1 = ids_1[i] if i < len(ids_1) else None
+                a2 = ids_2[i] if i < len(ids_2) else None
+                if a1 is not None and a2 is not None and a1 != a2:
+                    return None
+                if a1 is not None:
+                    out[map_num] = a1
+                elif a2 is not None:
+                    out[map_num] = a2
+            return out if len(out) == len(map_nums) else None
+
+        for i, map_num in enumerate(map_nums):
+            if i < len(ids_1) and ids_1[i] is not None:
+                out[map_num] = ids_1[i]
+        return out if len(out) == len(map_nums) else None
+
+    def _find_core_and_boundary(m, src_core, map_nums, map_to_anchor):
+        src_map_info = {}
+        for a in src_core.GetAtoms():
+            if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
+                map_num = a.GetAtomMapNum()
+                n = next(iter(a.GetNeighbors()), None)
+                if n is None:
+                    return None, None
+                b = src_core.GetBondBetweenAtoms(a.GetIdx(), n.GetIdx())
+                src_map_info[map_num] = (n.GetAtomicNum(), b.GetBondType())
+
+        expected_core_size = sum(1 for a in src_core.GetAtoms() if a.GetAtomicNum() != 0)
+        anchor_ids = tuple(map_to_anchor[m] for m in map_nums)
+        anchor_id_set = set(anchor_ids)
+        candidate_lists = []
+        for map_num in map_nums:
+            anchor_id = map_to_anchor[map_num]
+            exp_atom_num, exp_bond_type = src_map_info[map_num]
+            candidates = []
+            anchor = m.GetAtomWithIdx(anchor_id)
+            for n in anchor.GetNeighbors():
+                n_id = n.GetIdx()
+                if n_id in anchor_id_set:
+                    continue
+                b = m.GetBondBetweenAtoms(anchor_id, n_id)
+                if b.GetBondType() != exp_bond_type:
+                    continue
+                if n.GetAtomicNum() != exp_atom_num:
+                    continue
+                candidates.append(n_id)
+            if not candidates:
+                return None, None
+            candidate_lists.append(tuple(candidates))
+
+        for combo in product(*candidate_lists):
+            map_to_core = {map_nums[i]: combo[i] for i in range(len(map_nums))}
+            core_ids = _collect_core_atoms(m, combo, anchor_ids)
+            if len(core_ids) != expected_core_size:
+                continue
+
+            expected_pairs = {(map_to_anchor[mn], map_to_core[mn]) for mn in map_nums}
+            observed_pairs = set()
+            valid = True
+            for b in m.GetBonds():
+                i = b.GetBeginAtomIdx()
+                j = b.GetEndAtomIdx()
+                i_in = i in core_ids
+                j_in = j in core_ids
+                if i_in ^ j_in:
+                    core_atom = i if i_in else j
+                    ext_atom = j if i_in else i
+                    if ext_atom not in anchor_id_set:
+                        valid = False
+                        break
+                    observed_pairs.add((ext_atom, core_atom))
+            if not valid or observed_pairs != expected_pairs:
+                continue
+
+            boundary = []
+            for map_num in map_nums:
+                anchor_id = map_to_anchor[map_num]
+                core_id = map_to_core[map_num]
+                b = m.GetBondBetweenAtoms(anchor_id, core_id)
+                if b is None:
+                    valid = False
+                    break
+                boundary.append((map_num, core_id, anchor_id, b.GetBondType()))
+            if valid:
+                return core_ids, boundary
+
+        return None, None
+
+    def _build_scaffold(m, core_ids, boundary):
         rw = Chem.RWMol(m)
-        for cut_id, core_idx, ctx_idx, bond_type in boundary:
-            anchor = core_idx if attach_to_core else ctx_idx
-            a = Chem.Atom(0)
-            a.SetIsotope(cut_id)
-            dummy_idx = rw.AddAtom(a)
-            rw.AddBond(anchor, dummy_idx, bond_type)
-        for idx in sorted(remove_atom_ids, reverse=True):
-            rw.RemoveAtom(idx)
+        for map_num, _, anchor_id, bond_type in boundary:
+            d = Chem.Atom(0)
+            d.SetAtomMapNum(map_num)
+            d_id = rw.AddAtom(d)
+            rw.AddBond(anchor_id, d_id, bond_type)
+        for i in sorted(core_ids, reverse=True):
+            rw.RemoveAtom(i)
         out = rw.GetMol()
         out.UpdatePropertyCache(strict=False)
         return out
-
-    def _iter_labeled_scaffolds(scaffold_base, site_core, src_core):
-        map_atoms = [a.GetIdx() for a in src_core.GetAtoms() if a.GetAtomicNum() == 0 and a.GetAtomMapNum()]
-        if not map_atoms:
-            return
-        for match in site_core.GetSubstructMatches(src_core, uniquify=False):
-            cut_to_map = {}
-            for q_idx in map_atoms:
-                map_num = src_core.GetAtomWithIdx(q_idx).GetAtomMapNum()
-                t_idx = match[q_idx]
-                cut_id = site_core.GetAtomWithIdx(t_idx).GetIsotope()
-                if cut_id:
-                    cut_to_map[cut_id] = map_num
-            if len(cut_to_map) != len(map_atoms):
-                continue
-
-            rw = Chem.RWMol(scaffold_base)
-            ok = True
-            for a in rw.GetAtoms():
-                if a.GetAtomicNum() == 0 and a.GetIsotope():
-                    cut_id = a.GetIsotope()
-                    map_num = cut_to_map.get(cut_id)
-                    if map_num is None:
-                        ok = False
-                        break
-                    a.SetAtomMapNum(map_num)
-                    a.SetIsotope(0)
-            if ok:
-                labeled = rw.GetMol()
-                labeled.UpdatePropertyCache(strict=False)
-                yield labeled
 
     link = False
     if not isinstance(mol1, Chem.Mol):
@@ -285,59 +390,50 @@ def __frag_replace(mol1, mol2, frag_sma, replace_sma, radius, frag_ids_1=None, f
     if intramol and link:
         raise ValueError("Intramolecular replacement expects a single reactant molecule")
 
-    if intramol:
-        work_mol = mol1
-        core_ids = set(frag_ids_1) if frag_ids_1 else set()
-        if frag_ids_2:
-            core_ids.update(frag_ids_2)
-    elif link:
-        work_mol = Chem.CombineMols(mol1, mol2)
-        offset = mol1.GetNumAtoms()
-        core_ids = set(frag_ids_1) if frag_ids_1 else set()
-        if frag_ids_2:
-            core_ids.update(i + offset for i in frag_ids_2)
-    else:
-        work_mol = mol1
-        core_ids = set(frag_ids_1) if frag_ids_1 else set()
-
-    if not core_ids:
-        return
-
-    boundary = _collect_boundary_bonds(work_mol, core_ids)
-    if not boundary:
-        return
-
     src_core_mol = Chem.MolFromSmiles(frag_sma)
     repl_core_mol = Chem.MolFromSmiles(replace_sma)
     if src_core_mol is None or repl_core_mol is None:
         return
+    map_nums = sorted(a.GetAtomMapNum() for a in src_core_mol.GetAtoms() if a.GetAtomicNum() == 0 and a.GetAtomMapNum())
+    if not map_nums:
+        return
 
-    all_ids = set(range(work_mol.GetNumAtoms()))
-    context_ids = all_ids.difference(core_ids)
+    if intramol:
+        work_mol = mol1
+        map_to_anchor = _build_map_to_anchor(map_nums, frag_ids_1, frag_ids_2, intramol_mode=True)
+    elif link:
+        work_mol = Chem.CombineMols(mol1, mol2)
+        map_to_anchor = _build_map_to_anchor(map_nums, frag_ids_1, frag_ids_2, link_mode=True, offset=mol1.GetNumAtoms())
+    else:
+        work_mol = mol1
+        map_to_anchor = _build_map_to_anchor(map_nums, frag_ids_1, None)
+    if map_to_anchor is None:
+        return
 
-    scaffold_base = _add_dummies_and_remove_atoms(work_mol, boundary, core_ids, attach_to_core=False)
-    site_core = _add_dummies_and_remove_atoms(work_mol, boundary, context_ids, attach_to_core=True)
+    core_ids, boundary = _find_core_and_boundary(work_mol, src_core_mol, map_nums, map_to_anchor)
+    if not core_ids or not boundary:
+        return
+    scaffold = _build_scaffold(work_mol, core_ids, boundary)
 
     rxn_sma = f"{frag_sma}>>{replace_sma}"
     params = rdmolops.MolzipParams()
     params.label = rdmolops.MolzipLabel.AtomMapNumber
 
     products = set()
-    for scaffold in _iter_labeled_scaffolds(scaffold_base, site_core, src_core_mol):
-        p = rdmolops.molzip(Chem.CombineMols(scaffold, repl_core_mol), params)
-        e = Chem.SanitizeMol(p, catchErrors=True)
-        if e:
-            sys.stderr.write(f"Molecule {Chem.MolToSmiles(p, isomericSmiles=True)} caused "
-                             f"sanitization error {e}. "
-                             f"Transformation {rxn_sma} was applied to "
-                             f"{Chem.MolToSmiles(mol1, isomericSmiles=True)} and "
-                             f"{Chem.MolToSmiles(mol2, isomericSmiles=True) if link else 'None'}\n")
-            sys.stderr.flush()
-        else:
-            smi = Chem.MolToSmiles(Chem.RemoveHs(p), isomericSmiles=True)
-            if smi not in products:
-                products.add(smi)
-                yield smi, p, rxn_sma
+    p = rdmolops.molzip(Chem.CombineMols(scaffold, repl_core_mol), params)
+    e = Chem.SanitizeMol(p, catchErrors=True)
+    if e:
+        sys.stderr.write(f"Molecule {Chem.MolToSmiles(p, isomericSmiles=True)} caused "
+                         f"sanitization error {e}. "
+                         f"Transformation {rxn_sma} was applied to "
+                         f"{Chem.MolToSmiles(mol1, isomericSmiles=True)} and "
+                         f"{Chem.MolToSmiles(mol2, isomericSmiles=True) if link else 'None'}\n")
+        sys.stderr.flush()
+    else:
+        smi = Chem.MolToSmiles(Chem.RemoveHs(p), isomericSmiles=True)
+        if smi not in products:
+            products.add(smi)
+            yield smi, p, rxn_sma
 
 
 def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, set_name='undefined', **kwargs):
@@ -594,9 +690,11 @@ def __get_data_macrocycle(mol, db_name, radius, dist, min_size, max_size, protec
                                                                       return_frag_smi_only=False, **kwargs):
         ids_1 = tuple(ids_1) if ids_1 else tuple()
         ids_2 = tuple(ids_2) if ids_2 else tuple()
-        if ids_1 == ids_2:
+        anchors_1 = tuple(i for i in ids_1 if i is not None)
+        anchors_2 = tuple(i for i in ids_2 if i is not None)
+        if anchors_1 == anchors_2:
             continue
-        pair_key = (frag_sma, core_sma, frozenset((ids_1, ids_2)))
+        pair_key = (frag_sma, core_sma, frozenset((anchors_1, anchors_2)))
         if pair_key in seen_pairs:
             continue
         seen_pairs.add(pair_key)

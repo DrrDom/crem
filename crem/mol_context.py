@@ -216,7 +216,7 @@ def __standardize_smiles_with_att_points(mol, keep_stereo=False):
     return s
 
 
-def get_std_context_core_permutations(context, core, radius, keep_stereo):
+def get_std_context_core_permutations(context, core, radius, keep_stereo, return_att_map=False):
     """
     INPUT:
         context - Mol or SMILES containing full chain(s) of a context with labeled attachment point(s),
@@ -237,6 +237,10 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo):
     Output SMILES are standardized
     """
 
+    def _get_dummy_idx_to_map(m):
+        return {a.GetIdx(): a.GetAtomMapNum() for a in m.GetAtoms()
+                if a.GetAtomicNum() == 0 and a.GetAtomMapNum()}
+
     if isinstance(context, str):
         context = Chem.MolFromSmiles(context)
     if isinstance(core, str):
@@ -256,6 +260,11 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo):
         s = __standardize_smiles_with_att_points(core, keep_stereo)
         s = patt_remove_map.sub("[*]", s)
 
+        if return_att_map:
+            old_to_new = {a.GetAtomMapNum(): a.GetAtomMapNum() for a in core.GetAtoms()
+                          if a.GetAtomicNum() == 0 and a.GetAtomMapNum()}
+            return '', (s, ), {s: old_to_new}
+
         return '', (s, )
 
     if core and context:
@@ -267,43 +276,59 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo):
             Chem.RemoveStereochemistry(core)
 
         env = __get_context_env(context, radius)   # cut context to radius
+        old_map_by_idx = _get_dummy_idx_to_map(core)
         __standardize_att_by_env(env, core, keep_stereo)
+        new_map_by_idx = _get_dummy_idx_to_map(core)
+        old_to_std = {old_map_by_idx[i]: new_map_by_idx[i] for i in old_map_by_idx.keys() & new_map_by_idx.keys()}
         env_smi = Chem.MolToSmiles(env, isomericSmiles=keep_stereo, allBondsExplicit=True)
 
         if att_num == 1:
-
-            return env_smi, (__standardize_smiles_with_att_points(core, keep_stereo), )
+            core_smi = __standardize_smiles_with_att_points(core, keep_stereo)
+            if return_att_map:
+                return env_smi, (core_smi, ), {core_smi: old_to_std}
+            return env_smi, (core_smi, )
 
         else:
-
-            res = []
             p = __get_att_permutations(env)
+            smi_to_map = {}
 
             # permute attachment point numbering only in core,
             # since permutations in env will give the same canonical smiles
             if len(p) > 1:
                 for d in p:
                     c = __permute_att(core, d)
-                    res.append(c)
+                    smi = __standardize_smiles_with_att_points(c, keep_stereo)
+                    if smi not in smi_to_map:
+                        smi_to_map[smi] = {old: d.get(std, std) for old, std in old_to_std.items()}
             else:
-                res.append(core)
+                smi = __standardize_smiles_with_att_points(core, keep_stereo)
+                smi_to_map[smi] = old_to_std
 
-            # get distinct standardized SMILES
-            d = tuple(set(__standardize_smiles_with_att_points(m, keep_stereo) for m in res))
+            d = tuple(smi_to_map.keys())
 
+            if return_att_map:
+                return env_smi, d, smi_to_map
             return env_smi, d
 
+    if return_att_map:
+        return None
     return None, None
 
 
-def get_canon_context_core(context, core, radius, keep_stereo=False):
+def get_canon_context_core(context, core, radius, keep_stereo=False, return_att_map=False):
     # context and core are Mols or SMILES
     # returns SMILES by default
-    res = get_std_context_core_permutations(context, core, radius, keep_stereo)
-    if res:
+    res = get_std_context_core_permutations(context, core, radius, keep_stereo, return_att_map=return_att_map)
+    if res is not None:
+        if return_att_map:
+            env, cores, smi_to_map = res
+            core_smi = sorted(cores)[0]
+            return env, core_smi, smi_to_map.get(core_smi, {})
         env, cores = res
         return env, sorted(cores)[0]
     else:
+        if return_att_map:
+            return None, None, {}
         return None, None
 
 

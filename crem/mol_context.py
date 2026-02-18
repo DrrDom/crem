@@ -115,6 +115,7 @@ def __standardize_att_by_env(env, core, keep_stereo=False):
     new_att = {m: i+1 for i, (r, m) in enumerate(sorted(zip(ranks, maps)))}
     __replace_att(core, new_att)
     __replace_att(env, new_att)
+    return new_att
 
 
 def __get_att_permutations(env):
@@ -237,10 +238,6 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
     Output SMILES are standardized
     """
 
-    def _get_dummy_idx_to_map(m):
-        return {a.GetIdx(): a.GetAtomMapNum() for a in m.GetAtoms()
-                if a.GetAtomicNum() == 0 and a.GetAtomMapNum()}
-
     if isinstance(context, str):
         context = Chem.MolFromSmiles(context)
     if isinstance(core, str):
@@ -276,10 +273,7 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
             Chem.RemoveStereochemistry(core)
 
         env = __get_context_env(context, radius)   # cut context to radius
-        old_map_by_idx = _get_dummy_idx_to_map(core)
-        __standardize_att_by_env(env, core, keep_stereo)
-        new_map_by_idx = _get_dummy_idx_to_map(core)
-        old_to_std = {old_map_by_idx[i]: new_map_by_idx[i] for i in old_map_by_idx.keys() & new_map_by_idx.keys()}
+        old_to_std = __standardize_att_by_env(env, core, keep_stereo)
         env_smi = Chem.MolToSmiles(env, isomericSmiles=keep_stereo, allBondsExplicit=True)
 
         if att_num == 1:
@@ -299,6 +293,15 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
                     c = __permute_att(core, d)
                     smi = __standardize_smiles_with_att_points(c, keep_stereo)
                     if smi not in smi_to_map:
+                        """
+                        Because d and the required mapping are in different coordinate systems, 
+                        this assignment will not work - smi_to_map[smi] = d
+                        - old_to_std is mapping from original input map numbers to standardized map numbers.
+                        - d is mapping from standardized map numbers to permuted standardized map numbers.
+                        The function needs to return mapping from original input maps to the final map numbers used in that smi.
+                        So it must compose them:
+                        old -> std -> permuted_std
+                        """
                         smi_to_map[smi] = {old: d.get(std, std) for old, std in old_to_std.items()}
             else:
                 smi = __standardize_smiles_with_att_points(core, keep_stereo)
@@ -323,7 +326,7 @@ def get_canon_context_core(context, core, radius, keep_stereo=False, return_att_
         if return_att_map:
             env, cores, smi_to_map = res
             core_smi = sorted(cores)[0]
-            return env, core_smi, smi_to_map.get(core_smi, {})
+            return env, core_smi, smi_to_map[core_smi]
         env, cores = res
         return env, sorted(cores)[0]
     else:

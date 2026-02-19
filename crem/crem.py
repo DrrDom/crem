@@ -266,11 +266,10 @@ def __fragment_mol_macrocycle(mol, radius=3, keep_stereo=False, protected_ids=No
         chains = Chem.CombineMols(ctx_1, ctx_2)
         env, frag, old_to_new_map = get_canon_context_core(chains, fake_core, radius=radius, keep_stereo=keep_stereo,
                                                             return_att_map=True)
-        if env is None or frag is None:
-            continue
 
-        # replace a hydrogen in the first chain with a dummy atom having corresponding attachement map number
-        # to get a single Mol object with two attachment points
+        # transfer attachemnt point from the second chain to the first one to get a single Mol object
+        # with two attachment points suitable for molzip
+        # replace a hydrogen in the first chain with a dummy atom having the attachement map number from the second part
         anchor_id = None
         att_map = None
         chains = __renumber_attachment_points(chains, old_to_new_map)

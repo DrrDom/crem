@@ -229,3 +229,44 @@ def filter_max_ring_size(row_ids, cur, radius, max_size=6):
     for v in d.values():
         ids.extend(v)
     return ids
+
+
+def filter_acyclic_attachment_points(row_ids, cur, radius):
+    """
+    Keep only fragments where each attachment point [*:n] is attached to an acyclic atom.
+
+    :param row_ids: the list of row ids of fragments to consider
+    :param cur: cursor to the fragment database
+    :param radius: context radius
+    :return: the list of row ids of selected fragments
+    """
+    d = defaultdict(list)
+    for rowid, core_smi, _, _ in _get_replacements(cur, radius, row_ids):
+        d[core_smi].append(rowid)
+
+    for smi in list(d.keys()):
+        mol = Chem.MolFromSmiles(smi)
+        if mol is None:
+            del d[smi]
+            continue
+
+        keep = True
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 0:
+                continue
+            # Attachment dummy atoms in CReM cores should have a single neighbor.
+            if not atom.GetNeighbors():
+                keep = False
+                break
+            neighbor = atom.GetNeighbors()[0]
+            if neighbor.IsInRing():
+                keep = False
+                break
+
+        if not keep:
+            del d[smi]
+
+    ids = []
+    for v in d.values():
+        ids.extend(v)
+    return ids

@@ -288,12 +288,14 @@ def _read_chunk_ids(path):
 
 
 def _ensure_schema(conn, radii, set_names):
+    conn.execute("PRAGMA page_size = 16384")     # larger pages for better B-tree packing (new DBs only)
     conn.execute("PRAGMA user_version = 1")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA temp_store = MEMORY")
-    conn.execute("PRAGMA cache_size = -65536")  # 64 MB page cache
+    conn.execute("PRAGMA cache_size = -65536")   # 64 MB page cache
+    conn.execute("PRAGMA wal_autocheckpoint = 0")  # disable auto-checkpoint during build
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS envs(
@@ -438,6 +440,7 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
                 if env_id is None or core_smi_id is None:
                     continue
                 rows.append((env_id, core_smi_id, cnt))
+            rows.sort()  # sequential B-tree access reduces page cache misses
             if rows:
                 conn.executemany(
                     f"INSERT INTO radius{radius} (env_id, core_smi_id, {set_name}) "
@@ -569,11 +572,13 @@ def main():
         acc_core_info = {}
         acc_counts = {name: {r: defaultdict(int) for r in radii} for name in set_names}
         acc_chunk_ids = []
+        flush_counter = 0
 
         def _do_flush():
-            nonlocal chunks_processed
+            nonlocal chunks_processed, flush_counter
             timings = {} if args.timings else None
 
+            conn.execute("PRAGMA foreign_keys = OFF")  # IDs are guaranteed to exist; skip FK checks
             t0 = time.perf_counter()
             conn.execute("BEGIN")
             if timings is not None:
@@ -588,6 +593,7 @@ def main():
 
             t0 = time.perf_counter()
             conn.commit()
+            conn.execute("PRAGMA foreign_keys = ON")
             if timings is not None:
                 timings["commit"] = time.perf_counter() - t0
 
@@ -596,6 +602,10 @@ def main():
                 for cid in acc_chunk_ids:
                     processed_handle.write(f"{cid}\n")
                 processed_handle.flush()
+
+            flush_counter += 1
+            if flush_counter % 10 == 0:
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
 
             if timings is not None:
                 parts = "  ".join(f"{k}={v*1000:.1f}ms" for k, v in timings.items())
@@ -659,6 +669,8 @@ def main():
             if acc_chunk_ids:
                 _do_flush()
 
+            conn.execute("PRAGMA wal_autocheckpoint = 1000")  # restore default
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")   # fold WAL into DB before indexing
             create_indices(conn, radii, True)
 
         finally:

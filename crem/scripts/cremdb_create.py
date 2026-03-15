@@ -355,10 +355,11 @@ def _merge_counts(acc, new, set_names, radii):
 
 
 def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
-                 env_cache, inchi_cache, core_smi_cache):
+                 env_cache, inchi_cache, core_smi_cache, timings=None):
     """Flush accumulated data to DB using Python-side ID caches (no temp tables, no JOINs)."""
 
     # Step 1: resolve new envs
+    t0 = time.perf_counter()
     new_envs = [e for e in envs if e not in env_cache]
     if new_envs:
         conn.executemany(
@@ -372,8 +373,11 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
                 f"SELECT env, env_id FROM envs WHERE env IN ({ph})", batch
             ):
                 env_cache[env_str] = env_id
+    if timings is not None:
+        timings["envs"] = time.perf_counter() - t0
 
     # Step 2: resolve new inchis (frags_h)
+    t0 = time.perf_counter()
     new_inchis = {}  # inchi_val -> core_smi_h
     for core_smi, (core_num_atoms, dist2, core_smi_h, inchi_val) in core_info.items():
         if inchi_val and inchi_val not in inchi_cache and inchi_val not in new_inchis:
@@ -392,8 +396,11 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
                 f"SELECT inchi, core_smi_h_id FROM frags_h WHERE inchi IN ({ph})", batch
             ):
                 inchi_cache[inchi_val] = h_id
+    if timings is not None:
+        timings["inchis"] = time.perf_counter() - t0
 
     # Step 3: resolve new core_smis (frags)
+    t0 = time.perf_counter()
     new_cores = []  # (core_smi, core_num_atoms, dist2, core_smi_h_id)
     for core_smi, (core_num_atoms, dist2, core_smi_h, inchi_val) in core_info.items():
         if core_smi not in core_smi_cache and inchi_val and inchi_val in inchi_cache:
@@ -413,8 +420,11 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
                 f"SELECT core_smi, core_smi_id FROM frags WHERE core_smi IN ({ph})", batch
             ):
                 core_smi_cache[core_smi] = core_smi_id
+    if timings is not None:
+        timings["cores"] = time.perf_counter() - t0
 
     # Step 4: upsert radius counts using resolved IDs (no JOINs)
+    t0 = time.perf_counter()
     for set_name in set_names:
         per_set = counts.get(set_name, {})
         for radius in radii:
@@ -436,6 +446,8 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
                     f"DO UPDATE SET {set_name} = {set_name} + excluded.{set_name}",
                     rows,
                 )
+    if timings is not None:
+        timings["radius"] = time.perf_counter() - t0
 
 
 def _open_input(path, force_zstd):
@@ -493,6 +505,8 @@ def main():
         help="In-flight task batches per worker (batch_size = ncpu * prefetch). "
              "Lower values reduce peak memory at the cost of potentially underutilising workers (default: 4)",
     )
+    parser.add_argument("--timings", action="store_true",
+        help="Print per-flush timing breakdown to stderr")
     args = parser.parse_args()
 
     set_names, set_ids = _resolve_set_names(args.set_name)
@@ -558,18 +572,36 @@ def main():
 
         def _do_flush():
             nonlocal chunks_processed
+            timings = {} if args.timings else None
+
+            t0 = time.perf_counter()
             conn.execute("BEGIN")
+            if timings is not None:
+                timings["begin"] = time.perf_counter() - t0
+
             _flush_to_db(
                 conn, acc_envs, acc_core_info, acc_counts,
                 set_names, radii,
                 env_cache, inchi_cache, core_smi_cache,
+                timings=timings,
             )
+
+            t0 = time.perf_counter()
             conn.commit()
+            if timings is not None:
+                timings["commit"] = time.perf_counter() - t0
+
             chunks_processed += len(acc_chunk_ids)
             if processed_handle:
                 for cid in acc_chunk_ids:
                     processed_handle.write(f"{cid}\n")
                 processed_handle.flush()
+
+            if timings is not None:
+                parts = "  ".join(f"{k}={v*1000:.1f}ms" for k, v in timings.items())
+                total = sum(timings.values())
+                sys.stderr.write(f"[flush #{chunks_processed}] {parts}  total={total*1000:.1f}ms\n")
+                sys.stderr.flush()
 
         try:
             def task_iter():
@@ -591,10 +623,14 @@ def main():
                 for chunk_id, envs, core_info, counts, stats in pool.imap_unordered(
                     _process_chunk, current_batch, chunksize=1
                 ):
+                    t0 = time.perf_counter()
                     acc_envs.update(envs)
                     _merge_core_info(acc_core_info, core_info)
                     _merge_counts(acc_counts, counts, set_names, radii)
                     acc_chunk_ids.append(chunk_id)
+                    if args.timings:
+                        sys.stderr.write(f"[merge chunk {chunk_id}] {(time.perf_counter()-t0)*1000:.1f}ms\n")
+                        sys.stderr.flush()
 
                     total_stats["lines"] += stats["lines"]
                     total_stats["fragments"] += stats["fragments"]

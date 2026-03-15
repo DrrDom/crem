@@ -15,7 +15,7 @@ import sqlite3
 import sys
 import time
 from collections import defaultdict
-from itertools import permutations
+from itertools import islice, permutations
 from multiprocessing import Pool, cpu_count
 
 from rdkit import Chem, RDLogger
@@ -23,6 +23,9 @@ from rdkit.Chem import inchi, rdMMPA
 
 from crem.mol_context import get_std_context_core_permutations
 from crem.scripts.cremdb_convert import create_indices
+
+
+_SQLITE_BATCH = 32000
 
 
 def _validate_set_name(set_name):
@@ -290,6 +293,7 @@ def _ensure_schema(conn, radii, set_names):
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute("PRAGMA cache_size = -65536")  # 64 MB page cache
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS envs(
@@ -333,89 +337,105 @@ def _ensure_schema(conn, radii, set_names):
     conn.commit()
 
 
-def _init_temp_tables(conn):
-    conn.execute("CREATE TEMP TABLE IF NOT EXISTS tmp_envs(env TEXT PRIMARY KEY)")
-    conn.execute("""
-        CREATE TEMP TABLE IF NOT EXISTS tmp_cores(
-            core_smi TEXT PRIMARY KEY,
-            core_num_atoms INTEGER NOT NULL,
-            dist2 INTEGER NOT NULL,
-            core_smi_h TEXT NOT NULL,
-            inchi TEXT NOT NULL
-        )
-    """)
-    conn.execute("""
-        CREATE TEMP TABLE IF NOT EXISTS tmp_counts(
-            env TEXT NOT NULL,
-            core_smi TEXT NOT NULL,
-            cnt INTEGER NOT NULL
-        )
-    """)
+def _merge_core_info(acc, new):
+    for k, v in new.items():
+        if k not in acc:
+            acc[k] = v
 
 
-def _clear_temp_tables(conn):
-    conn.execute("DELETE FROM tmp_envs")
-    conn.execute("DELETE FROM tmp_cores")
-    conn.execute("DELETE FROM tmp_counts")
+def _merge_counts(acc, new, set_names, radii):
+    for set_name in set_names:
+        new_per_set = new.get(set_name, {})
+        acc_per_set = acc[set_name]
+        for radius in radii:
+            src = new_per_set.get(radius, {})
+            dst = acc_per_set[radius]
+            for key, cnt in src.items():
+                dst[key] += cnt
 
 
-def _load_tmp_envs(conn, envs):
-    if envs:
-        conn.executemany("INSERT OR IGNORE INTO tmp_envs (env) VALUES (?)", [(e,) for e in envs])
+def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
+                 env_cache, inchi_cache, core_smi_cache):
+    """Flush accumulated data to DB using Python-side ID caches (no temp tables, no JOINs)."""
 
-
-def _load_tmp_cores(conn, core_info):
-    rows = []
-    for core_smi, (core_num_atoms, dist2, core_smi_h, inchi_val) in core_info.items():
-        if not inchi_val:
-            continue
-        rows.append((core_smi, core_num_atoms, dist2, core_smi_h, inchi_val))
-    if rows:
+    # Step 1: resolve new envs
+    new_envs = [e for e in envs if e not in env_cache]
+    if new_envs:
         conn.executemany(
-            "INSERT OR IGNORE INTO tmp_cores (core_smi, core_num_atoms, dist2, core_smi_h, inchi) "
-            "VALUES (?, ?, ?, ?, ?)",
-            rows,
+            "INSERT OR IGNORE INTO envs (env) VALUES (?)",
+            [(e,) for e in new_envs],
         )
+        for i in range(0, len(new_envs), _SQLITE_BATCH):
+            batch = new_envs[i:i + _SQLITE_BATCH]
+            ph = ",".join("?" * len(batch))
+            for env_str, env_id in conn.execute(
+                f"SELECT env, env_id FROM envs WHERE env IN ({ph})", batch
+            ):
+                env_cache[env_str] = env_id
 
+    # Step 2: resolve new inchis (frags_h)
+    new_inchis = {}  # inchi_val -> core_smi_h
+    for core_smi, (core_num_atoms, dist2, core_smi_h, inchi_val) in core_info.items():
+        if inchi_val and inchi_val not in inchi_cache and inchi_val not in new_inchis:
+            new_inchis[inchi_val] = core_smi_h
 
-def _ensure_env_ids(conn):
-    conn.execute("INSERT OR IGNORE INTO envs (env) SELECT env FROM tmp_envs")
+    if new_inchis:
+        conn.executemany(
+            "INSERT OR IGNORE INTO frags_h (smi, inchi) VALUES (?, ?)",
+            [(smi, inchi_val) for inchi_val, smi in new_inchis.items()],
+        )
+        inchi_list = list(new_inchis.keys())
+        for i in range(0, len(inchi_list), _SQLITE_BATCH):
+            batch = inchi_list[i:i + _SQLITE_BATCH]
+            ph = ",".join("?" * len(batch))
+            for inchi_val, h_id in conn.execute(
+                f"SELECT inchi, core_smi_h_id FROM frags_h WHERE inchi IN ({ph})", batch
+            ):
+                inchi_cache[inchi_val] = h_id
 
+    # Step 3: resolve new core_smis (frags)
+    new_cores = []  # (core_smi, core_num_atoms, dist2, core_smi_h_id)
+    for core_smi, (core_num_atoms, dist2, core_smi_h, inchi_val) in core_info.items():
+        if core_smi not in core_smi_cache and inchi_val and inchi_val in inchi_cache:
+            new_cores.append((core_smi, core_num_atoms, dist2, inchi_cache[inchi_val]))
 
-def _ensure_inchi_ids(conn):
-    conn.execute("INSERT OR IGNORE INTO frags_h (smi, inchi) SELECT core_smi_h, inchi FROM tmp_cores")
+    if new_cores:
+        conn.executemany(
+            "INSERT OR IGNORE INTO frags (core_smi, core_num_atoms, dist2, core_smi_h_id) "
+            "VALUES (?, ?, ?, ?)",
+            new_cores,
+        )
+        new_core_smis = [row[0] for row in new_cores]
+        for i in range(0, len(new_core_smis), _SQLITE_BATCH):
+            batch = new_core_smis[i:i + _SQLITE_BATCH]
+            ph = ",".join("?" * len(batch))
+            for core_smi, core_smi_id in conn.execute(
+                f"SELECT core_smi, core_smi_id FROM frags WHERE core_smi IN ({ph})", batch
+            ):
+                core_smi_cache[core_smi] = core_smi_id
 
-
-def _ensure_core_ids(conn):
-    conn.execute("""
-        INSERT OR IGNORE INTO frags (core_smi, core_num_atoms, dist2, core_smi_h_id)
-        SELECT t.core_smi, t.core_num_atoms, t.dist2, h.core_smi_h_id
-        FROM tmp_cores t
-        JOIN frags_h h ON t.inchi = h.inchi
-    """)
-
-
-def _update_radius_counts(conn, counts, set_names):
+    # Step 4: upsert radius counts using resolved IDs (no JOINs)
     for set_name in set_names:
         per_set = counts.get(set_name, {})
-        for radius, mapping in per_set.items():
+        for radius in radii:
+            mapping = per_set.get(radius, {})
             if not mapping:
                 continue
-            conn.execute("DELETE FROM tmp_counts")
-            conn.executemany(
-                "INSERT INTO tmp_counts (env, core_smi, cnt) VALUES (?, ?, ?)",
-                [(env, core_smi, cnt) for (env, core_smi), cnt in mapping.items()],
-            )
-            conn.execute(f"""
-                INSERT INTO radius{radius} (env_id, core_smi_id, {set_name})
-                SELECT e.env_id, f.core_smi_id, SUM(tc.cnt)
-                FROM tmp_counts tc
-                JOIN envs e ON e.env = tc.env
-                JOIN frags f ON f.core_smi = tc.core_smi
-                GROUP BY e.env_id, f.core_smi_id
-                ON CONFLICT(env_id, core_smi_id)
-                DO UPDATE SET {set_name} = {set_name} + excluded.{set_name}
-            """)
+            rows = []
+            for (env, core_smi), cnt in mapping.items():
+                env_id = env_cache.get(env)
+                core_smi_id = core_smi_cache.get(core_smi)
+                if env_id is None or core_smi_id is None:
+                    continue
+                rows.append((env_id, core_smi_id, cnt))
+            if rows:
+                conn.executemany(
+                    f"INSERT INTO radius{radius} (env_id, core_smi_id, {set_name}) "
+                    f"VALUES (?, ?, ?) "
+                    f"ON CONFLICT(env_id, core_smi_id) "
+                    f"DO UPDATE SET {set_name} = {set_name} + excluded.{set_name}",
+                    rows,
+                )
 
 
 def _open_input(path, force_zstd):
@@ -460,6 +480,19 @@ def main():
     parser.add_argument("--zstd", action="store_true", help="Force zstd input")
     parser.add_argument("--log-every", type=int, default=None, help="Log progress every N chunks (default: None)")
     parser.add_argument("--ncpu", type=int, default=1, help="Number of worker processes (default: 1)")
+    parser.add_argument(
+        "--flush-every",
+        type=int,
+        default=100,
+        help="Accumulate this many chunks in memory before flushing to DB (default: 100)",
+    )
+    parser.add_argument(
+        "--prefetch",
+        type=int,
+        default=4,
+        help="In-flight task batches per worker (batch_size = ncpu * prefetch). "
+             "Lower values reduce peak memory at the cost of potentially underutilising workers (default: 4)",
+    )
     args = parser.parse_args()
 
     set_names, set_ids = _resolve_set_names(args.set_name)
@@ -473,8 +506,21 @@ def main():
 
     with sqlite3.connect(args.output_db) as conn:
         _ensure_schema(conn, radii, set_names)
-        _init_temp_tables(conn)
         cur = conn.cursor()
+
+        # Python-side ID caches: avoid temp tables and JOIN-based lookups
+        env_cache = {}       # env str -> env_id
+        inchi_cache = {}     # inchi str -> core_smi_h_id
+        core_smi_cache = {}  # core_smi str -> core_smi_id
+
+        # Pre-warm caches when resuming a previous run
+        if args.processed_chunks and os.path.exists(args.processed_chunks):
+            for env_str, env_id in conn.execute("SELECT env, env_id FROM envs"):
+                env_cache[env_str] = env_id
+            for inchi_val, h_id in conn.execute("SELECT inchi, core_smi_h_id FROM frags_h"):
+                inchi_cache[inchi_val] = h_id
+            for core_smi, core_smi_id in conn.execute("SELECT core_smi, core_smi_id FROM frags"):
+                core_smi_cache[core_smi] = core_smi_id
 
         processed_handle = None
         if args.processed_chunks:
@@ -488,6 +534,8 @@ def main():
         start_time = time.time()
 
         ncpu = min(cpu_count(), max(args.ncpu, 1))
+        batch_size = ncpu * max(args.prefetch, 1)
+
         pool = Pool(
             ncpu,
             initializer=_init_worker,
@@ -502,6 +550,27 @@ def main():
             ),
         )
 
+        # Accumulators for flush batching
+        acc_envs = set()
+        acc_core_info = {}
+        acc_counts = {name: {r: defaultdict(int) for r in radii} for name in set_names}
+        acc_chunk_ids = []
+
+        def _do_flush():
+            nonlocal chunks_processed
+            conn.execute("BEGIN")
+            _flush_to_db(
+                conn, acc_envs, acc_core_info, acc_counts,
+                set_names, radii,
+                env_cache, inchi_cache, core_smi_cache,
+            )
+            conn.commit()
+            chunks_processed += len(acc_chunk_ids)
+            if processed_handle:
+                for cid in acc_chunk_ids:
+                    processed_handle.write(f"{cid}\n")
+                processed_handle.flush()
+
         try:
             def task_iter():
                 nonlocal chunks_skipped
@@ -511,39 +580,48 @@ def main():
                         continue
                     yield (chunk_id, lines)
 
-            for chunk_id, envs, core_info, counts, stats in pool.imap_unordered(
-                _process_chunk, task_iter(), chunksize=1
-            ):
-                chunk_start_time = time.time()
+            tasks = task_iter()
 
-                conn.execute("BEGIN")
-                _clear_temp_tables(conn)
-                _load_tmp_envs(conn, envs)
-                _load_tmp_cores(conn, core_info)
-                _ensure_env_ids(conn)
-                _ensure_inchi_ids(conn)
-                _ensure_core_ids(conn)
-                _update_radius_counts(conn, counts, set_names)
-                conn.commit()
+            while True:
+                # Back-pressure: only submit batch_size tasks at a time
+                current_batch = list(islice(tasks, batch_size))
+                if not current_batch:
+                    break
 
-                chunks_processed += 1
-                total_stats["lines"] += stats["lines"]
-                total_stats["fragments"] += stats["fragments"]
-                total_stats["pairs"] += stats["pairs"]
+                for chunk_id, envs, core_info, counts, stats in pool.imap_unordered(
+                    _process_chunk, current_batch, chunksize=1
+                ):
+                    acc_envs.update(envs)
+                    _merge_core_info(acc_core_info, core_info)
+                    _merge_counts(acc_counts, counts, set_names, radii)
+                    acc_chunk_ids.append(chunk_id)
 
-                if processed_handle:
-                    processed_handle.write(f"{chunk_id}\n")
-                    processed_handle.flush()
+                    total_stats["lines"] += stats["lines"]
+                    total_stats["fragments"] += stats["fragments"]
+                    total_stats["pairs"] += stats["pairs"]
 
-                if args.log_every and chunks_processed % args.log_every == 0:
-                    elapsed = time.time() - start_time
-                    rate = total_stats["lines"] / elapsed if elapsed > 0 else 0
-                    sys.stderr.write(
-                        f"\rChunks: {chunks_processed} processed, {chunks_skipped} skipped | "
-                        f"mols: {total_stats['lines']} | frags: {total_stats['fragments']} | "
-                        f"pairs: {total_stats['pairs']} | {rate:.1f} mol/s"
-                    )
-                    sys.stderr.flush()
+                    if len(acc_chunk_ids) >= args.flush_every:
+                        _do_flush()
+
+                        if args.log_every and chunks_processed % args.log_every == 0:
+                            elapsed = time.time() - start_time
+                            rate = total_stats["lines"] / elapsed if elapsed > 0 else 0
+                            sys.stderr.write(
+                                f"\rChunks: {chunks_processed} processed, {chunks_skipped} skipped | "
+                                f"mols: {total_stats['lines']} | frags: {total_stats['fragments']} | "
+                                f"pairs: {total_stats['pairs']} | {rate:.1f} mol/s"
+                            )
+                            sys.stderr.flush()
+
+                        # Reset accumulators
+                        acc_envs = set()
+                        acc_core_info = {}
+                        acc_counts = {name: {r: defaultdict(int) for r in radii} for name in set_names}
+                        acc_chunk_ids = []
+
+            # Final flush for any remaining accumulated chunks
+            if acc_chunk_ids:
+                _do_flush()
 
             create_indices(conn, radii, True)
 

@@ -1,3 +1,8 @@
+0.2.17
+
+- minor fixes in sample_Csp3 and get_replacements functions
+- more accurate treatment of kwargs in main functions
+
 0.2.16
 
 - add checking for existence of a fragment database

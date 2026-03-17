@@ -3,7 +3,6 @@
 import argparse
 import sqlite3
 import sys
-from functools import partial
 from multiprocessing import Pool
 
 from crem.arg_types import filepath_type, cpu_type
@@ -13,138 +12,175 @@ from rdkit.Chem.Crippen import MolLogP
 from rdkit.Chem.rdMolDescriptors import CalcNumRotatableBonds, CalcTPSA, CalcFractionCSP3
 
 
-props = ['mw', 'logp', 'rtb', 'tpsa', 'fcsp3']
+_ALL_PROPS = ['mw', 'logp', 'rtb', 'tpsa', 'fcsp3']
 
-# SQLite DB will be updated by chunks
-if sqlite3.sqlite_version_info[:2] <= (3, 32):
-    CHUNK_SIZE = 999
-else:
-    CHUNK_SIZE = 32766
+_FETCH_BATCH = 50000
+_WRITE_BATCH = 10000
+_IMAP_CHUNK = 500
 
-
-def property_type(x):
-    return [item.lower() for item in x if item.lower() in props]
+_SELECTED_PROPS = []   # set in worker initializer
 
 
-def calc(items, mw=False, logp=False, rtb=False, tpsa=False, fcsp3=False):
-    rowid, smi = items
-    res = dict()
+def _init_worker(selected_props):
+    global _SELECTED_PROPS
+    _SELECTED_PROPS = selected_props
+
+
+def _calc(item):
+    row_id, smi = item
     mol = Chem.MolFromSmiles(smi)
-    if mol:
-        if mw:
-            res['mw'] = round(MolWt(mol), 2)
-        if logp:
-            res['logp'] = round(MolLogP(mol), 2)
-        if rtb:
-            res['rtb'] = CalcNumRotatableBonds(Chem.RemoveHs(mol))
-        if tpsa:
-            res['tpsa'] = CalcTPSA(mol)
-        if fcsp3:
-            res['fcsp3'] = round(CalcFractionCSP3(mol), 3)
-    upd_str = ','.join(f'{k} = {v}' for k, v in res.items())
-    return rowid, upd_str
+    vals = []
+    for prop in _SELECTED_PROPS:
+        if mol is None:
+            vals.append(None)
+        elif prop == 'mw':
+            vals.append(round(MolWt(mol), 2))
+        elif prop == 'logp':
+            vals.append(round(MolLogP(mol), 2))
+        elif prop == 'rtb':
+            vals.append(CalcNumRotatableBonds(Chem.RemoveHs(mol)))
+        elif prop == 'tpsa':
+            vals.append(CalcTPSA(mol))
+        elif prop == 'fcsp3':
+            vals.append(round(CalcFractionCSP3(mol), 3))
+    return row_id, vals
+
+
+def _add_columns(conn, table, selected_props):
+    for prop in selected_props:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {prop} NUMERIC DEFAULT NULL")
+        except sqlite3.OperationalError as e:
+            sys.stderr.write(str(e) + '\n')
+    conn.commit()
+
+
+def _process_table(conn, pool, table, id_col, smi_col, selected_props,
+                   verbose, fetch_batch, write_batch, imap_chunk):
+    null_filter = " OR ".join(f"{p} IS NULL" for p in selected_props)
+
+    total = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {null_filter}").fetchone()[0]
+    if total == 0:
+        if verbose:
+            sys.stderr.write(f"  No unlabeled rows in {table}\n")
+        return
+
+    if verbose:
+        sys.stderr.write(f"  {total} rows to process in {table}\n")
+
+    cur = conn.cursor()
+    cur.execute(f"SELECT {id_col}, {smi_col} FROM {table} WHERE {null_filter}")
+
+    update_sql = (
+        f"UPDATE {table} SET "
+        + ", ".join(f"{p} = ?" for p in selected_props)
+        + f" WHERE {id_col} = ?"
+    )
+
+    write_buf = []
+    processed = 0
+
+    while True:
+        rows = cur.fetchmany(fetch_batch)
+        if not rows:
+            break
+        for row_id, vals in pool.imap_unordered(_calc, rows, chunksize=imap_chunk):
+            write_buf.append((*vals, row_id))
+            if len(write_buf) >= write_batch:
+                conn.executemany(update_sql, write_buf)
+                conn.commit()
+                processed += len(write_buf)
+                write_buf = []
+                if verbose:
+                    sys.stderr.write(f"\r  {processed}/{total}")
+                    sys.stderr.flush()
+
+    if write_buf:
+        conn.executemany(update_sql, write_buf)
+        conn.commit()
+        processed += len(write_buf)
+
+    if verbose:
+        sys.stderr.write(f"\r  {processed}/{total}\n")
 
 
 def entry_point():
-    parser = argparse.ArgumentParser(description='Add columns with values of chosen properties to CReM fragment '
-                                                 'database.',
-                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description='Add columns with values of chosen properties to CReM fragment database.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument('-i', '--input', metavar='FILENAME', required=True, type=filepath_type,
                         help='SQLite DB with CReM fragments.')
-    parser.add_argument('-p', '--properties', metavar='NAMES', required=False, nargs='*', default=props, choices=props,
+    parser.add_argument('-p', '--properties', metavar='NAMES', required=False, nargs='*',
+                        default=_ALL_PROPS, choices=_ALL_PROPS,
                         help='properties to compute.')
     parser.add_argument('-c', '--ncpu', default=1, type=cpu_type,
                         help='number of cpus.')
+    parser.add_argument('--fetch-batch', metavar='INTEGER', default=_FETCH_BATCH, type=int,
+                        help='rows fetched from DB per batch.')
+    parser.add_argument('--write-batch', metavar='INTEGER', default=_WRITE_BATCH, type=int,
+                        help='rows per executemany write.')
+    parser.add_argument('--imap-chunk', metavar='INTEGER', default=_IMAP_CHUNK, type=int,
+                        help='multiprocessing imap chunksize.')
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
                         help='print progress to STDERR.')
 
     args = parser.parse_args()
 
     if not args.properties:
-        sys.stderr.write(f'No valid names of properties were supplied. Check them please: {", ".join(args.properties)}\n')
-        exit()
+        sys.stderr.write('No valid property names supplied.\n')
+        sys.exit(1)
 
-    pool = Pool(args.ncpu)
+    selected_props = args.properties
 
-    mw = 'mw' in args.properties
-    logp = 'logp' in args.properties
-    rtb = 'rtb' in args.properties
-    tpsa = 'tpsa' in args.properties
-    fcsp3 = 'fcsp3' in args.properties
+    pool = Pool(args.ncpu, initializer=_init_worker, initargs=(selected_props,))
 
     with sqlite3.connect(args.input) as conn:
-        cur = conn.cursor()
-        all_tables = cur.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-        all_tables = {i[0] for i in all_tables}
-        user_version = cur.execute("PRAGMA user_version").fetchone()[0]
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA cache_size = -65536")
 
-        if user_version == 1 and 'frags' not in all_tables:
-            raise RuntimeError("Detected new schema (user_version = 1) but missing frags table")
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
 
-        if user_version == 1:
-            for prop in args.properties:
-                try:
-                    cur.execute(f"ALTER TABLE frags ADD COLUMN {prop} NUMERIC DEFAULT NULL")
-                    conn.commit()
-                except sqlite3.OperationalError as e:
-                    sys.stderr.write(str(e) + '\n')
+        if version == 1:
+            all_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'frags' not in all_tables:
+                raise RuntimeError("Detected new schema (user_version=1) but frags table is missing")
+            if args.verbose:
+                sys.stderr.write("Schema version 1: adding properties to frags table\n")
+            _add_columns(conn, 'frags', selected_props)
+            _process_table(
+                conn, pool, 'frags', 'core_smi_id', 'core_smi', selected_props,
+                args.verbose, args.fetch_batch, args.write_batch, args.imap_chunk,
+            )
 
-            sql = "SELECT core_smi_id, core_smi FROM frags WHERE " + \
-                  " OR ".join([f"{prop} IS NULL" for prop in args.properties])
-            cur.execute(sql)
-            res = cur.fetchall()
-
-            for i, (rowid, upd_str) in enumerate(
-                pool.imap_unordered(
-                    partial(calc, mw=mw, logp=logp, rtb=rtb, tpsa=tpsa, fcsp3=fcsp3),
-                    res,
-                ),
-                1,
-            ):
-                cur.execute(f"UPDATE frags SET {upd_str} WHERE core_smi_id = '{rowid}'")
-                if i % 10000 == 0:
-                    conn.commit()
-                    if args.verbose:
-                        sys.stderr.write(f'\r{i} fragments processed')
-            conn.commit()
-            sys.stderr.write(f'\nProperties were successfully added to frags in {args.input}\n')
-
-        # Old schema: add properties to each radius table
-        elif user_version == 0:
-            radius_tables = cur.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'radius%'"
-            ).fetchall()
-            radius_tables = [i[0] for i in radius_tables]
+        elif version == 0:
+            radius_tables = [
+                row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'radius%'"
+                )
+            ]
+            if args.verbose:
+                sys.stderr.write(f"Old schema: adding properties to radius tables: {radius_tables}\n")
             for table in radius_tables:
-                for prop in args.properties:
-                    try:
-                        cur.execute(f"ALTER TABLE {table} ADD COLUMN {prop} NUMERIC DEFAULT NULL")
-                        conn.commit()
-                    except sqlite3.OperationalError as e:
-                        sys.stderr.write(str(e) + '\n')
-                sql = f"SELECT rowid, core_smi FROM {table} WHERE " + \
-                      " OR ".join([f"{prop} IS NULL" for prop in args.properties])
-                cur.execute(sql)
-                res = cur.fetchall()
-
-                for i, (rowid, upd_str) in enumerate(
-                    pool.imap_unordered(
-                        partial(calc, mw=mw, logp=logp, rtb=rtb, tpsa=tpsa, fcsp3=fcsp3),
-                        res,
-                    ),
-                    1,
-                ):
-                    cur.execute(f"UPDATE {table} SET {upd_str} WHERE rowid = '{rowid}'")
-                    if i % 10000 == 0:
-                        conn.commit()
-                        if args.verbose:
-                            sys.stderr.write(f'\r{i} fragments processed')
-                conn.commit()
-
-            sys.stderr.write(f'\nProperties were successfully added to {args.input}\n')
+                if args.verbose:
+                    sys.stderr.write(f"\nTable {table}\n")
+                _add_columns(conn, table, selected_props)
+                _process_table(
+                    conn, pool, table, 'rowid', 'core_smi', selected_props,
+                    args.verbose, args.fetch_batch, args.write_batch, args.imap_chunk,
+                )
 
         else:
-            sys.stderr.write(f'Detected database version {user_version} is not supported\n')
+            sys.stderr.write(f"Unsupported database version: {version}\n")
+            sys.exit(1)
+
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    pool.close()
+    pool.join()
+
+    sys.stderr.write(f"\nFinished: {args.input}\n")
 
 
 if __name__ == '__main__':

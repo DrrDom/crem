@@ -338,7 +338,7 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
     yield smi, p, transformation_smi
 
 
-def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, set_names='undefined', **kwargs):
+def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, set_names=None, **kwargs):
     user_version = db_cur.execute("PRAGMA user_version").fetchone()[0]
     if user_version == 0:
         sql = f"""SELECT rowid
@@ -368,13 +368,20 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
         frags_columns = {row[1] for row in db_cur.execute("PRAGMA table_info(frags)").fetchall()}
         frags_h_columns = {row[1] for row in db_cur.execute("PRAGMA table_info(frags_h)").fetchall()}
 
-        # Normalize set_names to list
-        set_names_list = [set_names] if isinstance(set_names, str) else list(set_names)
-
-        # Validate against available columns in radius table
+        # Discover available set columns in the radius table
         radius_columns = {row[1] for row in db_cur.execute(f"PRAGMA table_info(radius{radius})").fetchall()}
         reserved = {'env_id', 'core_smi_id'}
         available = sorted(radius_columns - reserved)
+
+        # Normalize set_names: None → all available set columns
+        if set_names is None:
+            set_names_list = available
+        elif isinstance(set_names, str):
+            set_names_list = [set_names]
+        else:
+            set_names_list = list(set_names)
+
+        # Validate requested names
         missing = [sn for sn in set_names_list if sn not in radius_columns]
         if missing:
             raise ValueError(f"Column(s) {missing} not found in radius{radius}. Available set names: {available}")
@@ -445,7 +452,7 @@ def _get_replacements(db_cur, radius, row_ids):
 
 def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_size=8, min_rel_size=0, max_rel_size=1,
                        min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
-                       protected_ids_1=None, protected_ids_2=None, min_freq=10, set_names='undefined',
+                       protected_ids_1=None, protected_ids_2=None, min_freq=10, set_names=None,
                        symmetry_fixes=False, filter_func=None, sample_func=None, return_frag_smi_only=False,
                        macrocycle=False, **kwargs):
 
@@ -616,7 +623,7 @@ def __get_data_macrocycle(mol, db_name, radius, dist, min_size, max_size, protec
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
                max_replacements=None, replace_cycles=False, replace_ids=None, protected_ids=None, symmetry_fixes=False,
                min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
-               sample_func=None, set_names='undefined', **kwargs):
+               sample_func=None, set_names=None, **kwargs):
     """
     Generator of new molecules by replacement of fragments in the supplied molecule with fragments from DB.
 
@@ -659,9 +666,10 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                            This solves the issue of rdkit MMPA fragmenter which removes duplicates internally.
     :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
     :param set_names: column name or list of column names in radius tables defining the set(s) of fragments to use
-                      with min_freq in v1 databases. If a list is provided, a fragment is included if at least one
-                      of the named sets satisfies the min_freq threshold. If a column name is not found, a
-                      ValueError is raised listing available set names. Default: 'undefined'.
+                      with min_freq in v1 databases. A fragment is included if at least one of the named sets
+                      satisfies the min_freq threshold (OR logic). If None (default), all available set columns
+                      are used. If a column name is not found, a ValueError is raised listing available set names.
+                      Ignored for v0 databases. Default: None.
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
@@ -773,7 +781,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
 
 def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=None, replace_ids=None,
              protected_ids=None, symmetry_fixes=False, min_freq=0, return_rxn=False, return_rxn_freq=False,
-             return_mol=False, ncores=1, filter_func=None, sample_func=None, set_names='undefined', **kwargs):
+             return_mol=False, ncores=1, filter_func=None, sample_func=None, set_names=None, **kwargs):
     """
     Replace hydrogens with fragments from the database.
 
@@ -801,9 +809,10 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                            This solves the issue of rdkit MMPA fragmenter which removes duplicates internally.
     :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
     :param set_names: column name or list of column names in radius tables defining the set(s) of fragments to use
-                      with min_freq in v1 databases. If a list is provided, a fragment is included if at least one
-                      of the named sets satisfies the min_freq threshold. If a column name is not found, a
-                      ValueError is raised listing available set names. Default: 'undefined'.
+                      with min_freq in v1 databases. A fragment is included if at least one of the named sets
+                      satisfies the min_freq threshold (OR logic). If None (default), all available set columns
+                      are used. If a column name is not found, a ValueError is raised listing available set names.
+                      Ignored for v0 databases. Default: None.
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
@@ -876,7 +885,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
 def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2, max_replacements=None,
               replace_ids_1=None, replace_ids_2=None, protected_ids_1=None, protected_ids_2=None,
               min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
-              sample_func=None, set_names='undefined', **kwargs):
+              sample_func=None, set_names=None, **kwargs):
     """
     Link two molecules by a linker from the database.
 
@@ -907,9 +916,10 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                             This argument has a higher priority over `replace_ids_2`. Default: None.
     :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
     :param set_names: column name or list of column names in radius tables defining the set(s) of fragments to use
-                      with min_freq in v1 databases. If a list is provided, a fragment is included if at least one
-                      of the named sets satisfies the min_freq threshold. If a column name is not found, a
-                      ValueError is raised listing available set names. Default: 'undefined'.
+                      with min_freq in v1 databases. A fragment is included if at least one of the named sets
+                      satisfies the min_freq threshold (OR logic). If None (default), all available set columns
+                      are used. If a column name is not found, a ValueError is raised listing available set names.
+                      Ignored for v0 databases. Default: None.
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
@@ -1086,7 +1096,7 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                      max_rel_size=1, min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
                      protected_ids_1=None, protected_ids_2=None, replace_ids_1=None, replace_ids_2=None, min_freq=0,
                      symmetry_fixes=False, filter_func=None, sample_func=None, return_frag_smi_only=True,
-                     set_names='undefined', **kwargs):
+                     set_names=None, **kwargs):
     """
     An auxiliary function, which returns smiles of fragments in a DB which satisfy given criteria
     :param mol1: RDKit Mol object
@@ -1131,9 +1141,10 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                           (replace_ids which are present in protected_ids would be protected).
     :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
     :param set_names: column name or list of column names in radius tables defining the set(s) of fragments to use
-                      with min_freq in v1 databases. If a list is provided, a fragment is included if at least one
-                      of the named sets satisfies the min_freq threshold. If a column name is not found, a
-                      ValueError is raised listing available set names. Default: 'undefined'.
+                      with min_freq in v1 databases. A fragment is included if at least one of the named sets
+                      satisfies the min_freq threshold (OR logic). If None (default), all available set columns
+                      are used. If a column name is not found, a ValueError is raised listing available set names.
+                      Ignored for v0 databases. Default: None.
     :param symmetry_fixes: if set True duplicated fragments with equivalent atoms having different ids will be
                            enumerated. This makes sense if one wants to replace particular atom(s) which have
                            equivalent ones. By default, among equivalent atoms only those with the lowest ids
@@ -1224,7 +1235,7 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
 def make_macrocycle(mol, db_name, radius=3, dist=None, min_atoms=1, max_atoms=10, max_replacements=None,
                     replace_cycles=False, replace_ids=None, protected_ids=None, symmetry_fixes=False, min_freq=0,
                     return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
-                    sample_func=None, set_names='undefined', **kwargs):
+                    sample_func=None, set_names=None, **kwargs):
     """
     Generate macrocycles by linking two atoms in the same molecule with a linker from DB.
 
@@ -1265,9 +1276,10 @@ def make_macrocycle(mol, db_name, radius=3, dist=None, min_atoms=1, max_atoms=10
                         fragments. Other arguments can be custom and user-defined. The function should return
                         a list/set of selected row ids.
     :param set_names: column name or list of column names in radius tables defining the set(s) of fragments to use
-                      with min_freq in v1 databases. If a list is provided, a fragment is included if at least one
-                      of the named sets satisfies the min_freq threshold. If a column name is not found, a
-                      ValueError is raised listing available set names. Default: 'undefined'.
+                      with min_freq in v1 databases. A fragment is included if at least one of the named sets
+                      satisfies the min_freq threshold (OR logic). If None (default), all available set columns
+                      are used. If a column name is not found, a ValueError is raised listing available set names.
+                      Ignored for v0 databases. Default: None.
     :param **kwargs: named arguments to additionally filter replacing fragments. For v0 DB use columns from radiusX,
                      for v1 DB use columns from frags or frags_h. Values are a single value or 2-item tuple with lower
                      and upper bound of the corresponding parameter of a fragment.

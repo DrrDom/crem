@@ -379,6 +379,11 @@ def _ensure_schema(conn, radii, set_names):
         for set_name in set_names:
             if set_name not in cols:
                 conn.execute(f"ALTER TABLE radius{radius} ADD COLUMN {set_name} INTEGER NOT NULL DEFAULT 0")
+        # Drop query indices on radius tables before bulk loading; they will be
+        # recreated by create_indices() at the end. The UNIQUE autoindex is kept
+        # because it is required for ON CONFLICT DO UPDATE upserts.
+        for suffix in ("env_id", "core_smi_id", "both"):
+            conn.execute(f"DROP INDEX IF EXISTS idx_radius{radius}_{suffix}")
 
     conn.commit()
 

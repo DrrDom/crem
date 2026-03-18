@@ -17,15 +17,59 @@ import time
 from collections import defaultdict
 from itertools import islice, permutations
 from multiprocessing import Pool, cpu_count
+from typing import List
 
 from rdkit import Chem, RDLogger
 from rdkit.Chem import inchi, rdMMPA
+from tqdm import tqdm
 
 from crem.mol_context import get_std_context_core_permutations
-from crem.scripts.cremdb_convert import create_indices
 
 
 _SQLITE_BATCH = 32000
+
+def create_indices(conn: sqlite3.Connection, radii: List[int], verbose: bool = True):
+    """
+    Create optimized indices on the new database.
+
+    Args:
+        conn: SQLite connection
+        radii: List of radius values
+        verbose: Print progress
+    """
+    cur = conn.cursor()
+
+    indices = [
+        ("idx_envs_env", "CREATE INDEX IF NOT EXISTS idx_envs_env ON envs(env)"),
+        ("idx_frags_core_smi", "CREATE INDEX IF NOT EXISTS idx_frags_core_smi ON frags(core_smi)"),
+        ("idx_frags_core_num_atoms", "CREATE INDEX IF NOT EXISTS idx_frags_core_num_atoms ON frags(core_num_atoms)"),
+        # ("idx_frags_core_smi_h_id", "CREATE INDEX IF NOT EXISTS idx_frags_core_smi_h_id ON frags(core_smi_h_id)"),
+        # ("idx_frags_dist2", "CREATE INDEX IF NOT EXISTS idx_frags_dist2 ON frags(dist2)"),
+        # ("idx_frags_h_id", "CREATE INDEX IF NOT EXISTS idx_frags_h_id ON frags_h(core_smi_h_id)"),
+        ("idx_frags_h_smi", "CREATE INDEX IF NOT EXISTS idx_frags_h_smi ON frags_h(smi)"),
+    ]
+
+    # Add indices for each radius table
+    for radius in radii:
+        indices.extend([
+            (f"idx_radius{radius}_env_id",
+             f"CREATE INDEX IF NOT EXISTS idx_radius{radius}_env_id ON radius{radius}(env_id)"),
+            (f"idx_radius{radius}_core_smi_id",
+             f"CREATE INDEX IF NOT EXISTS idx_radius{radius}_core_smi_id ON radius{radius}(core_smi_id)"),
+            (f"idx_radius{radius}_both",
+             f"CREATE INDEX IF NOT EXISTS idx_radius{radius}_both ON radius{radius}(env_id, core_smi_id)"),
+        ])
+
+    for idx_name, sql in tqdm(indices, desc="Creating indices", disable=not verbose):
+        cur.execute(sql)
+
+    conn.commit()
+
+    # Analyze database for query optimization
+    if verbose:
+        print("Analyzing database...")
+    cur.execute("ANALYZE")
+    conn.commit()
 
 
 def _validate_set_name(set_name):

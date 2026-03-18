@@ -339,7 +339,9 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
 
 
 def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, set_names=None, **kwargs):
+
     user_version = db_cur.execute("PRAGMA user_version").fetchone()[0]
+
     if user_version == 0:
         sql = f"""SELECT rowid
                   FROM radius{radius}
@@ -355,6 +357,7 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
                 sql += f" AND {k} BETWEEN {v[0]} AND {v[1]}"
             elif isinstance(v, (int, float, complex)) and not isinstance(v, bool):
                 sql += f" AND {k} = {v}"
+
     elif user_version == 1:
         def _sql_value(value):
             if isinstance(value, str):

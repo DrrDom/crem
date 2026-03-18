@@ -30,6 +30,7 @@ from tqdm import tqdm
 from rdkit import Chem, RDLogger
 from rdkit.Chem import inchi
 from crem.mol_context import combine_core_env_to_rxn_smarts
+from crem.scripts.cremdb_create import create_indices
 
 
 def replace_attachment_points_with_h(smiles: str) -> str:
@@ -363,49 +364,6 @@ def convert_database(
         old_conn.close()
         new_conn.close()
         RDLogger.EnableLog('rdApp.warning')
-
-
-def create_indices(conn: sqlite3.Connection, radii: List[int], verbose: bool = True):
-    """
-    Create optimized indices on the new database.
-
-    Args:
-        conn: SQLite connection
-        radii: List of radius values
-        verbose: Print progress
-    """
-    cur = conn.cursor()
-
-    indices = [
-        ("idx_envs_env", "CREATE INDEX IF NOT EXISTS idx_envs_env ON envs(env)"),
-        ("idx_frags_core_smi", "CREATE INDEX IF NOT EXISTS idx_frags_core_smi ON frags(core_smi)"),
-        # ("idx_frags_core_smi_h_id", "CREATE INDEX IF NOT EXISTS idx_frags_core_smi_h_id ON frags(core_smi_h_id)"),
-        # ("idx_frags_dist2", "CREATE INDEX IF NOT EXISTS idx_frags_dist2 ON frags(dist2)"),
-        # ("idx_frags_h_id", "CREATE INDEX IF NOT EXISTS idx_frags_h_id ON frags_h(core_smi_h_id)"),
-        ("idx_frags_h_smi", "CREATE INDEX IF NOT EXISTS idx_frags_h_smi ON frags_h(smi)"),
-    ]
-
-    # Add indices for each radius table
-    for radius in radii:
-        indices.extend([
-            (f"idx_radius{radius}_env_id",
-             f"CREATE INDEX IF NOT EXISTS idx_radius{radius}_env_id ON radius{radius}(env_id)"),
-            (f"idx_radius{radius}_core_smi_id",
-             f"CREATE INDEX IF NOT EXISTS idx_radius{radius}_core_smi_id ON radius{radius}(core_smi_id)"),
-            (f"idx_radius{radius}_both",
-             f"CREATE INDEX IF NOT EXISTS idx_radius{radius}_both ON radius{radius}(env_id, core_smi_id)"),
-        ])
-
-    for idx_name, sql in tqdm(indices, desc="Creating indices", disable=not verbose):
-        cur.execute(sql)
-
-    conn.commit()
-
-    # Analyze database for query optimization
-    if verbose:
-        print("Analyzing database...")
-    cur.execute("ANALYZE")
-    conn.commit()
 
 
 def verify_conversion(old_db_path: str, new_db_path: str, radius: int = 3,

@@ -517,11 +517,13 @@ def _open_input(path, force_zstd):
 
 def main():
     parser = argparse.ArgumentParser(description="Stream-like fragment DB creation for new schema")
-    parser.add_argument("input", help="Input SMILES file (text or .zst)")
-    parser.add_argument("output_db", help="Output SQLite DB file")
+    parser.add_argument("-i", "--input", required=True, help="Input SMILES file (text or .zst)")
+    parser.add_argument("-o", "--output", dest="output_db", required=True, help="Output SQLite DB file")
     parser.add_argument(
-        "set_name",
+        "-s", "--set-name",
+        dest="set_name",
         nargs="+",
+        required=True,
         help=(
             "Set name (single) and/or one or more files with SMILES ids; file basenames "
             "become set names in the DB, so they must follow SQLite column naming rules "

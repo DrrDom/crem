@@ -90,7 +90,28 @@ def merge_into(
                 JOIN main.frags_h mh ON sh.inchi = mh.inchi
             """)
 
-            # 4. Merge each radius table with full env_id / core_smi_id translation.
+            # Build integer translation tables once per shard (one text JOIN each)
+            # so that the per-radius merges use fast integer-to-integer lookups.
+            target_conn.execute("""
+                CREATE TEMP TABLE _env_map AS
+                SELECT se.env_id AS src_id, me.env_id AS dst_id
+                FROM src.envs se
+                JOIN main.envs me ON se.env = me.env
+            """)
+            target_conn.execute(
+                "CREATE INDEX temp._env_map_src ON _env_map(src_id)"
+            )
+            target_conn.execute("""
+                CREATE TEMP TABLE _frag_map AS
+                SELECT sf.core_smi_id AS src_id, mf.core_smi_id AS dst_id
+                FROM src.frags sf
+                JOIN main.frags mf ON sf.core_smi = mf.core_smi
+            """)
+            target_conn.execute(
+                "CREATE INDEX temp._frag_map_src ON _frag_map(src_id)"
+            )
+
+            # 4. Merge each radius table using integer translation maps (no text JOINs).
             for radius in radii:
                 src_cols = {
                     row[1]
@@ -124,12 +145,11 @@ def merge_into(
 
                 target_conn.execute(f"""
                     INSERT INTO main.radius{radius}(env_id, core_smi_id, {col_list})
-                    SELECT me.env_id, mf.core_smi_id, {src_vals}
+                    SELECT em.dst_id, fm.dst_id, {src_vals}
                     FROM src.radius{radius} r
-                    JOIN src.envs se      ON r.env_id      = se.env_id
-                    JOIN main.envs me     ON se.env         = me.env
-                    JOIN src.frags sf     ON r.core_smi_id  = sf.core_smi_id
-                    JOIN main.frags mf    ON sf.core_smi    = mf.core_smi
+                    JOIN temp._env_map em  ON r.env_id      = em.src_id
+                    JOIN temp._frag_map fm ON r.core_smi_id = fm.src_id
+                    ORDER BY em.dst_id, fm.dst_id
                     ON CONFLICT(env_id, core_smi_id) DO UPDATE SET {conflict_upd}
                 """)
 
@@ -141,6 +161,8 @@ def merge_into(
             raise
 
         finally:
+            target_conn.execute("DROP TABLE IF EXISTS temp._env_map")
+            target_conn.execute("DROP TABLE IF EXISTS temp._frag_map")
             target_conn.execute("DETACH DATABASE src")
 
 

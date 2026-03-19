@@ -17,6 +17,7 @@ import time
 from collections import defaultdict
 from itertools import islice, permutations
 from multiprocessing import Pool, cpu_count
+from pathlib import Path
 from typing import List
 
 from rdkit import Chem, RDLogger
@@ -70,6 +71,30 @@ def create_indices(conn: sqlite3.Connection, radii: List[int], verbose: bool = T
         print("Analyzing database...")
     cur.execute("ANALYZE")
     conn.commit()
+
+
+def _shard_db_path(output_db: str, shard_idx: int) -> str:
+    """Return file path for the given shard index.
+
+    Shard 0 is the base output file; shards 1+ get a zero-padded numeric suffix.
+    Example: output.db → output.db (0), output_001.db (1), output_002.db (2), ...
+    """
+    if shard_idx == 0:
+        return output_db
+    p = Path(output_db)
+    return str(p.parent / f"{p.stem}_{shard_idx:03d}{p.suffix}")
+
+
+def _find_last_shard_idx(output_db: str) -> int:
+    """Return the index of the last existing shard file, or -1 if none exist."""
+    if not os.path.exists(output_db):
+        return -1
+    last = 0
+    idx = 1
+    while os.path.exists(_shard_db_path(output_db, idx)):
+        last = idx
+        idx += 1
+    return last
 
 
 def _validate_set_name(set_name):
@@ -561,6 +586,21 @@ def main():
     )
     parser.add_argument("--timings", action="store_true",
         help="Print per-flush timing breakdown to stderr")
+    parser.add_argument(
+        "--shard-size",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Max number of input structures per shard database. "
+            "If omitted, all data goes to one DB (default behaviour). "
+            "Shard 0 is the output file itself; subsequent shards get a "
+            "numeric suffix (e.g. output_001.db, output_002.db, ...). "
+            "On resume, the last existing shard is detected automatically "
+            "and a fresh new shard is started — the partial last shard is "
+            "left as-is and will be merged at the end."
+        ),
+    )
     args = parser.parse_args()
 
     set_names, set_ids = _resolve_set_names(args.set_name)
@@ -568,173 +608,249 @@ def main():
     if not radii:
         raise ValueError("At least one radius must be specified")
 
+    shard_size = args.shard_size
     skip_chunks = _read_chunk_ids(args.processed_chunks)
 
     RDLogger.DisableLog("rdApp.warning")
 
-    with sqlite3.connect(args.output_db) as conn:
-        _ensure_schema(conn, radii, set_names)
-        cur = conn.cursor()
+    # Determine which shard to start from.
+    # In shard mode on resume: skip the last (possibly partial) shard and open
+    # a fresh one.  In non-shard mode always use index 0 (the output file).
+    if shard_size is not None:
+        last_shard_idx = _find_last_shard_idx(args.output_db)
+        current_shard_idx = last_shard_idx + 1
+    else:
+        current_shard_idx = 0
 
-        # Python-side ID caches: avoid temp tables and JOIN-based lookups
-        env_cache = {}       # env str -> env_id
-        inchi_cache = {}     # inchi str -> core_smi_h_id
-        core_smi_cache = {}  # core_smi str -> core_smi_id
+    def _open_shard(idx: int) -> sqlite3.Connection:
+        path = _shard_db_path(args.output_db, idx)
+        c = sqlite3.connect(path)
+        _ensure_schema(c, radii, set_names)
+        return c
 
-        # Pre-warm caches when resuming a previous run
-        if args.processed_chunks and os.path.exists(args.processed_chunks):
-            for env_str, env_id in conn.execute("SELECT env, env_id FROM envs"):
-                env_cache[env_str] = env_id
-            for inchi_val, h_id in conn.execute("SELECT inchi, core_smi_h_id FROM frags_h"):
-                inchi_cache[inchi_val] = h_id
-            for core_smi, core_smi_id in conn.execute("SELECT core_smi, core_smi_id FROM frags"):
-                core_smi_cache[core_smi] = core_smi_id
+    def _finalize_shard(c: sqlite3.Connection) -> None:
+        """Checkpoint WAL and create indices, making the shard a valid standalone DB."""
+        c.execute("PRAGMA wal_autocheckpoint = 1000")
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        create_indices(c, radii, True)
 
-        processed_handle = None
-        if args.processed_chunks:
-            processed_handle = open(args.processed_chunks, "a", encoding="utf-8")
+    conn = _open_shard(current_shard_idx)
 
-        input_handle, zstd_handle = _open_input(args.input, args.zstd)
+    # Python-side ID caches: avoid temp tables and JOIN-based lookups.
+    env_cache: dict = {}       # env str  -> env_id
+    inchi_cache: dict = {}     # inchi str -> core_smi_h_id
+    core_smi_cache: dict = {}  # core_smi  -> core_smi_id
 
-        total_stats = {"lines": 0, "fragments": 0, "pairs": 0}
-        chunks_processed = 0
-        chunks_skipped = 0
-        start_time = time.time()
+    # Pre-warm caches only in non-shard mode when resuming (shard mode always
+    # opens a fresh DB, so caches start empty).
+    if shard_size is None and args.processed_chunks and os.path.exists(args.processed_chunks):
+        for env_str, env_id in conn.execute("SELECT env, env_id FROM envs"):
+            env_cache[env_str] = env_id
+        for inchi_val, h_id in conn.execute("SELECT inchi, core_smi_h_id FROM frags_h"):
+            inchi_cache[inchi_val] = h_id
+        for core_smi, core_smi_id in conn.execute("SELECT core_smi, core_smi_id FROM frags"):
+            core_smi_cache[core_smi] = core_smi_id
 
-        ncpu = min(cpu_count(), max(args.ncpu, 1))
-        batch_size = ncpu * max(args.prefetch, 1)
+    processed_handle = None
+    if args.processed_chunks:
+        processed_handle = open(args.processed_chunks, "a", encoding="utf-8")
 
-        pool = Pool(
-            ncpu,
-            initializer=_init_worker,
-            initargs=(
-                radii,
-                args.keep_stereo,
-                args.max_heavy_atoms,
-                args.mode,
-                args.sep,
-                set_names,
-                set_ids,
-            ),
+    input_handle, zstd_handle = _open_input(args.input, args.zstd)
+
+    total_stats = {"lines": 0, "fragments": 0, "pairs": 0}
+    chunks_processed = 0
+    chunks_skipped = 0
+    start_time = time.time()
+
+    ncpu = min(cpu_count(), max(args.ncpu, 1))
+    batch_size = ncpu * max(args.prefetch, 1)
+
+    pool = Pool(
+        ncpu,
+        initializer=_init_worker,
+        initargs=(
+            radii,
+            args.keep_stereo,
+            args.max_heavy_atoms,
+            args.mode,
+            args.sep,
+            set_names,
+            set_ids,
+        ),
+    )
+
+    # Accumulators for flush batching
+    acc_envs = set()
+    acc_core_info = {}
+    acc_counts = {name: {r: defaultdict(int) for r in radii} for name in set_names}
+    acc_chunk_ids = []
+    flush_counter = 0
+    structures_in_current_shard = 0  # reset on each shard rotation
+    sources_to_merge: list = []       # populated at merge time; kept for stats
+
+    # _do_flush and _rotate_shard access `conn` via late binding: rebinding
+    # `conn` in this scope is picked up by subsequent _do_flush calls.
+
+    def _do_flush():
+        nonlocal chunks_processed, flush_counter
+        timings = {} if args.timings else None
+
+        conn.execute("PRAGMA foreign_keys = OFF")  # IDs are guaranteed to exist
+        t0 = time.perf_counter()
+        conn.execute("BEGIN")
+        if timings is not None:
+            timings["begin"] = time.perf_counter() - t0
+
+        _flush_to_db(
+            conn, acc_envs, acc_core_info, acc_counts,
+            set_names, radii,
+            env_cache, inchi_cache, core_smi_cache,
+            timings=timings,
         )
 
-        # Accumulators for flush batching
-        acc_envs = set()
-        acc_core_info = {}
-        acc_counts = {name: {r: defaultdict(int) for r in radii} for name in set_names}
-        acc_chunk_ids = []
+        t0 = time.perf_counter()
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = ON")
+        if timings is not None:
+            timings["commit"] = time.perf_counter() - t0
+
+        chunks_processed += len(acc_chunk_ids)
+        if processed_handle:
+            for cid in acc_chunk_ids:
+                processed_handle.write(f"{cid}\n")
+            processed_handle.flush()
+
+        flush_counter += 1
+        if flush_counter % 10 == 0:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+
+        if timings is not None:
+            parts = "  ".join(f"{k}={v*1000:.1f}ms" for k, v in timings.items())
+            total = sum(timings.values())
+            sys.stderr.write(f"[flush #{chunks_processed}] {parts}  total={total*1000:.1f}ms\n")
+            sys.stderr.flush()
+
+    def _rotate_shard():
+        nonlocal conn, current_shard_idx, flush_counter, structures_in_current_shard
+        _finalize_shard(conn)
+        conn.close()
+        current_shard_idx += 1
+        conn = _open_shard(current_shard_idx)
+        env_cache.clear()
+        inchi_cache.clear()
+        core_smi_cache.clear()
         flush_counter = 0
+        structures_in_current_shard = 0
+        sys.stderr.write(
+            f"\n  Shard full → opened {_shard_db_path(args.output_db, current_shard_idx)}\n"
+        )
+        sys.stderr.flush()
 
-        def _do_flush():
-            nonlocal chunks_processed, flush_counter
-            timings = {} if args.timings else None
+    try:
+        def task_iter():
+            nonlocal chunks_skipped
+            for chunk_id, lines in enumerate(_iter_chunks(input_handle, args.chunk_size)):
+                if chunk_id in skip_chunks:
+                    chunks_skipped += 1
+                    continue
+                yield (chunk_id, lines)
 
-            conn.execute("PRAGMA foreign_keys = OFF")  # IDs are guaranteed to exist; skip FK checks
-            t0 = time.perf_counter()
-            conn.execute("BEGIN")
-            if timings is not None:
-                timings["begin"] = time.perf_counter() - t0
+        tasks = task_iter()
 
-            _flush_to_db(
-                conn, acc_envs, acc_core_info, acc_counts,
-                set_names, radii,
-                env_cache, inchi_cache, core_smi_cache,
-                timings=timings,
-            )
+        while True:
+            # Back-pressure: only submit batch_size tasks at a time
+            current_batch = list(islice(tasks, batch_size))
+            if not current_batch:
+                break
 
-            t0 = time.perf_counter()
-            conn.commit()
-            conn.execute("PRAGMA foreign_keys = ON")
-            if timings is not None:
-                timings["commit"] = time.perf_counter() - t0
+            for chunk_id, envs, core_info, counts, stats in pool.imap_unordered(
+                _process_chunk, current_batch, chunksize=1
+            ):
+                t0 = time.perf_counter()
+                acc_envs.update(envs)
+                _merge_core_info(acc_core_info, core_info)
+                _merge_counts(acc_counts, counts, set_names, radii)
+                acc_chunk_ids.append(chunk_id)
+                if args.timings:
+                    sys.stderr.write(f"[merge chunk {chunk_id}] {(time.perf_counter()-t0)*1000:.1f}ms\n")
+                    sys.stderr.flush()
 
-            chunks_processed += len(acc_chunk_ids)
-            if processed_handle:
-                for cid in acc_chunk_ids:
-                    processed_handle.write(f"{cid}\n")
-                processed_handle.flush()
+                total_stats["lines"] += stats["lines"]
+                total_stats["fragments"] += stats["fragments"]
+                total_stats["pairs"] += stats["pairs"]
+                structures_in_current_shard += stats["lines"]
 
-            flush_counter += 1
-            if flush_counter % 10 == 0:
-                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                if len(acc_chunk_ids) >= args.flush_every:
+                    _do_flush()
 
-            if timings is not None:
-                parts = "  ".join(f"{k}={v*1000:.1f}ms" for k, v in timings.items())
-                total = sum(timings.values())
-                sys.stderr.write(f"[flush #{chunks_processed}] {parts}  total={total*1000:.1f}ms\n")
-                sys.stderr.flush()
-
-        try:
-            def task_iter():
-                nonlocal chunks_skipped
-                for chunk_id, lines in enumerate(_iter_chunks(input_handle, args.chunk_size)):
-                    if chunk_id in skip_chunks:
-                        chunks_skipped += 1
-                        continue
-                    yield (chunk_id, lines)
-
-            tasks = task_iter()
-
-            while True:
-                # Back-pressure: only submit batch_size tasks at a time
-                current_batch = list(islice(tasks, batch_size))
-                if not current_batch:
-                    break
-
-                for chunk_id, envs, core_info, counts, stats in pool.imap_unordered(
-                    _process_chunk, current_batch, chunksize=1
-                ):
-                    t0 = time.perf_counter()
-                    acc_envs.update(envs)
-                    _merge_core_info(acc_core_info, core_info)
-                    _merge_counts(acc_counts, counts, set_names, radii)
-                    acc_chunk_ids.append(chunk_id)
-                    if args.timings:
-                        sys.stderr.write(f"[merge chunk {chunk_id}] {(time.perf_counter()-t0)*1000:.1f}ms\n")
+                    if args.log_every and chunks_processed % args.log_every == 0:
+                        elapsed = time.time() - start_time
+                        rate = total_stats["lines"] / elapsed if elapsed > 0 else 0
+                        sys.stderr.write(
+                            f"\rChunks: {chunks_processed} processed, {chunks_skipped} skipped | "
+                            f"mols: {total_stats['lines']} | frags: {total_stats['fragments']} | "
+                            f"pairs: {total_stats['pairs']} | {rate:.1f} mol/s"
+                        )
                         sys.stderr.flush()
 
-                    total_stats["lines"] += stats["lines"]
-                    total_stats["fragments"] += stats["fragments"]
-                    total_stats["pairs"] += stats["pairs"]
+                    # Reset accumulators
+                    acc_envs = set()
+                    acc_core_info = {}
+                    acc_counts = {name: {r: defaultdict(int) for r in radii} for name in set_names}
+                    acc_chunk_ids = []
 
-                    if len(acc_chunk_ids) >= args.flush_every:
-                        _do_flush()
+                    # Rotate shard if size threshold reached
+                    if shard_size is not None and structures_in_current_shard >= shard_size:
+                        _rotate_shard()
 
-                        if args.log_every and chunks_processed % args.log_every == 0:
-                            elapsed = time.time() - start_time
-                            rate = total_stats["lines"] / elapsed if elapsed > 0 else 0
-                            sys.stderr.write(
-                                f"\rChunks: {chunks_processed} processed, {chunks_skipped} skipped | "
-                                f"mols: {total_stats['lines']} | frags: {total_stats['fragments']} | "
-                                f"pairs: {total_stats['pairs']} | {rate:.1f} mol/s"
-                            )
-                            sys.stderr.flush()
+        # Final flush for any remaining accumulated chunks
+        if acc_chunk_ids:
+            _do_flush()
 
-                        # Reset accumulators
-                        acc_envs = set()
-                        acc_core_info = {}
-                        acc_counts = {name: {r: defaultdict(int) for r in radii} for name in set_names}
-                        acc_chunk_ids = []
+        # Finalize the last (or only) shard
+        _finalize_shard(conn)
+        conn.close()
+        conn = None
 
-            # Final flush for any remaining accumulated chunks
-            if acc_chunk_ids:
-                _do_flush()
+        # In shard mode: collect ALL shard files from index 1 upward (including
+        # those created in previous sessions) and merge them into shard 0.
+        if shard_size is not None:
+            sources_to_merge = []
+            idx = 1
+            while os.path.exists(_shard_db_path(args.output_db, idx)):
+                sources_to_merge.append(_shard_db_path(args.output_db, idx))
+                idx += 1
 
-            conn.execute("PRAGMA wal_autocheckpoint = 1000")  # restore default
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")   # fold WAL into DB before indexing
-            create_indices(conn, radii, True)
+            if sources_to_merge:
+                sys.stderr.write(
+                    f"\nMerging {len(sources_to_merge) + 1} shards into {args.output_db}...\n"
+                )
+                sys.stderr.flush()
+                from crem.scripts.cremdb_merge import merge_into  # lazy: avoids circular import
+                with sqlite3.connect(args.output_db) as merge_conn:
+                    merge_conn.execute("PRAGMA cache_size = -262144")  # 256 MB
+                    merge_conn.execute("PRAGMA synchronous = NORMAL")
+                    merge_conn.execute("PRAGMA journal_mode = WAL")
+                    merge_conn.execute("PRAGMA temp_store = MEMORY")
+                    merge_into(merge_conn, sources_to_merge, verbose=True)
+                    create_indices(merge_conn, radii, True)
 
-        finally:
-            pool.close()
-            pool.join()
-            input_handle.close()
-            if zstd_handle:
-                zstd_handle.close()
-            if processed_handle:
-                processed_handle.close()
+    finally:
+        pool.close()
+        pool.join()
+        input_handle.close()
+        if zstd_handle:
+            zstd_handle.close()
+        if processed_handle:
+            processed_handle.close()
+        if conn is not None:
+            conn.close()
 
-        sys.stderr.write("\n")
+    sys.stderr.write("\n")
 
+    # Print statistics from the final merged (or single) database
+    with sqlite3.connect(args.output_db) as stats_conn:
+        cur = stats_conn.cursor()
         env_count = cur.execute("SELECT COUNT(*) FROM envs").fetchone()[0]
         frag_count = cur.execute("SELECT COUNT(*) FROM frags").fetchone()[0]
         frag_h_count = cur.execute("SELECT COUNT(*) FROM frags_h").fetchone()[0]
@@ -742,19 +858,21 @@ def main():
         for radius in radii:
             radius_counts[radius] = cur.execute(f"SELECT COUNT(rowid) FROM radius{radius}").fetchone()[0]
 
-        elapsed = time.time() - start_time
-        print("Done.")
-        print(f"Chunks processed: {chunks_processed}")
-        print(f"Chunks skipped: {chunks_skipped}")
-        print(f"Molecules processed: {total_stats['lines']}")
-        print(f"Fragments generated: {total_stats['fragments']}")
-        print(f"Env/core pairs: {total_stats['pairs']}")
-        print(f"Unique envs: {env_count}")
-        print(f"Unique frags: {frag_count}")
-        print(f"Unique frags_h: {frag_h_count}")
-        for radius, count in radius_counts.items():
-            print(f"radius{radius} rows: {count}")
-        print(f"Elapsed: {elapsed:.1f}s")
+    elapsed = time.time() - start_time
+    print("Done.")
+    print(f"Chunks processed: {chunks_processed}")
+    print(f"Chunks skipped: {chunks_skipped}")
+    print(f"Molecules processed: {total_stats['lines']}")
+    print(f"Fragments generated: {total_stats['fragments']}")
+    print(f"Env/core pairs: {total_stats['pairs']}")
+    print(f"Unique envs: {env_count}")
+    print(f"Unique frags: {frag_count}")
+    print(f"Unique frags_h: {frag_h_count}")
+    for radius, count in radius_counts.items():
+        print(f"radius{radius} rows: {count}")
+    print(f"Elapsed: {elapsed:.1f}s")
+    if shard_size is not None:
+        print(f"Shards on disk: {len(sources_to_merge) + 1}")
 
 
 if __name__ == "__main__":

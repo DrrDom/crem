@@ -36,6 +36,7 @@ setuptools.setup(
                        'guacamol_test = crem.guacamol_crem_test:entry_point',
                        'cremdb_add_prop = crem.scripts.cremdb_add_prop:entry_point',
                        'cremdb_create = crem.scripts.cremdb_create:main',
+                       'cremdb_merge = crem.scripts.cremdb_merge:main',
                        'cremdb_convert = crem.scripts.cremdb_convert:main',]},
     scripts=['crem/scripts/crem_create_frag_db.sh']
 )

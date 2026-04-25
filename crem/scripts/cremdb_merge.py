@@ -55,9 +55,10 @@ def merge_into(
     # The UNIQUE autoindex (sqlite_autoindex_radiusN_1) is kept — it drives
     # ON CONFLICT DO UPDATE.
     for radius in radii:
-        for suffix in ("env_id", "core_smi_id", "both"):
+        for suffix in ("env_id", "core_smi_id", "both", "lookup"):
             target_conn.execute(f"DROP INDEX IF EXISTS idx_radius{radius}_{suffix}")
     target_conn.execute("DROP INDEX IF EXISTS idx_frags_core_num_atoms")
+    target_conn.execute("DROP INDEX IF EXISTS idx_frags_h_smi")
     target_conn.commit()
 
     for source_path in tqdm(source_paths, desc="Merging shards", disable=not verbose):
@@ -75,19 +76,19 @@ def merge_into(
                 "INSERT OR IGNORE INTO main.envs(env) SELECT env FROM src.envs"
             )
 
-            # 2. Merge frags_h — natural key is inchi.
+            # 2. Merge frags_h — natural key is the H-canonical SMILES (smi).
             target_conn.execute(
-                "INSERT OR IGNORE INTO main.frags_h(smi, inchi) "
-                "SELECT smi, inchi FROM src.frags_h"
+                "INSERT OR IGNORE INTO main.frags_h(smi) "
+                "SELECT smi FROM src.frags_h"
             )
 
-            # 3. Merge frags — core_smi_h_id must be translated via inchi.
+            # 3. Merge frags — core_smi_h_id must be translated via smi.
             target_conn.execute("""
                 INSERT OR IGNORE INTO main.frags(core_smi, core_num_atoms, dist2, core_smi_h_id)
                 SELECT sf.core_smi, sf.core_num_atoms, sf.dist2, mh.core_smi_h_id
                 FROM src.frags sf
                 JOIN src.frags_h sh ON sf.core_smi_h_id = sh.core_smi_h_id
-                JOIN main.frags_h mh ON sh.inchi = mh.inchi
+                JOIN main.frags_h mh ON sh.smi = mh.smi
             """)
 
             # Build integer translation tables once per shard (one text JOIN each)
@@ -144,8 +145,8 @@ def merge_into(
                 )
 
                 target_conn.execute(f"""
-                    INSERT INTO main.radius{radius}(env_id, core_smi_id, {col_list})
-                    SELECT em.dst_id, fm.dst_id, {src_vals}
+                    INSERT INTO main.radius{radius}(env_id, core_smi_id, core_num_atoms, dist2, {col_list})
+                    SELECT em.dst_id, fm.dst_id, r.core_num_atoms, r.dist2, {src_vals}
                     FROM src.radius{radius} r
                     JOIN temp._env_map em  ON r.env_id      = em.src_id
                     JOIN temp._frag_map fm ON r.core_smi_id = fm.src_id

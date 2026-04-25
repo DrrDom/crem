@@ -371,9 +371,11 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
         frags_columns = {row[1] for row in db_cur.execute("PRAGMA table_info(frags)").fetchall()}
         frags_h_columns = {row[1] for row in db_cur.execute("PRAGMA table_info(frags_h)").fetchall()}
 
-        # Discover available set columns in the radius table
+        # Discover available set columns in the radius table.
+        # core_num_atoms and dist2 are denormalized into radius{N} alongside
+        # env_id / core_smi_id and must be excluded when listing set columns.
         radius_columns = {row[1] for row in db_cur.execute(f"PRAGMA table_info(radius{radius})").fetchall()}
-        reserved = {'env_id', 'core_smi_id'}
+        reserved = {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2'}
         available = sorted(radius_columns - reserved)
 
         # Normalize set_names: None → all available set columns
@@ -394,30 +396,45 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
         if len(set_names_list) > 1:
             freq_clause = f"({freq_clause})"
 
+        # Decide which side tables we actually need to join. The hot path
+        # filters (env, core_num_atoms, dist2, set columns) are all on
+        # radius{N} or envs. frags / frags_h are joined only when a kwarg
+        # targets one of their columns.
+        kwarg_target = {}  # column name -> 'f' or 'h'
+        for k in kwargs:
+            if k in frags_columns:
+                kwarg_target[k] = 'f'
+            elif k in frags_h_columns:
+                kwarg_target[k] = 'h'
+            else:
+                raise ValueError(f"Column {k} not found in frags or frags_h")
+
+        need_frags = any(t == 'f' for t in kwarg_target.values())
+        need_frags_h = any(t == 'h' for t in kwarg_target.values())
+
+        joins = ["JOIN envs e ON r.env_id = e.env_id"]
+        if need_frags or need_frags_h:
+            joins.append("JOIN frags f ON r.core_smi_id = f.core_smi_id")
+        if need_frags_h:
+            joins.append("JOIN frags_h h ON f.core_smi_h_id = h.core_smi_h_id")
+
         sql = f"""SELECT r.rowid
                   FROM radius{radius} r
-                  JOIN envs e ON r.env_id = e.env_id
-                  JOIN frags f ON r.core_smi_id = f.core_smi_id
-                  JOIN frags_h h ON f.core_smi_h_id = h.core_smi_h_id
+                  {' '.join(joins)}
                   WHERE e.env = {_sql_value(env)} AND
                         {freq_clause} AND
-                        f.core_num_atoms BETWEEN {_sql_value(min_atoms)} AND {_sql_value(max_atoms)}"""
+                        r.core_num_atoms BETWEEN {_sql_value(min_atoms)} AND {_sql_value(max_atoms)}"""
 
         if dist is not None:
             if isinstance(dist, tuple):
                 if len(dist) != 2:
                     raise ValueError("dist must be a single value or a tuple of two values")
-                sql += f" AND f.dist2 BETWEEN {_sql_value(dist[0])} AND {_sql_value(dist[1])}"
+                sql += f" AND r.dist2 BETWEEN {_sql_value(dist[0])} AND {_sql_value(dist[1])}"
             else:
-                sql += f" AND f.dist2 = {_sql_value(dist)}"
+                sql += f" AND r.dist2 = {_sql_value(dist)}"
 
         for k, v in kwargs.items():
-            if k in frags_columns:
-                column = f"f.{k}"
-            elif k in frags_h_columns:
-                column = f"h.{k}"
-            else:
-                raise ValueError(f"Column {k} not found in frags or frags_h")
+            column = f"{kwarg_target[k]}.{k}"
 
             if isinstance(v, tuple):
                 if len(v) != 2:

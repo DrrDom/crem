@@ -28,7 +28,6 @@ import sys
 import re
 from tqdm import tqdm
 from rdkit import Chem, RDLogger
-from rdkit.Chem import inchi
 from crem.mol_context import combine_core_env_to_rxn_smarts
 from crem.scripts.cremdb_create import create_indices
 
@@ -103,8 +102,7 @@ def create_new_schema(
     cur.execute("""
         CREATE TABLE IF NOT EXISTS frags_h(
             core_smi_h_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            smi TEXT NOT NULL,
-            inchi TEXT NOT NULL UNIQUE
+            smi TEXT NOT NULL UNIQUE
         )
     """)
 
@@ -121,10 +119,14 @@ def create_new_schema(
     """)
 
     # Create radius tables
+    # core_num_atoms and dist2 are denormalized into radius{N} so that
+    # filter queries on the hot path do not have to join frags.
     for radius in radii:
         column_defs = [
             "env_id INTEGER NOT NULL",
             "core_smi_id INTEGER NOT NULL",
+            "core_num_atoms INTEGER NOT NULL",
+            "dist2 INTEGER NOT NULL",
         ]
         if set_name:
             freq_type = _get_freq_column_type(old_conn, radius)
@@ -243,6 +245,11 @@ def convert_database(
             if set_name:
                 column_names_transfer.append('freq')
 
+            # Position of frags columns inside `row` (offset by 2 for env, core_smi).
+            frags_col_pos = {col: 2 + i for i, col in enumerate(frags_columns)}
+            core_num_atoms_pos = frags_col_pos['core_num_atoms']
+            dist2_pos = frags_col_pos['dist2']
+
             while offset < total_rows:
                 # Fetch batch
                 rows = old_cur.execute(
@@ -262,6 +269,8 @@ def convert_database(
                 for row in rows:
                     env = row[0]
                     core_smi = row[1]
+                    core_num_atoms = row[core_num_atoms_pos]
+                    dist2 = row[dist2_pos]
 
                     # Get or create env_id
                     if env not in env_to_id:
@@ -270,14 +279,13 @@ def convert_database(
                         new_rows_envs.append((env_counter, env))
                     env_id = env_to_id[env]
 
-                    # Get or create core_smi_h and core_smi_h_id
+                    # Get or create core_smi_h and core_smi_h_id (natural key: core_smi_h).
                     core_smi_h = replace_attachment_points_with_h(core_smi)
-                    inchi_value = inchi.MolToInchi(Chem.MolFromSmiles(core_smi_h))
-                    if inchi_value not in core_smi_h_to_id:
+                    if core_smi_h not in core_smi_h_to_id:
                         frag_h_counter += 1
-                        core_smi_h_to_id[inchi_value] = frag_h_counter
-                        new_rows_frags_h.append((frag_h_counter, core_smi_h, inchi_value))
-                    core_smi_h_id = core_smi_h_to_id[inchi_value]
+                        core_smi_h_to_id[core_smi_h] = frag_h_counter
+                        new_rows_frags_h.append((frag_h_counter, core_smi_h))
+                    core_smi_h_id = core_smi_h_to_id[core_smi_h]
 
                     # Get or create core_smi_id
                     if core_smi not in core_smi_to_id:
@@ -288,18 +296,18 @@ def convert_database(
                         )
                     core_smi_id = core_smi_to_id[core_smi]
 
-                    # Add to radius table
+                    # Add to radius table (denormalized core_num_atoms / dist2).
                     if set_name:
                         freq_value = row[2 + len(frags_columns)]
-                        new_rows_radius.append((env_id, core_smi_id, freq_value))
+                        new_rows_radius.append((env_id, core_smi_id, core_num_atoms, dist2, freq_value))
                     else:
-                        new_rows_radius.append((env_id, core_smi_id))
+                        new_rows_radius.append((env_id, core_smi_id, core_num_atoms, dist2))
 
                 # Batch insert into radius table
                 new_cur.executemany("INSERT INTO envs (env_id, env) VALUES (?, ?)",
                                     new_rows_envs)
 
-                new_cur.executemany("INSERT INTO frags_h (core_smi_h_id, smi, inchi) VALUES (?, ?, ?)",
+                new_cur.executemany("INSERT INTO frags_h (core_smi_h_id, smi) VALUES (?, ?)",
                                     new_rows_frags_h)
 
                 sql = (f"INSERT INTO frags ({','.join(frags_columns)}, core_smi_h_id, core_smi_id, core_smi) "
@@ -308,12 +316,16 @@ def convert_database(
 
                 if set_name:
                     new_cur.executemany(
-                        f"INSERT INTO radius{radius} (env_id, core_smi_id, {set_name}) VALUES (?, ?, ?)",
+                        f"INSERT INTO radius{radius} "
+                        f"(env_id, core_smi_id, core_num_atoms, dist2, {set_name}) "
+                        f"VALUES (?, ?, ?, ?, ?)",
                         new_rows_radius
                     )
                 else:
                     new_cur.executemany(
-                        f"INSERT INTO radius{radius} (env_id, core_smi_id) VALUES (?, ?)",
+                        f"INSERT INTO radius{radius} "
+                        f"(env_id, core_smi_id, core_num_atoms, dist2) "
+                        f"VALUES (?, ?, ?, ?)",
                         new_rows_radius
                     )
 

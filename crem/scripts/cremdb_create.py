@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import List
 
 from rdkit import Chem, RDLogger
-from rdkit.Chem import inchi, rdMMPA
+from rdkit.Chem import rdMMPA
 from tqdm import tqdm
 
 from crem.mol_context import get_std_context_core_permutations
@@ -37,29 +37,23 @@ def create_indices(conn: sqlite3.Connection, radii: List[int], verbose: bool = T
         conn: SQLite connection
         radii: List of radius values
         verbose: Print progress
+
+    Notes:
+        Redundant indices are NOT created — the UNIQUE constraints on
+        envs(env), frags(core_smi), frags_h(smi) and radius{N}(env_id, core_smi_id)
+        already produce autoindices. Only one explicit covering index per
+        radius table is added: (env_id, core_num_atoms, dist2). This serves
+        both env-only and env+size+dist filter queries.
     """
     cur = conn.cursor()
 
-    indices = [
-        ("idx_envs_env", "CREATE INDEX IF NOT EXISTS idx_envs_env ON envs(env)"),
-        ("idx_frags_core_smi", "CREATE INDEX IF NOT EXISTS idx_frags_core_smi ON frags(core_smi)"),
-        ("idx_frags_core_num_atoms", "CREATE INDEX IF NOT EXISTS idx_frags_core_num_atoms ON frags(core_num_atoms)"),
-        # ("idx_frags_core_smi_h_id", "CREATE INDEX IF NOT EXISTS idx_frags_core_smi_h_id ON frags(core_smi_h_id)"),
-        # ("idx_frags_dist2", "CREATE INDEX IF NOT EXISTS idx_frags_dist2 ON frags(dist2)"),
-        # ("idx_frags_h_id", "CREATE INDEX IF NOT EXISTS idx_frags_h_id ON frags_h(core_smi_h_id)"),
-        ("idx_frags_h_smi", "CREATE INDEX IF NOT EXISTS idx_frags_h_smi ON frags_h(smi)"),
-    ]
-
-    # Add indices for each radius table
+    indices = []
     for radius in radii:
-        indices.extend([
-            (f"idx_radius{radius}_env_id",
-             f"CREATE INDEX IF NOT EXISTS idx_radius{radius}_env_id ON radius{radius}(env_id)"),
-            (f"idx_radius{radius}_core_smi_id",
-             f"CREATE INDEX IF NOT EXISTS idx_radius{radius}_core_smi_id ON radius{radius}(core_smi_id)"),
-            (f"idx_radius{radius}_both",
-             f"CREATE INDEX IF NOT EXISTS idx_radius{radius}_both ON radius{radius}(env_id, core_smi_id)"),
-        ])
+        indices.append((
+            f"idx_radius{radius}_lookup",
+            f"CREATE INDEX IF NOT EXISTS idx_radius{radius}_lookup "
+            f"ON radius{radius}(env_id, core_num_atoms, dist2)",
+        ))
 
     for idx_name, sql in tqdm(indices, desc="Creating indices", disable=not verbose):
         cur.execute(sql)
@@ -333,9 +327,7 @@ def _process_chunk(task):
                     if core_smi not in core_info:
                         dist2 = _core_dist2(core_smi)
                         core_smi_h = _replace_attachment_points_with_h(core_smi)
-                        mol_h = Chem.MolFromSmiles(core_smi_h)
-                        inchi_val = inchi.MolToInchi(mol_h) if mol_h else None
-                        core_info[core_smi] = (core_num_atoms, dist2, core_smi_h, inchi_val)
+                        core_info[core_smi] = (core_num_atoms, dist2, core_smi_h)
                     stats["pairs"] += 1
 
     return chunk_id, envs, core_info, counts, stats
@@ -375,8 +367,7 @@ def _ensure_schema(conn, radii, set_names):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS frags_h(
             core_smi_h_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            smi TEXT NOT NULL,
-            inchi TEXT NOT NULL UNIQUE
+            smi TEXT NOT NULL UNIQUE
         )
     """)
     conn.execute("""
@@ -395,6 +386,8 @@ def _ensure_schema(conn, radii, set_names):
             CREATE TABLE IF NOT EXISTS radius{radius}(
                 env_id INTEGER NOT NULL,
                 core_smi_id INTEGER NOT NULL,
+                core_num_atoms INTEGER NOT NULL,
+                dist2 INTEGER NOT NULL,
                 FOREIGN KEY (env_id) REFERENCES envs(env_id),
                 FOREIGN KEY (core_smi_id) REFERENCES frags(core_smi_id),
                 UNIQUE (env_id, core_smi_id)
@@ -407,7 +400,7 @@ def _ensure_schema(conn, radii, set_names):
         # Drop query indices on radius tables before bulk loading; they will be
         # recreated by create_indices() at the end. The UNIQUE autoindex is kept
         # because it is required for ON CONFLICT DO UPDATE upserts.
-        for suffix in ("env_id", "core_smi_id", "both"):
+        for suffix in ("env_id", "core_smi_id", "both", "lookup"):
             conn.execute(f"DROP INDEX IF EXISTS idx_radius{radius}_{suffix}")
 
     conn.commit()
@@ -431,7 +424,7 @@ def _merge_counts(acc, new, set_names, radii):
 
 
 def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
-                 env_cache, inchi_cache, core_smi_cache, timings=None):
+                 env_cache, smi_h_cache, core_smi_cache, timings=None):
     """Flush accumulated data to DB using Python-side ID caches (no temp tables, no JOINs)."""
 
     # Step 1: resolve new envs
@@ -452,35 +445,35 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
     if timings is not None:
         timings["envs"] = time.perf_counter() - t0
 
-    # Step 2: resolve new inchis (frags_h)
+    # Step 2: resolve new H-canonical SMILES (frags_h)
     t0 = time.perf_counter()
-    new_inchis = {}  # inchi_val -> core_smi_h
-    for core_smi, (core_num_atoms, dist2, core_smi_h, inchi_val) in core_info.items():
-        if inchi_val and inchi_val not in inchi_cache and inchi_val not in new_inchis:
-            new_inchis[inchi_val] = core_smi_h
+    new_smi_h = set()
+    for core_smi, (core_num_atoms, dist2, core_smi_h) in core_info.items():
+        if core_smi_h and core_smi_h not in smi_h_cache:
+            new_smi_h.add(core_smi_h)
 
-    if new_inchis:
+    if new_smi_h:
         conn.executemany(
-            "INSERT OR IGNORE INTO frags_h (smi, inchi) VALUES (?, ?)",
-            [(smi, inchi_val) for inchi_val, smi in new_inchis.items()],
+            "INSERT OR IGNORE INTO frags_h (smi) VALUES (?)",
+            [(s,) for s in new_smi_h],
         )
-        inchi_list = list(new_inchis.keys())
-        for i in range(0, len(inchi_list), _SQLITE_BATCH):
-            batch = inchi_list[i:i + _SQLITE_BATCH]
+        smi_h_list = list(new_smi_h)
+        for i in range(0, len(smi_h_list), _SQLITE_BATCH):
+            batch = smi_h_list[i:i + _SQLITE_BATCH]
             ph = ",".join("?" * len(batch))
-            for inchi_val, h_id in conn.execute(
-                f"SELECT inchi, core_smi_h_id FROM frags_h WHERE inchi IN ({ph})", batch
+            for smi_val, h_id in conn.execute(
+                f"SELECT smi, core_smi_h_id FROM frags_h WHERE smi IN ({ph})", batch
             ):
-                inchi_cache[inchi_val] = h_id
+                smi_h_cache[smi_val] = h_id
     if timings is not None:
-        timings["inchis"] = time.perf_counter() - t0
+        timings["smi_h"] = time.perf_counter() - t0
 
     # Step 3: resolve new core_smis (frags)
     t0 = time.perf_counter()
     new_cores = []  # (core_smi, core_num_atoms, dist2, core_smi_h_id)
-    for core_smi, (core_num_atoms, dist2, core_smi_h, inchi_val) in core_info.items():
-        if core_smi not in core_smi_cache and inchi_val and inchi_val in inchi_cache:
-            new_cores.append((core_smi, core_num_atoms, dist2, inchi_cache[inchi_val]))
+    for core_smi, (core_num_atoms, dist2, core_smi_h) in core_info.items():
+        if core_smi not in core_smi_cache and core_smi_h and core_smi_h in smi_h_cache:
+            new_cores.append((core_smi, core_num_atoms, dist2, smi_h_cache[core_smi_h]))
 
     if new_cores:
         conn.executemany(
@@ -499,7 +492,10 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
     if timings is not None:
         timings["cores"] = time.perf_counter() - t0
 
-    # Step 4: upsert radius counts using resolved IDs (no JOINs)
+    # Step 4: upsert radius counts using resolved IDs (no JOINs).
+    # core_num_atoms and dist2 are denormalized into radius{N} so the hot
+    # query path can filter directly on the radius table without joining
+    # frags. They are written on first INSERT and not touched on conflict.
     t0 = time.perf_counter()
     for set_name in set_names:
         per_set = counts.get(set_name, {})
@@ -513,12 +509,17 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
                 core_smi_id = core_smi_cache.get(core_smi)
                 if env_id is None or core_smi_id is None:
                     continue
-                rows.append((env_id, core_smi_id, cnt))
+                core_entry = core_info.get(core_smi)
+                if core_entry is None:
+                    continue
+                core_num_atoms, dist2, _ = core_entry
+                rows.append((env_id, core_smi_id, core_num_atoms, dist2, cnt))
             rows.sort()  # sequential B-tree access reduces page cache misses
             if rows:
                 conn.executemany(
-                    f"INSERT INTO radius{radius} (env_id, core_smi_id, {set_name}) "
-                    f"VALUES (?, ?, ?) "
+                    f"INSERT INTO radius{radius} "
+                    f"(env_id, core_smi_id, core_num_atoms, dist2, {set_name}) "
+                    f"VALUES (?, ?, ?, ?, ?) "
                     f"ON CONFLICT(env_id, core_smi_id) "
                     f"DO UPDATE SET {set_name} = {set_name} + excluded.{set_name}",
                     rows,
@@ -637,17 +638,17 @@ def main():
     conn = _open_shard(current_shard_idx)
 
     # Python-side ID caches: avoid temp tables and JOIN-based lookups.
-    env_cache: dict = {}       # env str  -> env_id
-    inchi_cache: dict = {}     # inchi str -> core_smi_h_id
-    core_smi_cache: dict = {}  # core_smi  -> core_smi_id
+    env_cache: dict = {}       # env str          -> env_id
+    smi_h_cache: dict = {}     # H-canonical SMI  -> core_smi_h_id
+    core_smi_cache: dict = {}  # core_smi         -> core_smi_id
 
     # Pre-warm caches only in non-shard mode when resuming (shard mode always
     # opens a fresh DB, so caches start empty).
     if shard_size is None and args.processed_chunks and os.path.exists(args.processed_chunks):
         for env_str, env_id in conn.execute("SELECT env, env_id FROM envs"):
             env_cache[env_str] = env_id
-        for inchi_val, h_id in conn.execute("SELECT inchi, core_smi_h_id FROM frags_h"):
-            inchi_cache[inchi_val] = h_id
+        for smi_val, h_id in conn.execute("SELECT smi, core_smi_h_id FROM frags_h"):
+            smi_h_cache[smi_val] = h_id
         for core_smi, core_smi_id in conn.execute("SELECT core_smi, core_smi_id FROM frags"):
             core_smi_cache[core_smi] = core_smi_id
 
@@ -704,7 +705,7 @@ def main():
         _flush_to_db(
             conn, acc_envs, acc_core_info, acc_counts,
             set_names, radii,
-            env_cache, inchi_cache, core_smi_cache,
+            env_cache, smi_h_cache, core_smi_cache,
             timings=timings,
         )
 
@@ -737,7 +738,7 @@ def main():
         current_shard_idx += 1
         conn = _open_shard(current_shard_idx)
         env_cache.clear()
-        inchi_cache.clear()
+        smi_h_cache.clear()
         core_smi_cache.clear()
         flush_counter = 0
         structures_in_current_shard = 0

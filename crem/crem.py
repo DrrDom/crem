@@ -501,6 +501,15 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
     mol_hac = mol.GetNumHeavyAtoms()
 
     with sqlite3.connect(db_name) as con:
+        # Read-side tuning. The fragment DB is queried, never written, in this
+        # path. mmap_size lets SQLite read pages directly from the kernel page
+        # cache without copying into its own cache, which is the dominant win
+        # on Linux for large DBs. The other PRAGMAs are cheap and reduce
+        # per-call overhead for the many short queries this function issues.
+        con.execute("PRAGMA query_only = ON")
+        con.execute("PRAGMA mmap_size = 2147483648")   # 2 GiB
+        con.execute("PRAGMA cache_size = -262144")     # 256 MiB page cache
+        con.execute("PRAGMA temp_store = MEMORY")
         cur = con.cursor()
 
         replacements = dict()  # to store unused row_id: (source_core_smi, context_mol)

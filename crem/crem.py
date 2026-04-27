@@ -418,10 +418,39 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
         if missing:
             raise ValueError(f"Column(s) {missing} not found in radius{radius}. Available set names: {available}")
 
-        # Build OR condition for frequency filter
-        freq_clause = " OR ".join(f"r.{sn} >= {_sql_value(min_freq)}" for sn in set_names_list)
-        if len(set_names_list) > 1:
-            freq_clause = f"({freq_clause})"
+        # Build the frequency / membership filter.
+        #
+        # Set columns are INTEGER NOT NULL DEFAULT 0; a row carries the
+        # per-set count for each set it belongs to (0 if absent from that
+        # set). The user-facing semantics:
+        #
+        #   * If `set_names_list` covers every available set column the user
+        #     is asking for "any membership" — and any row in radius{N}
+        #     belongs to at least one set, so the predicate is trivially true
+        #     when min_freq <= 0 and can be dropped entirely. Dropping it is
+        #     important: the denormalized lookup index becomes a covering
+        #     index for the query, eliminating a per-matched-row probe into
+        #     the radius{N} heap.
+        #
+        #   * If `set_names_list` is a strict subset, the user wants rows
+        #     that are members of *those specific* sets. Membership means
+        #     count > 0, so the per-set threshold is `max(1, min_freq)` even
+        #     when min_freq is 0. This costs the heap probe but is the
+        #     correct semantics; recovering the covering optimization for
+        #     this case would require per-set partial indices.
+        mf = min_freq if min_freq is not None else 0
+        is_full_set = set(set_names_list) == set(available)
+        if is_full_set and mf <= 0:
+            freq_clause = None
+        else:
+            # threshold = mf for the all-sets case (mf > 0 here),
+            #             max(1, mf) for explicit subsets.
+            threshold = mf if is_full_set else max(1, mf)
+            freq_clause = " OR ".join(
+                f"r.{sn} >= {_sql_value(threshold)}" for sn in set_names_list
+            )
+            if len(set_names_list) > 1:
+                freq_clause = f"({freq_clause})"
 
         # Decide which side tables we actually need to join. The hot path
         # filters (env, core_num_atoms, dist2, set columns) are all on
@@ -449,8 +478,9 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
                   FROM radius{radius} r
                   {' '.join(joins)}
                   WHERE e.env = {_sql_value(env)} AND
-                        {freq_clause} AND
                         r.core_num_atoms BETWEEN {_sql_value(min_atoms)} AND {_sql_value(max_atoms)}"""
+        if freq_clause is not None:
+            sql += f" AND {freq_clause}"
 
         if dist is not None:
             if isinstance(dist, tuple):

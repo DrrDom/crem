@@ -15,8 +15,10 @@ import sqlite3
 import sys
 import time
 from collections import defaultdict
+from functools import lru_cache
 from itertools import islice, permutations
 from multiprocessing import Pool, cpu_count
+from operator import itemgetter
 from pathlib import Path
 from typing import List
 
@@ -152,6 +154,13 @@ def _resolve_set_names(values):
     return [_validate_set_name(values[0])], None
 
 
+# Workers are forked Python processes; each owns an independent cache. The
+# same core_smi typically appears many times across chunks within a worker
+# (it's the SMILES of a fragment core, of which there are far fewer than
+# (env, core) pairs), so caching skips the parse+canonicalize round-trip on
+# repeats. The cap bounds peak memory: ~32-byte keys/values × 200k ≈ a few MB
+# per worker.
+@lru_cache(maxsize=200_000)
 def _replace_attachment_points_with_h(smiles):
     return Chem.CanonSmiles(smiles.replace('*', 'H'))
 
@@ -237,6 +246,17 @@ def _core_dist2(core_smi):
     return 0
 
 
+# `_env_core_from_fragment` is called once per (core, context) MMPA fragment
+# at every radius — typically with heavy repetition of the SMILES strings
+# across chunks within one worker. The Chem.MolFromSmiles(..., sanitize=False)
+# parse used to be done solely to read GetNumHeavyAtoms(); caching collapses
+# the repeated parses to a single dict lookup.
+@lru_cache(maxsize=200_000)
+def _count_heavy_atoms(smi):
+    mm = Chem.MolFromSmiles(smi, sanitize=False)
+    return mm.GetNumHeavyAtoms() if mm else float('inf')
+
+
 def _env_core_from_fragment(core, context, radius, keep_stereo, max_heavy_atoms):
     output = []
 
@@ -246,15 +266,13 @@ def _env_core_from_fragment(core, context, radius, keep_stereo, max_heavy_atoms)
             for ctx, c in permutations(residues, 2):
                 if ctx == '[H][*:1]':
                     continue
-                mm = Chem.MolFromSmiles(c, sanitize=False)
-                num_heavy_atoms = mm.GetNumHeavyAtoms() if mm else float('inf')
+                num_heavy_atoms = _count_heavy_atoms(c)
                 if num_heavy_atoms <= max_heavy_atoms:
                     env, cores = get_std_context_core_permutations(ctx, c, radius, keep_stereo)
                     if env and cores:
                         output.append((env, cores[0], num_heavy_atoms))  # only one item in cores
     else:
-        mm = Chem.MolFromSmiles(core, sanitize=False)
-        num_heavy_atoms = mm.GetNumHeavyAtoms() if mm else float('inf')
+        num_heavy_atoms = _count_heavy_atoms(core)
         if num_heavy_atoms <= max_heavy_atoms:
             env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
             if env and cores:
@@ -352,11 +370,15 @@ def _ensure_schema(conn, radii, set_names):
     conn.execute("PRAGMA page_size = 16384")     # larger pages for better B-tree packing (new DBs only)
     conn.execute("PRAGMA user_version = 1")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
+    # Bulk-load journaling: OFF/OFF is materially faster than WAL/NORMAL when
+    # there is a single writer and recovery is acceptable (a crash mid-build
+    # is recovered by re-running with --processed-chunks, or by re-creating
+    # the shard from scratch). _finalize_shard restores WAL/NORMAL before
+    # the shard is released.
+    conn.execute("PRAGMA journal_mode = OFF")
+    conn.execute("PRAGMA synchronous = OFF")
     conn.execute("PRAGMA temp_store = MEMORY")
     conn.execute("PRAGMA cache_size = -65536")   # 64 MB page cache
-    conn.execute("PRAGMA wal_autocheckpoint = 0")  # disable auto-checkpoint during build
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS envs(
@@ -425,21 +447,26 @@ def _merge_counts(acc, new, set_names, radii):
 
 def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
                  env_cache, smi_h_cache, core_smi_cache, timings=None):
-    """Flush accumulated data to DB using Python-side ID caches (no temp tables, no JOINs)."""
+    """Flush accumulated data to DB using Python-side ID caches (no temp tables, no JOINs).
+
+    Uses ``INSERT OR IGNORE … RETURNING`` (SQLite ≥ 3.35) on multi-row VALUES
+    to fetch newly-inserted IDs in the same round-trip as the INSERT. The
+    Python-side caches mirror the DB content exactly, so the rows submitted
+    here are by construction not in the DB and ``RETURNING`` is guaranteed to
+    yield one row per submitted row.
+    """
 
     # Step 1: resolve new envs
     t0 = time.perf_counter()
     new_envs = [e for e in envs if e not in env_cache]
     if new_envs:
-        conn.executemany(
-            "INSERT OR IGNORE INTO envs (env) VALUES (?)",
-            [(e,) for e in new_envs],
-        )
         for i in range(0, len(new_envs), _SQLITE_BATCH):
             batch = new_envs[i:i + _SQLITE_BATCH]
-            ph = ",".join("?" * len(batch))
+            ph = ",".join(["(?)"] * len(batch))
             for env_str, env_id in conn.execute(
-                f"SELECT env, env_id FROM envs WHERE env IN ({ph})", batch
+                f"INSERT OR IGNORE INTO envs (env) VALUES {ph} "
+                f"RETURNING env, env_id",
+                batch,
             ):
                 env_cache[env_str] = env_id
     if timings is not None:
@@ -447,22 +474,21 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
 
     # Step 2: resolve new H-canonical SMILES (frags_h)
     t0 = time.perf_counter()
-    new_smi_h = set()
+    new_smi_h = []
+    seen_smi_h = set()
     for core_smi, (core_num_atoms, dist2, core_smi_h) in core_info.items():
-        if core_smi_h and core_smi_h not in smi_h_cache:
-            new_smi_h.add(core_smi_h)
+        if core_smi_h and core_smi_h not in smi_h_cache and core_smi_h not in seen_smi_h:
+            new_smi_h.append(core_smi_h)
+            seen_smi_h.add(core_smi_h)
 
     if new_smi_h:
-        conn.executemany(
-            "INSERT OR IGNORE INTO frags_h (smi) VALUES (?)",
-            [(s,) for s in new_smi_h],
-        )
-        smi_h_list = list(new_smi_h)
-        for i in range(0, len(smi_h_list), _SQLITE_BATCH):
-            batch = smi_h_list[i:i + _SQLITE_BATCH]
-            ph = ",".join("?" * len(batch))
+        for i in range(0, len(new_smi_h), _SQLITE_BATCH):
+            batch = new_smi_h[i:i + _SQLITE_BATCH]
+            ph = ",".join(["(?)"] * len(batch))
             for smi_val, h_id in conn.execute(
-                f"SELECT smi, core_smi_h_id FROM frags_h WHERE smi IN ({ph})", batch
+                f"INSERT OR IGNORE INTO frags_h (smi) VALUES {ph} "
+                f"RETURNING smi, core_smi_h_id",
+                batch,
             ):
                 smi_h_cache[smi_val] = h_id
     if timings is not None:
@@ -476,17 +502,19 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
             new_cores.append((core_smi, core_num_atoms, dist2, smi_h_cache[core_smi_h]))
 
     if new_cores:
-        conn.executemany(
-            "INSERT OR IGNORE INTO frags (core_smi, core_num_atoms, dist2, core_smi_h_id) "
-            "VALUES (?, ?, ?, ?)",
-            new_cores,
-        )
-        new_core_smis = [row[0] for row in new_cores]
-        for i in range(0, len(new_core_smis), _SQLITE_BATCH):
-            batch = new_core_smis[i:i + _SQLITE_BATCH]
-            ph = ",".join("?" * len(batch))
+        # 4 columns per row → at most _SQLITE_BATCH/4 rows per chunk to stay
+        # under SQLITE_MAX_VARIABLE_NUMBER.
+        rows_per_chunk = max(1, _SQLITE_BATCH // 4)
+        for i in range(0, len(new_cores), rows_per_chunk):
+            batch = new_cores[i:i + rows_per_chunk]
+            ph = ",".join(["(?,?,?,?)"] * len(batch))
+            flat = [v for row in batch for v in row]
             for core_smi, core_smi_id in conn.execute(
-                f"SELECT core_smi, core_smi_id FROM frags WHERE core_smi IN ({ph})", batch
+                f"INSERT OR IGNORE INTO frags "
+                f"(core_smi, core_num_atoms, dist2, core_smi_h_id) "
+                f"VALUES {ph} "
+                f"RETURNING core_smi, core_smi_id",
+                flat,
             ):
                 core_smi_cache[core_smi] = core_smi_id
     if timings is not None:
@@ -514,7 +542,10 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
                     continue
                 core_num_atoms, dist2, _ = core_entry
                 rows.append((env_id, core_smi_id, core_num_atoms, dist2, cnt))
-            rows.sort()  # sequential B-tree access reduces page cache misses
+            # Sort only by (env_id, core_smi_id) to drive sequential B-tree
+            # writes; the trailing columns are irrelevant for write order and
+            # full-tuple comparison would cost noticeably more per call.
+            rows.sort(key=itemgetter(0, 1))
             if rows:
                 conn.executemany(
                     f"INSERT INTO radius{radius} "
@@ -630,9 +661,11 @@ def main():
         return c
 
     def _finalize_shard(c: sqlite3.Connection) -> None:
-        """Checkpoint WAL and create indices, making the shard a valid standalone DB."""
-        c.execute("PRAGMA wal_autocheckpoint = 1000")
-        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        """Restore WAL/NORMAL and build query indices, making the shard a
+        valid standalone DB. During the build it ran with journal_mode=OFF
+        (see _ensure_schema)."""
+        c.execute("PRAGMA synchronous = NORMAL")
+        c.execute("PRAGMA journal_mode = WAL")
         create_indices(c, radii, True)
 
     conn = _open_shard(current_shard_idx)
@@ -722,8 +755,7 @@ def main():
             processed_handle.flush()
 
         flush_counter += 1
-        if flush_counter % 10 == 0:
-            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        # No WAL checkpoint here: build runs with journal_mode=OFF.
 
         if timings is not None:
             parts = "  ".join(f"{k}={v*1000:.1f}ms" for k, v in timings.items())

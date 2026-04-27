@@ -338,9 +338,36 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
     yield smi, p, transformation_smi
 
 
-def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, set_names=None, **kwargs):
+def _load_schema_meta(db_cur, radius):
+    """Read the static schema info needed by query helpers in one pass.
 
+    Each `PRAGMA user_version` / `PRAGMA table_info(...)` is a separate
+    round-trip into SQLite; the values don't change for the life of the
+    connection. Calling this once per `__gen_replacements` invocation and
+    passing the result down to the per-fragment helpers eliminates 4–5
+    PRAGMA round-trips that would otherwise fire for every fragment.
+    """
     user_version = db_cur.execute("PRAGMA user_version").fetchone()[0]
+    meta = {'user_version': user_version}
+    if user_version == 1:
+        meta['frags_columns'] = {
+            row[1] for row in db_cur.execute("PRAGMA table_info(frags)").fetchall()
+        }
+        meta['frags_h_columns'] = {
+            row[1] for row in db_cur.execute("PRAGMA table_info(frags_h)").fetchall()
+        }
+        meta['radius_columns'] = {
+            row[1] for row in db_cur.execute(f"PRAGMA table_info(radius{radius})").fetchall()
+        }
+    return meta
+
+
+def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, set_names=None,
+                              schema_meta=None, **kwargs):
+
+    if schema_meta is None:
+        schema_meta = _load_schema_meta(db_cur, radius)
+    user_version = schema_meta['user_version']
 
     if user_version == 0:
         sql = f"""SELECT rowid
@@ -368,13 +395,13 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
                 return "NULL"
             return str(value)
 
-        frags_columns = {row[1] for row in db_cur.execute("PRAGMA table_info(frags)").fetchall()}
-        frags_h_columns = {row[1] for row in db_cur.execute("PRAGMA table_info(frags_h)").fetchall()}
+        frags_columns = schema_meta['frags_columns']
+        frags_h_columns = schema_meta['frags_h_columns']
 
         # Discover available set columns in the radius table.
         # core_num_atoms and dist2 are denormalized into radius{N} alongside
         # env_id / core_smi_id and must be excluded when listing set columns.
-        radius_columns = {row[1] for row in db_cur.execute(f"PRAGMA table_info(radius{radius})").fetchall()}
+        radius_columns = schema_meta['radius_columns']
         reserved = {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2'}
         available = sorted(radius_columns - reserved)
 
@@ -448,8 +475,10 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
     return set(i[0] for i in db_cur.fetchall())
 
 
-def _get_replacements(db_cur, radius, row_ids):
-    user_version = db_cur.execute("PRAGMA user_version").fetchone()[0]
+def _get_replacements(db_cur, radius, row_ids, schema_meta=None):
+    if schema_meta is None:
+        schema_meta = _load_schema_meta(db_cur, radius)
+    user_version = schema_meta['user_version']
     if user_version == 0:
         sql = f"""SELECT rowid, core_smi, core_sma, freq
                       FROM radius{radius}
@@ -512,6 +541,9 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
         con.execute("PRAGMA temp_store = MEMORY")
         cur = con.cursor()
 
+        # Read PRAGMAs once and reuse for every per-fragment query below.
+        schema_meta = _load_schema_meta(cur, radius)
+
         replacements = dict()  # to store unused row_id: (source_core_smi, context_mol)
         returned_values = 0
         preliminary_return = 0
@@ -535,13 +567,13 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                 max_atoms = num_heavy_atoms + max_inc
 
                 row_ids = __get_replacements_rowids(cur, env, dist, min_atoms, max_atoms, radius, min_freq,
-                                                    set_names=set_names, **kwargs)
+                                                    set_names=set_names, schema_meta=schema_meta, **kwargs)
 
                 if filter_func:
                     row_ids = set(filter_func(row_ids, cur, radius))
 
                 if max_replacements is None:
-                    res = _get_replacements(cur, radius, row_ids)
+                    res = _get_replacements(cur, radius, row_ids, schema_meta=schema_meta)
                 else:
                     n = min(len(row_ids), preliminary_return)
                     if sample_func is not None:
@@ -550,7 +582,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                         selected_row_ids = random.sample(list(row_ids), n)
                     row_ids.difference_update(selected_row_ids)
                     replacements.update({i: (core, context_mol) for i in row_ids})
-                    res = _get_replacements(cur, radius, selected_row_ids)
+                    res = _get_replacements(cur, radius, selected_row_ids, schema_meta=schema_meta)
 
                 for row_id, core_smi, _, freq in res:
                     if core_smi != core:
@@ -569,7 +601,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                 selected_row_ids = sample_func(list(replacements.keys()), cur, radius, n)
             else:
                 selected_row_ids = random.sample(list(replacements.keys()), n)
-            res = _get_replacements(cur, radius, selected_row_ids)
+            res = _get_replacements(cur, radius, selected_row_ids, schema_meta=schema_meta)
             for row_id, core_smi, _, freq in res:
                 src_core, src_context = replacements[row_id]
                 if core_smi != src_core:

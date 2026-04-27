@@ -515,17 +515,16 @@ def _get_replacements(db_cur, radius, row_ids, schema_meta=None):
                       WHERE rowid IN ({','.join(map(str, row_ids))})"""
     elif user_version == 1:
         # Note: freq was removed from DB, therefore 0 is returned (maybe None is better)
-        sql = f"""SELECT r.rowid, f.core_smi, e.env
+        sql = f"""SELECT r.rowid, f.core_smi
                   FROM radius{radius} r
                   JOIN frags f ON r.core_smi_id = f.core_smi_id
-                  JOIN envs e ON r.env_id = e.env_id
                   WHERE r.rowid IN ({','.join(map(str, row_ids))})"""
     else:
         raise NotImplementedError('Not implemented for database version other than 0 and 1')
     db_cur.execute(sql)
     if user_version == 1:
         # Keep tuple shape identical to user_version 0 for compatibility.
-        return [(row_id, core_smi, core_smi, 0) for row_id, core_smi, env in db_cur.fetchall()]
+        return [(row_id, core_smi, core_smi, 0) for row_id, core_smi in db_cur.fetchall()]
     return db_cur.fetchall()
 
 

@@ -128,10 +128,11 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
         core_ids = get_atom_prop(core_mol) if return_ids else tuple()
         if protected_ids and not protected_ids.isdisjoint(core_ids):
             return
+        num_heavy_atoms = core_mol.GetNumHeavyAtoms()
         env, frag, old_to_new_map = get_canon_context_core(context_mol, core_mol, radius, keep_stereo,
                                                            return_att_map=True)
         context_std = __context_to_std_smi(context_mol, old_to_new_map)
-        output.add((env, frag, core_ids, context_std))  # context_std should be SMILES, otherwise substantial slow down
+        output.add((env, frag, core_ids, context_std, num_heavy_atoms))  # context_std should be SMILES, otherwise substantial slow down
 
     for core, chains in frags:
         if core is None:  # single cut
@@ -147,9 +148,9 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
             output.update(extended_output)
 
     res = []
-    for env, frag, _, context_mol in output:
-        context_mol = Chem.MolFromSmiles(context_mol)
-        res.append((env, frag, context_mol))
+    for env, frag, _, context_smi, num_heavy_atoms in output:
+        context_mol = Chem.MolFromSmiles(context_smi)
+        res.append((env, frag, context_mol, num_heavy_atoms))
     return res
 
 
@@ -207,12 +208,12 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
         env, frag, old_to_new_map = get_canon_context_core(chains, fake_core, radius=radius, keep_stereo=keep_stereo,
                                                             return_att_map=True)
         context_smi = __context_to_std_smi(chains, old_to_new_map)
-        output.add((env, '[H][*:1].[H][*:2]', context_smi))
+        output.add((env, '[H][*:1].[H][*:2]', context_smi, 0))
 
     res = []
-    for env, core, context_smi in output:
+    for env, core, context_smi, num_heavy_atoms in output:
         context_mol = Chem.MolFromSmiles(context_smi)
-        res.append((env, core, context_mol))
+        res.append((env, core, context_mol, num_heavy_atoms))
     return res
 
 
@@ -289,12 +290,12 @@ def __fragment_mol_macrocycle(mol, radius=3, keep_stereo=False, protected_ids=No
                 n.SetAtomMapNum(att_map)
                 break
         context_smi = Chem.MolToSmiles(chains[0], isomericSmiles=True)
-        output.add((env, '[H][*:1].[H][*:2]', context_smi))
+        output.add((env, '[H][*:1].[H][*:2]', context_smi, 0))
 
     res = []
-    for env, core, context_smi in output:
+    for env, core, context_smi, num_heavy_atoms in output:
         context_mol = Chem.MolFromSmiles(context_smi)
-        res.append((env, core, context_mol))
+        res.append((env, core, context_mol, num_heavy_atoms))
     return res
 
 
@@ -582,12 +583,9 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
             if preliminary_return == 0:
                 preliminary_return = 1
 
-        for env, core, context_mol in f:
+        for env, core, context_mol, num_heavy_atoms in f:
 
-            RDLogger.DisableLog('rdApp.warning')
-            num_heavy_atoms = Chem.MolFromSmiles(core).GetNumHeavyAtoms()
             hac_ratio = num_heavy_atoms / mol_hac
-            RDLogger.EnableLog('rdApp.warning')
 
             if (min_size <= num_heavy_atoms <= max_size and min_rel_size <= hac_ratio <= max_rel_size) \
                     or (replace_cycles and __cycle_pattern.search(core)):

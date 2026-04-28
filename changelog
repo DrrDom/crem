@@ -1,3 +1,16 @@
+1.0
+
+- new v1 database schema: normalized envs/frags_h/frags tables with denormalized radiusN tables (core_num_atoms, dist2) and a covering index for fast lookups
+- cremdb_create.py: new script to build v1 fragment databases from SMILES files
+- cremdb_merge.py: merge multiple fragment databases (shard support for parallel DB creation)
+- cremdb_get_set_names.py: list fragment set names stored in a database
+- multiple fragment sets: set_names argument in all generation functions to filter replacements by named subsets
+- add make_macrocycle function for macrocycle generation
+- add get_mols_from_replacements function to generate structures from pre-fetched replacements
+- add seed argument to all generation functions (mutate_mol, grow_mol, link_mols, make_macrocycle, get_replacements) for reproducible output
+- performance: heavy atom counts computed from existing mol objects, database metadata pre-loaded, bulk-insert optimisations in cremdb_create, indices rebuilt after bulk updates
+- add pytest test suite for database creation and structure generation
+
 0.2.16
 
 - add checking for existence of a fragment database

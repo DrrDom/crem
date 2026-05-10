@@ -661,7 +661,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                        protected_ids_1=None, protected_ids_2=None, min_freq=10, set_names=None,
                        symmetry_fixes=False, filter_func=None, sample_func=None, return_frag_smi_only=False,
                        macrocycle=False, ring_closure=False, ring_size=None,
-                       is_ring_closure=0, seed=None, **kwargs):
+                       seed=None, **kwargs):
 
     rng = random.Random(seed)
 
@@ -744,7 +744,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
                 row_ids = __get_replacements_rowids(cur, env, effective_dist, min_atoms, max_atoms, radius, min_freq,
                                                     set_names=set_names, schema_meta=schema_meta,
-                                                    is_ring_closure=is_ring_closure, **kwargs)
+                                                    is_ring_closure=int(bool(ring_closure)), **kwargs)
 
                 if filter_func:
                     row_ids = set(filter_func(row_ids, cur, radius))
@@ -858,7 +858,6 @@ def __get_data_cycle(mol, db_name, radius, ring_size, ring_closures, min_size, m
                                                                      macrocycle=not ring_closures,
                                                                      ring_closure=ring_closures,
                                                                      ring_size=ring_size,
-                                                                     is_ring_closure=int(bool(ring_closures)),
                                                                      seed=seed, **kwargs):
         yield mol, None, frag_sma, core_sma, radius, context_mol, freq
 
@@ -1614,7 +1613,6 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=False,
                                                                          macrocycle=not ring_closures,
                                                                          ring_closure=ring_closures,
                                                                          ring_size=ring_size,
-                                                                         is_ring_closure=int(bool(ring_closures)),
                                                                          seed=seed, **kwargs):
             for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, context_mol):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):

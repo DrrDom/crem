@@ -112,7 +112,6 @@ def create_new_schema(
             core_smi_id INTEGER PRIMARY KEY AUTOINCREMENT,
             core_smi TEXT NOT NULL UNIQUE,
             core_num_atoms INTEGER NOT NULL,
-            dist2 INTEGER NOT NULL,
             core_smi_h_id INTEGER NOT NULL,
             FOREIGN KEY (core_smi_h_id) REFERENCES frags_h(core_smi_h_id)
         )
@@ -240,15 +239,19 @@ def convert_database(
             offset = 0
             pbar = tqdm(total=total_rows, disable=not verbose, desc=f"radius{radius}")
 
-            frags_columns = [col for col in column_names if col not in ('env', 'core_smi', 'core_sma', 'freq')]
-            column_names_transfer = ['env', 'core_smi'] + frags_columns
+            # Columns we SELECT from v0 radius{N}: everything pivoted out of the
+            # row plus dist2 (which now lives only on the v1 radius table).
+            v0_extra_columns = [col for col in column_names if col not in ('env', 'core_smi', 'core_sma', 'freq')]
+            # Columns we INSERT into v1 frags: same minus dist2.
+            frags_columns = [col for col in v0_extra_columns if col != 'dist2']
+            column_names_transfer = ['env', 'core_smi'] + v0_extra_columns
             if set_name:
                 column_names_transfer.append('freq')
 
-            # Position of frags columns inside `row` (offset by 2 for env, core_smi).
-            frags_col_pos = {col: 2 + i for i, col in enumerate(frags_columns)}
-            core_num_atoms_pos = frags_col_pos['core_num_atoms']
-            dist2_pos = frags_col_pos['dist2']
+            # Position of v0_extra_columns inside `row` (offset by 2 for env, core_smi).
+            v0_col_pos = {col: 2 + i for i, col in enumerate(v0_extra_columns)}
+            core_num_atoms_pos = v0_col_pos['core_num_atoms']
+            dist2_pos = v0_col_pos['dist2']
 
             while offset < total_rows:
                 # Fetch batch
@@ -292,13 +295,14 @@ def convert_database(
                         frag_counter += 1
                         core_smi_to_id[core_smi] = frag_counter
                         new_rows_frags.append(
-                            row[2:2 + len(frags_columns)] + (core_smi_h_id, frag_counter, core_smi)
+                            tuple(row[v0_col_pos[c]] for c in frags_columns)
+                            + (core_smi_h_id, frag_counter, core_smi)
                         )
                     core_smi_id = core_smi_to_id[core_smi]
 
                     # Add to radius table (denormalized core_num_atoms / dist2).
                     if set_name:
-                        freq_value = row[2 + len(frags_columns)]
+                        freq_value = row[2 + len(v0_extra_columns)]
                         new_rows_radius.append((env_id, core_smi_id, core_num_atoms, dist2, freq_value))
                     else:
                         new_rows_radius.append((env_id, core_smi_id, core_num_atoms, dist2))
@@ -431,7 +435,7 @@ def verify_conversion(old_db_path: str, new_db_path: str, radius: int = 3,
         for env, core_smi, core_sma, dist2 in sample_rows:
             # Query new database
             result = new_cur.execute(f"""
-                SELECT f.core_smi, f.dist2
+                SELECT f.core_smi, r.dist2
                 FROM radius{radius} r
                 JOIN frags f ON r.core_smi_id = f.core_smi_id
                 JOIN envs e ON r.env_id = e.env_id

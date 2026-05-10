@@ -1,13 +1,14 @@
 1.0
 
-- new v1 database schema: normalized envs/frags_h/frags tables with denormalized radiusN tables (core_num_atoms, dist2) and a covering index for fast lookups
-- cremdb_create.py: new script to build v1 fragment databases from SMILES files
-- cremdb_merge.py: merge multiple fragment databases (shard support for parallel DB creation)
+- new v1 database schema: normalized envs/frags_h/frags tables with denormalized radiusN tables (core_num_atoms, dist2, is_ring_closure) and a covering index for fast lookups
+- cremdb_create.py: new script to build v1 fragment databases from SMILES files; --frag-mode {acyclic,ring,both} controls whether ring-closure arc fragments are extracted alongside acyclic-cut linkers
+- cremdb_merge.py: merge multiple fragment databases (shard support for parallel DB creation), preserves provenance (is_ring_closure) on merge
 - cremdb_get_set_names.py: list fragment set names stored in a database
 - multiple fragment sets: set_names argument in all generation functions to filter replacements by named subsets
-- add make_macrocycle function for macrocycle generation
+- rename make_macrocycle -> make_cycle; new ring_size argument (size of the new ring, in atoms) replaces the previous dist argument; new ring_closures argument selects between acyclic-cut linker fragments (default, today's macrocycle behaviour) and ring-cut arc fragments
+- mol_context: env canonicalization unified across disconnected and connected (multi-AP single-component) cases via Chem.CanonicalRankAtoms-based orbits
 - add get_mols_from_replacements function to generate structures from pre-fetched replacements
-- add seed argument to all generation functions (mutate_mol, grow_mol, link_mols, make_macrocycle, get_replacements) for reproducible output
+- add seed argument to all generation functions (mutate_mol, grow_mol, link_mols, make_cycle, get_replacements) for reproducible output
 - performance: heavy atom counts computed from existing mol objects, database metadata pre-loaded, bulk-insert optimisations in cremdb_create, indices rebuilt after bulk updates
 - add pytest test suite for database creation and structure generation
 

@@ -104,6 +104,85 @@ def _process_table(conn, pool, table, id_col, smi_col, selected_props,
         sys.stderr.write(f"\r  {processed}/{total}\n")
 
 
+def run(
+    db_path: str,
+    properties=None,
+    ncpu: int = 1,
+    verbose: bool = False,
+    fetch_batch: int = _FETCH_BATCH,
+    write_batch: int = _WRITE_BATCH,
+    imap_chunk: int = _IMAP_CHUNK,
+) -> None:
+    """Add built-in molecular properties to a CReM fragment database.
+
+    Only rows with NULL property values are processed, so re-running after
+    adding new fragments fills only the new rows.
+
+    Args:
+        db_path: Path to the SQLite fragment database.
+        properties: List of property names to compute (``'mw'``, ``'logp'``,
+            ``'rtb'``, ``'tpsa'``, ``'fcsp3'``). ``None`` computes all.
+        ncpu: Worker processes.
+        verbose: Print progress to stderr.
+        fetch_batch: Rows fetched per batch.
+        write_batch: Rows per executemany write.
+        imap_chunk: Multiprocessing imap chunksize.
+    """
+    selected_props = list(properties) if properties is not None else list(_ALL_PROPS)
+    if not selected_props:
+        sys.stderr.write('No valid property names supplied.\n')
+        return
+
+    pool = Pool(ncpu, initializer=_init_worker, initargs=(selected_props,))
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA cache_size = -65536")
+
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+        if version == 1:
+            all_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'frags' not in all_tables:
+                raise RuntimeError("Detected new schema (user_version=1) but frags table is missing")
+            if verbose:
+                sys.stderr.write("Schema version 1: adding properties to frags table\n")
+            _add_columns(conn, 'frags', selected_props)
+            _process_table(
+                conn, pool, 'frags', 'core_smi_id', 'core_smi', selected_props,
+                verbose, fetch_batch, write_batch, imap_chunk,
+            )
+
+        elif version == 0:
+            radius_tables = [
+                row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'radius%'"
+                )
+            ]
+            if verbose:
+                sys.stderr.write(f"Old schema: adding properties to radius tables: {radius_tables}\n")
+            for table in radius_tables:
+                if verbose:
+                    sys.stderr.write(f"\nTable {table}\n")
+                _add_columns(conn, table, selected_props)
+                _process_table(
+                    conn, pool, table, 'rowid', 'core_smi', selected_props,
+                    verbose, fetch_batch, write_batch, imap_chunk,
+                )
+
+        else:
+            raise ValueError(f"Unsupported database version: {version}")
+
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    pool.close()
+    pool.join()
+
+    if verbose:
+        sys.stderr.write(f"\nFinished: {db_path}\n")
+
+
 def entry_point():
     parser = argparse.ArgumentParser(
         description='Add columns with values of chosen properties to CReM fragment database.',
@@ -131,56 +210,15 @@ def entry_point():
         sys.stderr.write('No valid property names supplied.\n')
         sys.exit(1)
 
-    selected_props = args.properties
-
-    pool = Pool(args.ncpu, initializer=_init_worker, initargs=(selected_props,))
-
-    with sqlite3.connect(args.input) as conn:
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA cache_size = -65536")
-
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-
-        if version == 1:
-            all_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if 'frags' not in all_tables:
-                raise RuntimeError("Detected new schema (user_version=1) but frags table is missing")
-            if args.verbose:
-                sys.stderr.write("Schema version 1: adding properties to frags table\n")
-            _add_columns(conn, 'frags', selected_props)
-            _process_table(
-                conn, pool, 'frags', 'core_smi_id', 'core_smi', selected_props,
-                args.verbose, args.fetch_batch, args.write_batch, args.imap_chunk,
-            )
-
-        elif version == 0:
-            radius_tables = [
-                row[0] for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'radius%'"
-                )
-            ]
-            if args.verbose:
-                sys.stderr.write(f"Old schema: adding properties to radius tables: {radius_tables}\n")
-            for table in radius_tables:
-                if args.verbose:
-                    sys.stderr.write(f"\nTable {table}\n")
-                _add_columns(conn, table, selected_props)
-                _process_table(
-                    conn, pool, table, 'rowid', 'core_smi', selected_props,
-                    args.verbose, args.fetch_batch, args.write_batch, args.imap_chunk,
-                )
-
-        else:
-            sys.stderr.write(f"Unsupported database version: {version}\n")
-            sys.exit(1)
-
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-
-    pool.close()
-    pool.join()
-
-    sys.stderr.write(f"\nFinished: {args.input}\n")
+    run(
+        db_path=args.input,
+        properties=args.properties,
+        ncpu=args.ncpu,
+        verbose=args.verbose,
+        fetch_batch=args.fetch_batch,
+        write_batch=args.write_batch,
+        imap_chunk=args.imap_chunk,
+    )
 
 
 if __name__ == '__main__':

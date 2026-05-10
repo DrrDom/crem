@@ -84,8 +84,8 @@ def merge_into(
 
             # 3. Merge frags — core_smi_h_id must be translated via smi.
             target_conn.execute("""
-                INSERT OR IGNORE INTO main.frags(core_smi, core_num_atoms, dist2, core_smi_h_id)
-                SELECT sf.core_smi, sf.core_num_atoms, sf.dist2, mh.core_smi_h_id
+                INSERT OR IGNORE INTO main.frags(core_smi, core_num_atoms, core_smi_h_id)
+                SELECT sf.core_smi, sf.core_num_atoms, mh.core_smi_h_id
                 FROM src.frags sf
                 JOIN src.frags_h sh ON sf.core_smi_h_id = sh.core_smi_h_id
                 JOIN main.frags_h mh ON sh.smi = mh.smi
@@ -113,6 +113,12 @@ def merge_into(
             )
 
             # 4. Merge each radius table using integer translation maps (no text JOINs).
+            # Metadata columns (env_id, core_smi_id, core_num_atoms, dist2,
+            # is_ring_closure) are handled explicitly; everything else is a
+            # per-set count column to be summed on conflict.
+            metadata_cols = {
+                "env_id", "core_smi_id", "core_num_atoms", "dist2", "is_ring_closure",
+            }
             for radius in radii:
                 src_cols = {
                     row[1]
@@ -120,7 +126,7 @@ def merge_into(
                         f"PRAGMA src.table_info(radius{radius})"
                     ).fetchall()
                 }
-                src_set_cols = sorted(src_cols - {"env_id", "core_smi_id"})
+                src_set_cols = sorted(src_cols - metadata_cols)
                 if not src_set_cols:
                     continue
 
@@ -138,6 +144,10 @@ def merge_into(
                             f"ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0"
                         )
 
+                # Older v1 shards may lack is_ring_closure; default to 0 for them.
+                src_has_ring = "is_ring_closure" in src_cols
+                ring_select = "r.is_ring_closure" if src_has_ring else "0"
+
                 col_list = ", ".join(src_set_cols)
                 src_vals = ", ".join(f"r.{c}" for c in src_set_cols)
                 conflict_upd = ", ".join(
@@ -145,13 +155,18 @@ def merge_into(
                 )
 
                 target_conn.execute(f"""
-                    INSERT INTO main.radius{radius}(env_id, core_smi_id, core_num_atoms, dist2, {col_list})
-                    SELECT em.dst_id, fm.dst_id, r.core_num_atoms, r.dist2, {src_vals}
+                    INSERT INTO main.radius{radius}(
+                        env_id, core_smi_id, core_num_atoms, dist2,
+                        is_ring_closure, {col_list}
+                    )
+                    SELECT em.dst_id, fm.dst_id, r.core_num_atoms, r.dist2,
+                           {ring_select}, {src_vals}
                     FROM src.radius{radius} r
                     JOIN temp._env_map em  ON r.env_id      = em.src_id
                     JOIN temp._frag_map fm ON r.core_smi_id = fm.src_id
                     ORDER BY em.dst_id, fm.dst_id
-                    ON CONFLICT(env_id, core_smi_id) DO UPDATE SET {conflict_upd}
+                    ON CONFLICT(env_id, core_smi_id, is_ring_closure)
+                    DO UPDATE SET {conflict_upd}
                 """)
 
             target_conn.commit()
@@ -165,6 +180,37 @@ def merge_into(
             target_conn.execute("DROP TABLE IF EXISTS temp._env_map")
             target_conn.execute("DROP TABLE IF EXISTS temp._frag_map")
             target_conn.execute("DETACH DATABASE src")
+
+
+def run(
+    target_path: str,
+    source_paths: List[str],
+    rebuild_index: bool = True,
+    verbose: bool = True,
+) -> None:
+    """Merge source shard databases into target and optionally rebuild indices.
+
+    Args:
+        target_path: Path to the target (base) database. Must already exist.
+        source_paths: Paths to source shard databases to merge in.
+        rebuild_index: Recreate covering indices on the target after merge.
+        verbose: Print per-shard progress to stderr.
+    """
+    with sqlite3.connect(target_path) as conn:
+        conn.execute("PRAGMA cache_size = -262144")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA temp_store = MEMORY")
+
+        radii = _get_radii(conn)
+        merge_into(conn, [str(s) for s in source_paths], verbose=verbose)
+
+        if rebuild_index:
+            from crem.scripts.cremdb_create import create_indices  # lazy: avoids circular import
+            create_indices(conn, radii, verbose=verbose)
+
+    if verbose:
+        print(f"Merged {len(source_paths)} shard(s) into {target_path}.")
 
 
 def main():
@@ -193,22 +239,12 @@ def main():
         default=True,
     )
     args = parser.parse_args()
-
-    with sqlite3.connect(args.target) as conn:
-        conn.execute("PRAGMA cache_size = -262144")   # 256 MB
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA temp_store = MEMORY")
-
-        radii = _get_radii(conn)
-        merge_into(conn, args.input, verbose=args.verbose)
-
-        if not args.no_index:
-            # Lazy import to avoid circular dependency with cremdb_create.
-            from crem.scripts.cremdb_create import create_indices
-            create_indices(conn, radii, verbose=args.verbose)
-
-    print(f"Merged {len(args.input)} shard(s) into {args.target}.")
+    run(
+        target_path=args.target,
+        source_paths=args.input,
+        rebuild_index=not args.no_index,
+        verbose=args.verbose,
+    )
 
 
 if __name__ == "__main__":

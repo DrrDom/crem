@@ -86,54 +86,86 @@ def __replace_att(mol, repl_dict):
             a.SetAtomMapNum(repl_dict[map_num])
 
 
-def __get_maps_and_ranks(env, keep_stereo=False):
+def __compute_att_keys(env, keep_stereo=False):
     """
-    Return the list of attachment point map numbers and
-    the list of canonical SMILES without mapped attachment points (ranks)
+    Compute a sort key for every attachment point (* atom with non-zero map)
+    in env. Returns a list of (key, original_map) tuples.
+
+    Each key is `(component_canonical_smiles, intra_component_atom_rank)`.
+
+    For the historical disconnected-env case (every component has exactly
+    one * atom), the intra-component rank is irrelevant — the * is the only
+    candidate inside its component — so ordering reduces to sorting by
+    component canonical SMILES. This matches the behaviour of the original
+    `__get_maps_and_ranks` implementation and preserves compatibility with
+    pre-existing fragment databases that were built against that ordering.
+
+    For the connected case (one component with multiple * atoms — produced
+    by ring-closure DB rows or by close-anchor input fragmentation), all *s
+    share the component SMILES, so the intra-component canonical atom rank
+    breaks the order. Symmetry-equivalent *s within a component receive
+    identical keys and form a single orbit.
     """
-    tmp_mol = Chem.Mol(env)
-    maps = []
-    ranks = []
-    for comp in Chem.GetMolFrags(tmp_mol, asMols=True, sanitizeFrags=False):
-        for a in comp.GetAtoms():
-            atom_num = a.GetAtomMapNum()
-            if atom_num:
-                maps.append(atom_num)
-                a.SetAtomMapNum(0)
-                break
-        ranks.append(Chem.MolToSmiles(comp, isomericSmiles=keep_stereo))
-    return maps, ranks
+    tmp = Chem.Mol(env)
+    out = []
+    for comp in Chem.GetMolFrags(tmp, asMols=True, sanitizeFrags=False):
+        star_atoms = [a for a in comp.GetAtoms()
+                      if a.GetAtomicNum() == 0 and a.GetAtomMapNum()]
+        if not star_atoms:
+            continue
+        # Zero out maps before computing canonical SMILES / ranks so the
+        # map numbers themselves don't bias the ordering.
+        recorded = [(a.GetIdx(), a.GetAtomMapNum()) for a in star_atoms]
+        for a in star_atoms:
+            a.SetAtomMapNum(0)
+        comp_smi = Chem.MolToSmiles(comp, isomericSmiles=keep_stereo)
+        if len(star_atoms) > 1:
+            if comp.NeedsUpdatePropertyCache():
+                comp.UpdatePropertyCache()
+            atom_ranks = list(Chem.CanonicalRankAtoms(comp, breakTies=False))
+            for idx, original_map in recorded:
+                out.append(((comp_smi, atom_ranks[idx]), original_map))
+        else:
+            # Single-* component — atom rank is degenerate; pin to 0 so the
+            # key reduces to (comp_smi, 0). Identical components produce
+            # identical keys → orbit, matching the historical behaviour.
+            for _, original_map in recorded:
+                out.append(((comp_smi, 0), original_map))
+    return out
 
 
 def __standardize_att_by_env(env, core, keep_stereo=False):
     """
-    Set attachment point numbers in core and context according to canonical ranks of attachment points in context
-    Ties are broken
-    Makes changes in place
+    Set attachment point map numbers in core and env based on canonical sort
+    keys of the * atoms in env. Map numbers are assigned 1..N in sorted-key
+    order; within a key (symmetry orbit) ties are broken deterministically
+    by sorting on the original map number. Modifies env and core in place.
+    Returns {original_map: new_map}.
     """
-    maps, ranks = __get_maps_and_ranks(env, keep_stereo)
-    new_att = {m: i+1 for i, (r, m) in enumerate(sorted(zip(ranks, maps)))}
+    pairs = __compute_att_keys(env, keep_stereo)
+    sorted_pairs = sorted(pairs, key=lambda kp: (kp[0], kp[1]))
+    new_att = {original_map: i + 1 for i, (_, original_map) in enumerate(sorted_pairs)}
     __replace_att(core, new_att)
     __replace_att(env, new_att)
     return new_att
 
 
-def __get_att_permutations(env):
+def __get_att_permutations(env, keep_stereo=False):
     """
-    Return possible permutations of attachment point map numbers as a tuple of dicts,
-    where each dict: key - old number, value - new number
+    Return possible permutations of attachment-point map numbers consistent
+    with env's symmetry. Each returned dict maps current-map to permuted-map.
+    Suitable for use after __standardize_att_by_env.
     """
-    maps, ranks = __get_maps_and_ranks(env)
-
-    d = defaultdict(list)
-    for rank, att in zip(ranks, maps):
-        d[rank].append(att)
-
-    c = []
-    for v in d.values():
-        c.append([dict(zip(v, x)) for x in permutations(v, len(v))])
-
-    return tuple(__merge_dicts(*item) for item in product(*c))
+    pairs = __compute_att_keys(env, keep_stereo)
+    if not pairs:
+        return ({},)
+    by_key = defaultdict(list)
+    for key, m in pairs:
+        by_key[key].append(m)
+    orbits = [sorted(group) for _, group in sorted(by_key.items())]
+    per_orbit = [[dict(zip(orbit, perm)) for perm in permutations(orbit)]
+                 for orbit in orbits]
+    return tuple(__merge_dicts(*item) for item in product(*per_orbit))
 
 
 def __permute_att(mol, d):
@@ -266,7 +298,10 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
 
     if core and context:
 
-        att_num = len(Chem.GetMolFrags(context))
+        # Count attachment points directly — counting context components
+        # undercounts whenever two attachment points sit inside the same
+        # connected component (close-anchor / ring-closure case).
+        att_num = sum(a.GetAtomicNum() == 0 and a.GetAtomMapNum() > 0 for a in core.GetAtoms())
 
         if not keep_stereo:
             Chem.RemoveStereochemistry(context)
@@ -283,7 +318,7 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
             return env_smi, (core_smi, )
 
         else:
-            p = __get_att_permutations(env)
+            p = __get_att_permutations(env, keep_stereo)
             smi_to_map = {}
 
             # permute attachment point numbering only in core,

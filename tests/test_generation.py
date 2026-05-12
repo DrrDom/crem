@@ -184,7 +184,7 @@ def test_link_max_replacements_cap(db, mol_link1, mol_link2):
 
 
 # ---------------------------------------------------------------------------
-# make_cycle (default ring_closures=False mirrors the historical macrocycle path)
+# make_cycle
 # ---------------------------------------------------------------------------
 
 def test_macrocycle_returns_results(db, mol_macrocycle):

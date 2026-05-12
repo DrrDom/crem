@@ -26,7 +26,8 @@ def db(tmp_path_factory):
     subprocess.run(
         [sys.executable, "-m", "crem.scripts.cremdb_create",
          "-i", str(smi_file), "-o", db_path,
-         "-s", "test", "--radii", "1", "2", "3", "--ncpu", "1"],
+         "-s", "test", "--radii", "1", "2", "3", "--ncpu", "1",
+         "--frag-mode", "both"],
         check=True, capture_output=True,
     )
     return db_path

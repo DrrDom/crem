@@ -217,7 +217,7 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
     return res
 
 
-def __fragment_mol_macrocycle(mol, radius=3, keep_stereo=False, protected_ids=None, return_ids=True):
+def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, protected_ids=None, return_ids=True):
 
     def _prepare_single_cut_contexts(frags, protected_ids):
         output = {}  # anchor_idx -> context_mol
@@ -254,6 +254,17 @@ def __fragment_mol_macrocycle(mol, radius=3, keep_stereo=False, protected_ids=No
         for atom in mol.GetAtoms():
             atom.SetIntProp("Index", atom.GetIdx())
 
+    if ring_size is None:
+        rs_min = rs_max = None
+    elif isinstance(ring_size, int):
+        rs_min = rs_max = ring_size
+    else:
+        if len(ring_size) != 2:
+            raise ValueError("ring_size must be an int or a (min, max) tuple")
+        rs_min, rs_max = ring_size
+
+    distance_matrix = Chem.GetDistanceMatrix(mol)
+
     frags = rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
     contexts = _prepare_single_cut_contexts(frags, protected_ids)
     fake_core = '[*:1]C[*:2]'
@@ -262,6 +273,18 @@ def __fragment_mol_macrocycle(mol, radius=3, keep_stereo=False, protected_ids=No
     for (anchor_1, ctx_1), (anchor_2, ctx_2) in combinations(contexts, 2):
         if anchor_1 == anchor_2:
             continue
+
+        # ring_size = d_in + dist2_frag → derive per-pair dist2 window.
+        d_in = int(distance_matrix[anchor_1, anchor_2])
+        if rs_min is not None:
+            lo = max(1, rs_min - d_in)
+            hi = rs_max - d_in
+            if hi < lo:
+                continue  # target ring smaller than the in-mol shortest path
+            frag_dist = (lo, hi) if lo != hi else lo
+        else:
+            frag_dist = None
+
         # keep convention consistent with linker generation
         ctx_1 = __renumber_attachment_points(ctx_1, {1: 2})
         chains = Chem.CombineMols(ctx_1, ctx_2)
@@ -290,12 +313,12 @@ def __fragment_mol_macrocycle(mol, radius=3, keep_stereo=False, protected_ids=No
                 n.SetAtomMapNum(att_map)
                 break
         context_smi = Chem.MolToSmiles(chains[0], isomericSmiles=True)
-        output.add((env, '[H][*:1].[H][*:2]', context_smi, 0))
+        output.add((env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist))
 
     res = []
-    for env, core, context_smi, num_heavy_atoms in output:
+    for env, core, context_smi, num_heavy_atoms, frag_dist in output:
         context_mol = Chem.MolFromSmiles(context_smi)
-        res.append((env, core, context_mol, num_heavy_atoms))
+        res.append((env, core, context_mol, num_heavy_atoms, frag_dist))
     return res
 
 
@@ -683,7 +706,8 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
         if link:
             raise ValueError("macrocycle mode expects a single molecule")
         mol = mol1
-        f = __fragment_mol_macrocycle(mol=mol, radius=radius, protected_ids=protected_ids_1)
+        f = __fragment_mol_macrocycle(mol=mol, radius=radius, ring_size=ring_size,
+                                      protected_ids=protected_ids_1)
     elif link:
         f = __fragment_mol_link(mol1=mol1, mol2=mol2, radius=radius, protected_ids_1=protected_ids_1,
                                 protected_ids_2=protected_ids_2)
@@ -1479,7 +1503,7 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
                     yield res
 
 
-def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=False,
+def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                min_atoms=1, max_atoms=10, max_replacements=None,
                replace_cycles=False, replace_ids=None, protected_ids=None, symmetry_fixes=False, min_freq=0,
                return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
@@ -1491,13 +1515,12 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=False,
     Two complementary modes:
 
     * ``ring_closures=False`` (default): query linker fragments extracted by
-      acyclic-bond cuts (today's macrocycle behaviour). Useful for
-      transplanting *intact* aromatic / scaffold rings — the donor's ring
-      closures are preserved in the fragment SMILES.
+      acyclic-bond cuts. Useful for transplanting *intact* aromatic / scaffold rings -
+      the donor's ring closures are preserved in the fragment SMILES.
     * ``ring_closures=True``: query arc fragments extracted by cutting pairs
       of SINGLE bonds inside the same ring (``--frag-mode ring`` / ``both``
       at DB build time). Useful for closing native (typically aliphatic)
-      rings; the donor ring's aromaticity is not preserved by construction.
+      rings.
 
     :param mol: RDKit Mol object.
     :param db_name: path to DB file with fragment replacements.

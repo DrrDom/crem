@@ -126,6 +126,7 @@ def create_new_schema(
             "core_smi_id INTEGER NOT NULL",
             "core_num_atoms INTEGER NOT NULL",
             "dist2 INTEGER NOT NULL",
+            "is_ring_closure INTEGER NOT NULL DEFAULT 0",
         ]
         if set_name:
             freq_type = _get_freq_column_type(old_conn, radius)
@@ -135,7 +136,7 @@ def create_new_schema(
                 {", ".join(column_defs)},
                 FOREIGN KEY (env_id) REFERENCES envs(env_id),
                 FOREIGN KEY (core_smi_id) REFERENCES frags(core_smi_id),
-                UNIQUE (env_id, core_smi_id)
+                UNIQUE (env_id, core_smi_id, is_ring_closure)
             )
         """)
 
@@ -472,15 +473,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example usage:
-  python convert_crem_db.py old.db new.db
-  python convert_crem_db.py old.db new.db --radii 1 2 3 4 5
-  python convert_crem_db.py old.db new.db --batch-size 5000 --verify
-  python convert_crem_db.py old.db new.db --set-name my_set
+  cremdb_convert -i old.db -o new.db
+  cremdb_convert -i old.db -o new.db --radii 1 2 3 4 5
+  cremdb_convert -i old.db -o new.db --batch-size 5000 --verify
+  cremdb_convert -i old.db -o new.db --set-name my_set
         """
     )
 
-    parser.add_argument('old_db', help='Path to existing database')
-    parser.add_argument('new_db', help='Path to new database (will be created)')
+    parser.add_argument('-i', '--input', required=True,
+                        help='Path to existing database')
+    parser.add_argument('-o', '--output', required=True,
+                        help='Path to new database (will be created)')
     parser.add_argument(
         '--radii',
         nargs='+',
@@ -491,7 +494,7 @@ Example usage:
     parser.add_argument('--batch-size', type=int, default=10000,
                        help='Number of rows to process per batch (default: 10000)')
     parser.add_argument('--set-name', default="undefined",
-                        help='Name of the new column to create in radius tables and populate from the freq column of old_db')
+                        help='Name of the new column to create in radius tables and populate from the freq column of old_db (default: undefined')
     parser.add_argument('--verify', action='store_true',
                        help='Verify conversion after completion')
     parser.add_argument('--quiet', action='store_true',
@@ -504,19 +507,19 @@ Example usage:
 
     # Check if output file exists
     import os
-    if os.path.exists(args.new_db):
-        response = input(f"{args.new_db} already exists. Overwrite? (y/N): ")
+    if os.path.exists(args.output):
+        response = input(f"{args.output} already exists. Overwrite? (y/N): ")
         if response.lower() != 'y':
             print("Conversion cancelled.")
             return
-        os.remove(args.new_db)
+        os.remove(args.output)
 
     # Perform conversion
     verbose = not args.quiet
 
     try:
-        convert_database(old_db_path=args.old_db,
-                         new_db_path=args.new_db,
+        convert_database(old_db_path=args.input,
+                         new_db_path=args.output,
                          radii=radii,
                          batch_size=args.batch_size,
                          set_name=args.set_name,
@@ -525,7 +528,7 @@ Example usage:
         # Verify if requested
         if args.verify:
             for radius in radii:
-                verify_conversion(args.old_db, args.new_db, radius, verbose=verbose)
+                verify_conversion(args.input, args.output, radius, verbose=verbose)
 
         print("\n✓ Conversion completed successfully!")
 

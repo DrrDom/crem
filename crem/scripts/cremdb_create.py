@@ -120,8 +120,8 @@ def _resolve_set_names(values):
     if not values:
         raise ValueError("At least one set name or set file must be specified")
 
-    existing_files = [v for v in values if os.path.exists(v)]
-    missing_files = [v for v in values if not os.path.exists(v)]
+    existing_files = [v for v in values if os.path.isfile(v)]
+    missing_files = [v for v in values if not os.path.isfile(v)]
 
     if existing_files:
         if len(missing_files) > 1:

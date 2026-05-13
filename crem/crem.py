@@ -491,7 +491,7 @@ def _load_schema_meta(db_cur, radius):
 
 
 def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, set_names=None,
-                              schema_meta=None, is_ring_closure=0, **kwargs):
+                              schema_meta=None, is_ring_closure=None, **kwargs):
 
     if schema_meta is None:
         schema_meta = _load_schema_meta(db_cur, radius)
@@ -623,16 +623,17 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
             else:
                 sql += f" AND r.dist2 = {_sql_value(dist)}"
 
-        # Filter by fragment provenance. Default is is_ring_closure=0 to
-        # preserve the historical macrocycle/mutate/grow/link semantics; the
-        # ring-closure path passes 1 to query arc fragments. None means no
-        # filter (used internally if a caller wants both kinds).
+        # Filter by fragment provenance. is_ring_closure=1 restricts to arc-cut
+        # rows (ring-closure mode); None disables the filter, returning rows of
+        # both provenances (the broad mode used by __gen_replacements when
+        # ring_closure=False). is_ring_closure=0 is still accepted for callerss
+        # that want acyclic-only.
         if is_ring_closure is not None:
             radius_columns = schema_meta['radius_columns']
             if 'is_ring_closure' not in radius_columns:
                 if is_ring_closure:
                     raise ValueError(
-                        f"radius{radius} has no is_ring_closure column — "
+                        f"radius{radius} has no is_ring_closure column - "
                         f"this DB predates ring-closure support. "
                         f"Rebuild with cremdb_create to use ring_closures=True."
                     )
@@ -683,7 +684,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                        min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
                        protected_ids_1=None, protected_ids_2=None, min_freq=10, set_names=None,
                        symmetry_fixes=False, filter_func=None, sample_func=None, return_frag_smi_only=False,
-                       macrocycle=False, ring_closure=False, ring_size=None,
+                       ring_closure=None, ring_size=None,
                        seed=None, **kwargs):
 
     rng = random.Random(seed)
@@ -694,20 +695,25 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
     if isinstance(mol1, Chem.Mol) and isinstance(mol2, Chem.Mol):
         link = True
 
-    if ring_closure:
+    if ring_closure is True:
+        # Strict cycle mode: arc-cut fragmenter only.
         if link:
             raise ValueError("ring_closure mode expects a single molecule")
-        if macrocycle:
-            raise ValueError("ring_closure and macrocycle modes are mutually exclusive")
         mol = mol1
         f = __fragment_mol_ring_closure(mol=mol, radius=radius, ring_size=ring_size,
                                         protected_ids=protected_ids_1)
-    elif macrocycle:
+    elif ring_closure is False:
+        # Broad cycle mode: union of both fragmenters so the DB can return
+        # both arc-cut (connected-env) and acyclic-cut (disconnected-env)
+        # rows. The SQL-side is_ring_closure filter is disabled below
+        # because `(1 if ring_closure else None)` evaluates to None for False.
         if link:
-            raise ValueError("macrocycle mode expects a single molecule")
+            raise ValueError("ring_closure=False (broad cycle) mode expects a single molecule")
         mol = mol1
         f = __fragment_mol_macrocycle(mol=mol, radius=radius, ring_size=ring_size,
                                       protected_ids=protected_ids_1)
+        f = f + __fragment_mol_ring_closure(mol=mol, radius=radius, ring_size=ring_size,
+                                            protected_ids=protected_ids_1)
     elif link:
         f = __fragment_mol_link(mol1=mol1, mol2=mol2, radius=radius, protected_ids_1=protected_ids_1,
                                 protected_ids_2=protected_ids_2)
@@ -768,7 +774,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
                 row_ids = __get_replacements_rowids(cur, env, effective_dist, min_atoms, max_atoms, radius, min_freq,
                                                     set_names=set_names, schema_meta=schema_meta,
-                                                    is_ring_closure=int(bool(ring_closure)), **kwargs)
+                                                    is_ring_closure=(1 if ring_closure else None), **kwargs)
 
                 if filter_func:
                     row_ids = set(filter_func(row_ids, cur, radius))
@@ -879,7 +885,6 @@ def __get_data_cycle(mol, db_name, radius, ring_size, ring_closures, min_size, m
                                                                      filter_func=filter_func,
                                                                      sample_func=sample_func,
                                                                      return_frag_smi_only=False,
-                                                                     macrocycle=not ring_closures,
                                                                      ring_closure=ring_closures,
                                                                      ring_size=ring_size,
                                                                      seed=seed, **kwargs):
@@ -1514,13 +1519,15 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
 
     Two complementary modes:
 
-    * ``ring_closures=False`` (default): query linker fragments extracted by
-      acyclic-bond cuts. Useful for transplanting *intact* aromatic / scaffold rings -
-      the donor's ring closures are preserved in the fragment SMILES.
-    * ``ring_closures=True``: query arc fragments extracted by cutting pairs
-      of SINGLE bonds inside the same ring (``--frag-mode ring`` / ``both``
-      at DB build time). Useful for closing native (typically aliphatic)
-      rings.
+    * ``ring_closures=False`` (broad): query **any** linker fragment.
+      Internally both fragmenters are run on the input molecule (the
+      connected-env arc-cut fragmenter and the disconnected-env macrocycle
+      fragmenter) and the ``is_ring_closure`` provenance column is **not**
+      filtered, so DB rows of either provenance can match.
+    * ``ring_closures=True`` (strict): only the connected-env arc-cut
+      fragmenter runs and the query is restricted to ``is_ring_closure=1``
+      rows (populated by ``--frag-mode ring`` / ``both`` at DB build time).
+      Useful for closing native (typically aliphatic) rings.
 
     :param mol: RDKit Mol object.
     :param db_name: path to DB file with fragment replacements.
@@ -1633,7 +1640,6 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                                                                          filter_func=filter_func,
                                                                          sample_func=sample_func,
                                                                          return_frag_smi_only=False,
-                                                                         macrocycle=not ring_closures,
                                                                          ring_closure=ring_closures,
                                                                          ring_size=ring_size,
                                                                          seed=seed, **kwargs):

@@ -111,15 +111,14 @@ def create_new_schema(
         CREATE TABLE IF NOT EXISTS frags(
             core_smi_id INTEGER PRIMARY KEY AUTOINCREMENT,
             core_smi TEXT NOT NULL UNIQUE,
-            core_num_atoms INTEGER NOT NULL,
             core_smi_h_id INTEGER NOT NULL,
             FOREIGN KEY (core_smi_h_id) REFERENCES frags_h(core_smi_h_id)
         )
     """)
 
     # Create radius tables
-    # core_num_atoms and dist2 are denormalized into radius{N} so that
-    # filter queries on the hot path do not have to join frags.
+    # core_num_atoms and dist2 live on radius{N} so the hot-path filter
+    # queries do not have to join frags.
     for radius in radii:
         column_defs = [
             "env_id INTEGER NOT NULL",
@@ -241,10 +240,12 @@ def convert_database(
             pbar = tqdm(total=total_rows, disable=not verbose, desc=f"radius{radius}")
 
             # Columns we SELECT from v0 radius{N}: everything pivoted out of the
-            # row plus dist2 (which now lives only on the v1 radius table).
+            # row plus dist2 / core_num_atoms (which now live only on the v1
+            # radius table).
             v0_extra_columns = [col for col in column_names if col not in ('env', 'core_smi', 'core_sma', 'freq')]
-            # Columns we INSERT into v1 frags: same minus dist2.
-            frags_columns = [col for col in v0_extra_columns if col != 'dist2']
+            # Columns we INSERT into v1 frags: same minus dist2 and
+            # core_num_atoms (both denormalized into radius{N}).
+            frags_columns = [col for col in v0_extra_columns if col not in ('dist2', 'core_num_atoms')]
             column_names_transfer = ['env', 'core_smi'] + v0_extra_columns
             if set_name:
                 column_names_transfer.append('freq')
@@ -315,8 +316,9 @@ def convert_database(
                 new_cur.executemany("INSERT INTO frags_h (core_smi_h_id, smi) VALUES (?, ?)",
                                     new_rows_frags_h)
 
-                sql = (f"INSERT INTO frags ({','.join(frags_columns)}, core_smi_h_id, core_smi_id, core_smi) "
-                       f"VALUES ({','.join('?' * (len(frags_columns) + 3))})")
+                all_frag_cols = frags_columns + ['core_smi_h_id', 'core_smi_id', 'core_smi']
+                sql = (f"INSERT INTO frags ({','.join(all_frag_cols)}) "
+                       f"VALUES ({','.join('?' * len(all_frag_cols))})")
                 new_cur.executemany(sql, new_rows_frags)
 
                 if set_name:

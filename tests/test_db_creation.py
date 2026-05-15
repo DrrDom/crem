@@ -28,9 +28,23 @@ def test_frags_h_valid_smiles(db):
     assert all(Chem.MolFromSmiles(s) is not None for s in smiles)
 
 
-def test_frags_core_smi_valid_and_atom_count_matches(db):
+def test_frags_core_smi_valid(db):
     with sqlite3.connect(db) as c:
-        rows = c.execute("SELECT core_smi, core_num_atoms FROM frags").fetchall()
+        rows = c.execute("SELECT core_smi FROM frags").fetchall()
+    assert rows
+    for (smi,) in rows:
+        assert Chem.MolFromSmiles(smi) is not None, f"invalid SMILES in frags: {smi}"
+
+
+def test_radius3_core_num_atoms_matches_smiles(db):
+    # radius{N}.core_num_atoms is the per-fragment heavy-atom count;
+    # it must equal RDKit's count for the linked core_smi.
+    with sqlite3.connect(db) as c:
+        rows = c.execute("""
+            SELECT DISTINCT f.core_smi, r.core_num_atoms
+            FROM radius3 r
+            JOIN frags f ON r.core_smi_id = f.core_smi_id
+        """).fetchall()
     assert rows
     for smi, nha in rows:
         m = Chem.MolFromSmiles(smi)
@@ -47,11 +61,13 @@ def test_radius3_columns(db):
     assert {"env_id", "core_smi_id", "core_num_atoms", "dist2", "is_ring_closure", "test"} == cols
 
 
-def test_frags_no_dist2_column(db):
-    # dist2 is denormalized into radius{N} and must not be stored on frags.
+def test_frags_no_denormalized_columns(db):
+    # dist2 and core_num_atoms are denormalized into radius{N} and must
+    # not be stored on frags.
     with sqlite3.connect(db) as c:
         cols = {r[1] for r in c.execute("PRAGMA table_info(frags)")}
     assert "dist2" not in cols
+    assert "core_num_atoms" not in cols
 
 
 def test_radius3_not_empty(db):
@@ -105,17 +121,6 @@ def test_core_smi_ids_consistent(db):
             WHERE f.core_smi_id IS NULL
         """).fetchone()[0]
     assert orphans == 0
-
-
-def test_denormalized_core_num_atoms_matches_frags(db):
-    # core_num_atoms in radius3 must equal the value stored in frags
-    with sqlite3.connect(db) as c:
-        mismatches = c.execute("""
-            SELECT count(*) FROM radius3 r
-            JOIN frags f ON r.core_smi_id = f.core_smi_id
-            WHERE r.core_num_atoms != f.core_num_atoms
-        """).fetchone()[0]
-    assert mismatches == 0
 
 
 # ---------------------------------------------------------------------------

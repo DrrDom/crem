@@ -491,7 +491,6 @@ def _ensure_schema(conn, radii, set_names):
         CREATE TABLE IF NOT EXISTS frags(
             core_smi_id INTEGER PRIMARY KEY AUTOINCREMENT,
             core_smi TEXT NOT NULL UNIQUE,
-            core_num_atoms INTEGER NOT NULL,
             core_smi_h_id INTEGER NOT NULL,
             FOREIGN KEY (core_smi_h_id) REFERENCES frags_h(core_smi_h_id)
         )
@@ -591,22 +590,22 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
 
     # Step 3: resolve new core_smis (frags)
     t0 = time.perf_counter()
-    new_cores = []  # (core_smi, core_num_atoms, core_smi_h_id)
-    for core_smi, (core_num_atoms, _dist2, core_smi_h) in core_info.items():
+    new_cores = []  # (core_smi, core_smi_h_id)
+    for core_smi, (_core_num_atoms, _dist2, core_smi_h) in core_info.items():
         if core_smi not in core_smi_cache and core_smi_h and core_smi_h in smi_h_cache:
-            new_cores.append((core_smi, core_num_atoms, smi_h_cache[core_smi_h]))
+            new_cores.append((core_smi, smi_h_cache[core_smi_h]))
 
     if new_cores:
-        # 3 columns per row → at most _SQLITE_BATCH/3 rows per chunk to stay
+        # 2 columns per row → at most _SQLITE_BATCH/2 rows per chunk to stay
         # under SQLITE_MAX_VARIABLE_NUMBER.
-        rows_per_chunk = max(1, _SQLITE_BATCH // 3)
+        rows_per_chunk = max(1, _SQLITE_BATCH // 2)
         for i in range(0, len(new_cores), rows_per_chunk):
             batch = new_cores[i:i + rows_per_chunk]
-            ph = ",".join(["(?,?,?)"] * len(batch))
+            ph = ",".join(["(?,?)"] * len(batch))
             flat = [v for row in batch for v in row]
             for core_smi, core_smi_id in conn.execute(
                 f"INSERT OR IGNORE INTO frags "
-                f"(core_smi, core_num_atoms, core_smi_h_id) "
+                f"(core_smi, core_smi_h_id) "
                 f"VALUES {ph} "
                 f"RETURNING core_smi, core_smi_id",
                 flat,

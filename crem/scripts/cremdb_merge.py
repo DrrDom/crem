@@ -57,7 +57,6 @@ def merge_into(
     for radius in radii:
         for suffix in ("env_id", "core_smi_id", "both", "lookup"):
             target_conn.execute(f"DROP INDEX IF EXISTS idx_radius{radius}_{suffix}")
-    target_conn.execute("DROP INDEX IF EXISTS idx_frags_core_num_atoms")
     target_conn.execute("DROP INDEX IF EXISTS idx_frags_h_smi")
     target_conn.commit()
 
@@ -84,8 +83,8 @@ def merge_into(
 
             # 3. Merge frags — core_smi_h_id must be translated via smi.
             target_conn.execute("""
-                INSERT OR IGNORE INTO main.frags(core_smi, core_num_atoms, core_smi_h_id)
-                SELECT sf.core_smi, sf.core_num_atoms, mh.core_smi_h_id
+                INSERT OR IGNORE INTO main.frags(core_smi, core_smi_h_id)
+                SELECT sf.core_smi, mh.core_smi_h_id
                 FROM src.frags sf
                 JOIN src.frags_h sh ON sf.core_smi_h_id = sh.core_smi_h_id
                 JOIN main.frags_h mh ON sh.smi = mh.smi

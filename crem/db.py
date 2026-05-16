@@ -34,7 +34,7 @@ _PROPS_DEFAULT = object()
 def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name: Union[str, Dict[str, Optional[set]]],
               radii=(1, 2, 3, 4, 5), *, ncpu: int = 1, max_heavy_atoms: int = 15, keep_stereo: bool = False,
               mode: int = 0, chunk_size: int = 100, flush_every: int = 100, shard_size: Optional[int] = None,
-              verbose: bool = True) -> None:
+              parallel_shards: int = 1, verbose: bool = True) -> None:
     """Create or extend a v1 CReM fragment database.
 
     Calling on an existing database is safe and additive: ``_ensure_schema``
@@ -56,9 +56,19 @@ def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name:
         chunk_size: Input lines per worker task.
         flush_every: Chunks to accumulate before each DB flush.
         shard_size: Max input structures per shard DB (``None`` = single DB).
+            Incompatible with ``parallel_shards > 1``.
+        parallel_shards: When > 1, run N shard builders concurrently, each
+            fragmenting a stride of the input. CPUs from ``ncpu`` are split
+            evenly across them. Shard DBs live in ``<output>.parts/`` and
+            are merged into ``output`` via a parallel binary-tree reduction.
+            Default 1 (single-process build).
         verbose: Print progress and statistics to stdout/stderr.
     """
-    from crem.scripts.cremdb_create import run as _run
+    if parallel_shards < 1:
+        raise ValueError("parallel_shards must be >= 1")
+    if parallel_shards > 1 and shard_size is not None:
+        raise ValueError("parallel_shards > 1 is incompatible with shard_size")
+    from crem.scripts.cremdb_create import run as _run, run_parallel_shards as _run_parallel
 
     tmp_input: Optional[str] = None
     tmp_ids: List[str] = []
@@ -94,27 +104,49 @@ def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name:
         else:
             raise TypeError("set_name must be a str or dict")
 
-        _run(
-            input_path=input_path,
-            output_db=str(output),
-            set_name=set_name_arg,
-            radii=list(radii),
-            chunk_size=chunk_size,
-            max_heavy_atoms=max_heavy_atoms,
-            keep_stereo=keep_stereo,
-            mode=mode,
-            flush_every=flush_every,
-            shard_size=shard_size,
-            ncpu=ncpu,
-            verbose=verbose,
-            # pass-through defaults for rarely needed options
-            sep=None,
-            processed_chunks=None,
-            force_zstd=False,
-            log_every=None,
-            prefetch=4,
-            timings=False,
-        )
+        if parallel_shards > 1:
+            _run_parallel(
+                input_path=input_path,
+                output_db=str(output),
+                set_name=set_name_arg,
+                parallel_shards=parallel_shards,
+                ncpu=ncpu,
+                radii=list(radii),
+                chunk_size=chunk_size,
+                max_heavy_atoms=max_heavy_atoms,
+                keep_stereo=keep_stereo,
+                mode=mode,
+                flush_every=flush_every,
+                verbose=verbose,
+                # pass-through defaults for rarely needed options
+                sep=None,
+                force_zstd=False,
+                log_every=None,
+                prefetch=4,
+                timings=False,
+            )
+        else:
+            _run(
+                input_path=input_path,
+                output_db=str(output),
+                set_name=set_name_arg,
+                radii=list(radii),
+                chunk_size=chunk_size,
+                max_heavy_atoms=max_heavy_atoms,
+                keep_stereo=keep_stereo,
+                mode=mode,
+                flush_every=flush_every,
+                shard_size=shard_size,
+                ncpu=ncpu,
+                verbose=verbose,
+                # pass-through defaults for rarely needed options
+                sep=None,
+                processed_chunks=None,
+                force_zstd=False,
+                log_every=None,
+                prefetch=4,
+                timings=False,
+            )
 
     finally:
         if tmp_input and os.path.exists(tmp_input):
@@ -129,6 +161,7 @@ def merge_dbs(
     sources: List[PathLike],
     *,
     rebuild_index: bool = True,
+    parallel: int = 1,
     verbose: bool = True,
 ) -> None:
     """Merge source shard databases into *target*.
@@ -137,14 +170,21 @@ def merge_dbs(
         target: Path to the target (base) database. Must already exist.
         sources: List of source shard database paths to merge in.
         rebuild_index: Recreate covering indices on the target after merge.
+        parallel: When > 1, merge with binary-tree reduction using up to this
+            many concurrent pair-merges per round. The target is treated as
+            one of the contributors; the final survivor is moved back to
+            ``target``. Default 1 (serial).
         verbose: Print per-shard progress.
     """
+    if parallel < 1:
+        raise ValueError("parallel must be >= 1")
     from crem.scripts.cremdb_merge import run as _run
     _run(
         target_path=str(target),
         source_paths=[str(s) for s in sources],
         rebuild_index=rebuild_index,
         verbose=verbose,
+        parallel=parallel,
     )
 
 

@@ -11,7 +11,9 @@ import argparse
 import io
 import os
 import re
+import signal
 import sqlite3
+import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -30,6 +32,11 @@ from crem.mol_context import get_std_context_core_permutations
 
 
 _SQLITE_BATCH = 32000
+
+# Magic value written into PRAGMA application_id at the end of a stride-mode
+# shard build. The parallel-shards orchestrator reads this to decide which
+# children to skip on resume.
+_STRIDE_SHARD_SENTINEL = 0xC0DECAFE
 
 def create_indices(conn: sqlite3.Connection, radii: List[int], verbose: bool = True):
     """
@@ -692,6 +699,8 @@ def run(
     shard_size=None,
     verbose: bool = True,
     frag_mode: str = 'both',
+    stride_mod: int = 1,
+    stride_idx: int = 0,
 ) -> None:
     """Build or extend a v1 CReM fragment database.
 
@@ -717,11 +726,20 @@ def run(
         frag_mode: Fragmentation source — 'acyclic' (today's MMPA cuts of
             acyclic bonds), 'ring' (cuts of pairs of SINGLE bonds inside the
             same ring; used by make_cycle(ring_closures=True)), or 'both'.
+        stride_mod: When > 1, only process chunks whose ``chunk_id %
+            stride_mod == stride_idx``. Used by ``run_parallel_shards`` to
+            split the input across N concurrent shard builders.
+        stride_idx: Stride index for this build; meaningful only when
+            ``stride_mod > 1``.
     """
     if frag_mode not in ('acyclic', 'ring', 'both'):
         raise ValueError(
             f"frag_mode must be one of 'acyclic', 'ring', 'both' (got {frag_mode!r})"
         )
+    if stride_mod < 1:
+        raise ValueError("stride_mod must be >= 1")
+    if not (0 <= stride_idx < stride_mod):
+        raise ValueError("stride_idx must be in [0, stride_mod)")
     set_names, set_ids = _resolve_set_names(set_name)
     radii = sorted(set(radii))
     if not radii:
@@ -753,6 +771,11 @@ def run(
         c.execute("PRAGMA synchronous = NORMAL")
         c.execute("PRAGMA journal_mode = WAL")
         create_indices(c, radii, verbose)
+        # In stride mode, mark the shard as fully built so the orchestrator
+        # can skip re-launching this child on resume.
+        if stride_mod > 1:
+            c.execute(f"PRAGMA application_id = {_STRIDE_SHARD_SENTINEL}")
+            c.commit()
 
     conn = _open_shard(current_shard_idx)
 
@@ -875,6 +898,8 @@ def run(
         def task_iter():
             nonlocal chunks_skipped
             for chunk_id, lines in enumerate(_iter_chunks(input_handle, chunk_size)):
+                if stride_mod > 1 and chunk_id % stride_mod != stride_idx:
+                    continue
                 if chunk_id in skip_chunks:
                     chunks_skipped += 1
                     continue
@@ -1003,6 +1028,186 @@ def run(
             print(f"Shards on disk: {len(sources_to_merge) + 1}")
 
 
+def _shard_is_finalised(shard_path: str) -> bool:
+    """Return True if shard_path has the stride-mode finalisation sentinel."""
+    if not os.path.exists(shard_path):
+        return False
+    try:
+        with sqlite3.connect(shard_path) as c:
+            app_id = c.execute("PRAGMA application_id").fetchone()[0]
+    except sqlite3.DatabaseError:
+        return False
+    return int(app_id) == _STRIDE_SHARD_SENTINEL
+
+
+def run_parallel_shards(
+    input_path: str,
+    output_db: str,
+    set_name: list,
+    parallel_shards: int,
+    ncpu: int,
+    radii=(1, 2, 3, 4, 5),
+    chunk_size: int = 100,
+    max_heavy_atoms: int = 15,
+    keep_stereo: bool = False,
+    mode: int = 0,
+    sep=None,
+    force_zstd: bool = False,
+    log_every=None,
+    flush_every: int = 100,
+    prefetch: int = 4,
+    timings: bool = False,
+    verbose: bool = True,
+    frag_mode: str = 'both',
+    merge_parallel: int = None,
+) -> None:
+    """Build a v1 CReM fragment DB using N concurrent shard builders.
+
+    Each child runs ``cremdb_create`` itself with ``--stride-mod N --stride-idx i``
+    so it processes only ``chunk_id % N == i`` of the input. Available CPUs
+    are split evenly across children. After all children finish, the parts
+    are merged into ``output_db`` via binary-tree reduction.
+
+    Resume: re-running the same command re-launches only those children
+    whose shard DB does not yet carry the finalisation sentinel.
+
+    Args:
+        See ``run`` for shared kwargs.
+        parallel_shards: Number of concurrent shard builders.
+        merge_parallel: Max concurrent pair-merges during the final tree
+            merge. Defaults to ``parallel_shards``.
+    """
+    if parallel_shards < 2:
+        raise ValueError("parallel_shards must be >= 2 (use run() for serial)")
+
+    parts_dir = Path(f"{output_db}.parts")
+    parts_dir.mkdir(parents=True, exist_ok=True)
+
+    ncpu_per_shard = max(1, ncpu // parallel_shards)
+    if merge_parallel is None:
+        merge_parallel = parallel_shards
+
+    # Build the child argv from the current command-line, removing the
+    # orchestration-only flags and adding per-child stride/output flags.
+    # The child runs the same Python entrypoint as the parent.
+    base_argv = [sys.executable, "-m", "crem.scripts.cremdb_create"]
+    base_argv.extend(["--input", input_path])
+    base_argv.extend(["--set-name", *set_name])
+    base_argv.extend(["--radii", *(str(r) for r in radii)])
+    base_argv.extend(["--chunk-size", str(chunk_size)])
+    base_argv.extend(["--max-heavy-atoms", str(max_heavy_atoms)])
+    if keep_stereo:
+        base_argv.append("--keep-stereo")
+    base_argv.extend(["--mode", str(mode)])
+    base_argv.extend(["--frag-mode", frag_mode])
+    if sep is not None:
+        base_argv.extend(["--sep", sep])
+    if force_zstd:
+        base_argv.append("--zstd")
+    if log_every is not None:
+        base_argv.extend(["--log-every", str(log_every)])
+    base_argv.extend(["--flush-every", str(flush_every)])
+    base_argv.extend(["--prefetch", str(prefetch)])
+    if timings:
+        base_argv.append("--timings")
+
+    procs: List[subprocess.Popen] = []
+    log_handles: List = []
+    try:
+        for i in range(parallel_shards):
+            shard_db = str(parts_dir / f"shard_{i:03d}.db")
+            chunk_file = str(parts_dir / f"processed_chunks_{i:03d}.txt")
+            log_file = str(parts_dir / f"shard_{i:03d}.log")
+
+            if _shard_is_finalised(shard_db):
+                if verbose:
+                    sys.stderr.write(f"  Shard {i:03d}: already finalised, skipping\n")
+                    sys.stderr.flush()
+                continue
+
+            child_argv = list(base_argv)
+            child_argv.extend(["--output", shard_db])
+            child_argv.extend(["--processed-chunks", chunk_file])
+            child_argv.extend(["--ncpu", str(ncpu_per_shard)])
+            child_argv.extend(["--stride-mod", str(parallel_shards)])
+            child_argv.extend(["--stride-idx", str(i)])
+
+            log_fh = open(log_file, "ab")
+            log_handles.append(log_fh)
+            if verbose:
+                sys.stderr.write(
+                    f"  Launching shard {i:03d}: {ncpu_per_shard} CPUs, "
+                    f"log {log_file}\n"
+                )
+                sys.stderr.flush()
+            procs.append(subprocess.Popen(
+                child_argv,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+            ))
+
+        # Wait on all children. On Ctrl-C, propagate SIGTERM and re-raise.
+        failures = []
+        try:
+            for p in procs:
+                rc = p.wait()
+                if rc != 0:
+                    failures.append((p.pid, rc))
+        except KeyboardInterrupt:
+            for p in procs:
+                if p.poll() is None:
+                    try:
+                        p.send_signal(signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+            for p in procs:
+                try:
+                    p.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+            raise
+
+        if failures:
+            details = ", ".join(f"pid={pid} rc={rc}" for pid, rc in failures)
+            raise RuntimeError(
+                f"{len(failures)} shard builder(s) failed: {details}. "
+                f"Parts left in {parts_dir} for inspection/resume."
+            )
+    finally:
+        for fh in log_handles:
+            try:
+                fh.close()
+            except Exception:
+                pass
+
+    # All children finished successfully. Collect every shard (including any
+    # that we skipped because already finalised) for the final merge.
+    shard_paths = [
+        str(parts_dir / f"shard_{i:03d}.db") for i in range(parallel_shards)
+    ]
+    missing = [p for p in shard_paths if not os.path.exists(p)]
+    if missing:
+        raise RuntimeError(
+            f"Shard files missing after build: {missing}. Re-run to resume."
+        )
+
+    if verbose:
+        sys.stderr.write(
+            f"\nMerging {len(shard_paths)} shards into {output_db} "
+            f"(parallel={merge_parallel})...\n"
+        )
+        sys.stderr.flush()
+
+    from crem.scripts.cremdb_merge import binary_tree_merge_into  # lazy import
+    binary_tree_merge_into(
+        final_target_path=output_db,
+        shard_paths=shard_paths,
+        max_parallel=merge_parallel,
+        rebuild_index=True,
+        verbose=verbose,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Stream-like fragment DB creation for new schema")
     parser.add_argument("-i", "--input", required=True, help="Input SMILES file (text or .zst)")
@@ -1076,7 +1281,53 @@ def main():
             "left as-is and will be merged at the end."
         ),
     )
+    parser.add_argument(
+        "--parallel-shards",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Build N shards concurrently, each on a stride of the input. "
+            "CPUs from --ncpu are split evenly across them. Each shard DB "
+            "lives in <output>.parts/shard_NNN.db; the parts are merged into "
+            "<output> via a parallel binary-tree reduction at the end. "
+            "Default 1 (current single-process behaviour)."
+        ),
+    )
+    # Internal flags used by the orchestrator to drive its children. Not
+    # intended for direct invocation.
+    parser.add_argument("--stride-mod", type=int, default=1, help=argparse.SUPPRESS)
+    parser.add_argument("--stride-idx", type=int, default=0, help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.parallel_shards < 1:
+        parser.error("--parallel-shards must be >= 1")
+    if args.parallel_shards > 1:
+        if args.shard_size is not None:
+            parser.error("--parallel-shards is incompatible with --shard-size")
+        if args.stride_mod > 1:
+            parser.error("--parallel-shards is incompatible with --stride-mod (internal)")
+        run_parallel_shards(
+            input_path=args.input,
+            output_db=args.output_db,
+            set_name=args.set_name,
+            parallel_shards=args.parallel_shards,
+            ncpu=args.ncpu,
+            radii=args.radii,
+            chunk_size=args.chunk_size,
+            max_heavy_atoms=args.max_heavy_atoms,
+            keep_stereo=args.keep_stereo,
+            mode=args.mode,
+            sep=args.sep,
+            force_zstd=args.zstd,
+            log_every=args.log_every,
+            flush_every=args.flush_every,
+            prefetch=args.prefetch,
+            timings=args.timings,
+            frag_mode=args.frag_mode,
+        )
+        return
+
     run(
         input_path=args.input,
         output_db=args.output_db,
@@ -1096,6 +1347,8 @@ def main():
         timings=args.timings,
         shard_size=args.shard_size,
         frag_mode=args.frag_mode,
+        stride_mod=args.stride_mod,
+        stride_idx=args.stride_idx,
     )
 
 

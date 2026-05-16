@@ -14,7 +14,7 @@ def get_set_names(db_path):
     ]
     tables.sort(key=lambda t: int(re.search(r'\d+', t).group()))
 
-    reserved = {'env_id', 'core_smi_id'}
+    reserved = {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2', 'is_ring_closure'}
     result = {}
 
     for table in tables:

@@ -1080,6 +1080,8 @@ def run_parallel_shards(
     if parallel_shards < 2:
         raise ValueError("parallel_shards must be >= 2 (use run() for serial)")
 
+    start_time = time.time()
+
     parts_dir = Path(f"{output_db}.parts")
     parts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1206,6 +1208,31 @@ def run_parallel_shards(
         rebuild_index=True,
         verbose=verbose,
     )
+
+    elapsed = time.time() - start_time
+
+    if verbose:
+        # Orchestrator-side summary. Build-time counters (chunks processed,
+        # molecules processed, fragments generated, env/core pairs) only exist
+        # inside each child process and are deliberately omitted here.
+        with sqlite3.connect(output_db) as stats_conn:
+            cur = stats_conn.cursor()
+            env_count = cur.execute("SELECT COUNT(*) FROM envs").fetchone()[0]
+            frag_count = cur.execute("SELECT COUNT(*) FROM frags").fetchone()[0]
+            frag_h_count = cur.execute("SELECT COUNT(*) FROM frags_h").fetchone()[0]
+            radius_counts = {}
+            for radius in radii:
+                radius_counts[radius] = cur.execute(
+                    f"SELECT COUNT(rowid) FROM radius{radius}"
+                ).fetchone()[0]
+
+        print("Done.")
+        print(f"Unique envs: {env_count}")
+        print(f"Unique frags: {frag_count}")
+        print(f"Unique frags_h: {frag_h_count}")
+        for radius, count in radius_counts.items():
+            print(f"radius{radius} rows: {count}")
+        print(f"Elapsed: {elapsed:.1f}s")
 
 
 def main():

@@ -572,78 +572,113 @@ def _merge_counts(acc, new, set_names, radii):
                 dst[key] += cnt
 
 
-def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
-                 env_cache, smi_h_cache, core_smi_cache, timings=None):
-    """Flush accumulated data to DB using Python-side ID caches (no temp tables, no JOINs).
+def _flush_to_db(conn, envs, core_info, counts, set_names, radii, timings=None):
+    """Flush accumulated data to DB using per-flush local ID maps.
 
-    Uses ``INSERT OR IGNORE … RETURNING`` (SQLite ≥ 3.35) on multi-row VALUES
-    to fetch newly-inserted IDs in the same round-trip as the INSERT. The
-    Python-side caches mirror the DB content exactly, so the rows submitted
-    here are by construction not in the DB and ``RETURNING`` is guaranteed to
-    yield one row per submitted row.
+    For every flush we resolve (env, core_smi_h, core_smi) → row-id mappings
+    just for the rows we are about to touch. ``INSERT OR IGNORE … RETURNING``
+    returns IDs for newly-inserted rows; a fallback ``SELECT … WHERE x IN
+    (...)`` covers rows that were IGNORED because they already exist on disk.
+
+    The maps go out of scope at the end of the call, so there is no lifetime
+    state mirroring the DB in Python.
     """
 
-    # Step 1: resolve new envs
+    env_ids: dict = {}        # env_str        -> env_id
+    smi_h_ids: dict = {}      # H-canonical SMI -> core_smi_h_id
+    core_smi_ids: dict = {}   # core_smi       -> core_smi_id
+
+    # Step 1: resolve env_ids for every env touched in this flush.
     t0 = time.perf_counter()
-    new_envs = [e for e in envs if e not in env_cache]
-    if new_envs:
-        for i in range(0, len(new_envs), _SQLITE_BATCH):
-            batch = new_envs[i:i + _SQLITE_BATCH]
-            ph = ",".join(["(?)"] * len(batch))
+    env_list = list(envs)
+    for i in range(0, len(env_list), _SQLITE_BATCH):
+        batch = env_list[i:i + _SQLITE_BATCH]
+        ph = ",".join(["(?)"] * len(batch))
+        inserted = set()
+        for env_str, env_id in conn.execute(
+            f"INSERT OR IGNORE INTO envs (env) VALUES {ph} "
+            f"RETURNING env, env_id",
+            batch,
+        ):
+            env_ids[env_str] = env_id
+            inserted.add(env_str)
+        missing = [e for e in batch if e not in inserted]
+        if missing:
+            ph_sel = ",".join(["?"] * len(missing))
             for env_str, env_id in conn.execute(
-                f"INSERT OR IGNORE INTO envs (env) VALUES {ph} "
-                f"RETURNING env, env_id",
-                batch,
+                f"SELECT env, env_id FROM envs WHERE env IN ({ph_sel})",
+                missing,
             ):
-                env_cache[env_str] = env_id
+                env_ids[env_str] = env_id
     if timings is not None:
         timings["envs"] = time.perf_counter() - t0
 
-    # Step 2: resolve new H-canonical SMILES (frags_h)
+    # Step 2: resolve core_smi_h_ids for every H-canonical SMILES touched.
     t0 = time.perf_counter()
-    new_smi_h = []
-    seen_smi_h = set()
-    for core_smi, (core_num_atoms, dist2, core_smi_h) in core_info.items():
-        if core_smi_h and core_smi_h not in smi_h_cache and core_smi_h not in seen_smi_h:
-            new_smi_h.append(core_smi_h)
+    smi_h_list: list = []
+    seen_smi_h: set = set()
+    for core_smi, (_core_num_atoms, _dist2, core_smi_h) in core_info.items():
+        if core_smi_h and core_smi_h not in seen_smi_h:
+            smi_h_list.append(core_smi_h)
             seen_smi_h.add(core_smi_h)
 
-    if new_smi_h:
-        for i in range(0, len(new_smi_h), _SQLITE_BATCH):
-            batch = new_smi_h[i:i + _SQLITE_BATCH]
-            ph = ",".join(["(?)"] * len(batch))
+    for i in range(0, len(smi_h_list), _SQLITE_BATCH):
+        batch = smi_h_list[i:i + _SQLITE_BATCH]
+        ph = ",".join(["(?)"] * len(batch))
+        inserted = set()
+        for smi_val, h_id in conn.execute(
+            f"INSERT OR IGNORE INTO frags_h (smi) VALUES {ph} "
+            f"RETURNING smi, core_smi_h_id",
+            batch,
+        ):
+            smi_h_ids[smi_val] = h_id
+            inserted.add(smi_val)
+        missing = [s for s in batch if s not in inserted]
+        if missing:
+            ph_sel = ",".join(["?"] * len(missing))
             for smi_val, h_id in conn.execute(
-                f"INSERT OR IGNORE INTO frags_h (smi) VALUES {ph} "
-                f"RETURNING smi, core_smi_h_id",
-                batch,
+                f"SELECT smi, core_smi_h_id FROM frags_h WHERE smi IN ({ph_sel})",
+                missing,
             ):
-                smi_h_cache[smi_val] = h_id
+                smi_h_ids[smi_val] = h_id
     if timings is not None:
         timings["smi_h"] = time.perf_counter() - t0
 
-    # Step 3: resolve new core_smis (frags)
+    # Step 3: resolve core_smi_ids for every core touched.
     t0 = time.perf_counter()
-    new_cores = []  # (core_smi, core_smi_h_id)
+    core_inserts: list = []  # (core_smi, core_smi_h_id) — INSERT payload
+    core_smis_touched: list = []  # core_smis we need to resolve, regardless of new/old
     for core_smi, (_core_num_atoms, _dist2, core_smi_h) in core_info.items():
-        if core_smi not in core_smi_cache and core_smi_h and core_smi_h in smi_h_cache:
-            new_cores.append((core_smi, smi_h_cache[core_smi_h]))
+        if not core_smi_h or core_smi_h not in smi_h_ids:
+            continue
+        core_smis_touched.append(core_smi)
+        core_inserts.append((core_smi, smi_h_ids[core_smi_h]))
 
-    if new_cores:
-        # 2 columns per row → at most _SQLITE_BATCH/2 rows per chunk to stay
-        # under SQLITE_MAX_VARIABLE_NUMBER.
-        rows_per_chunk = max(1, _SQLITE_BATCH // 2)
-        for i in range(0, len(new_cores), rows_per_chunk):
-            batch = new_cores[i:i + rows_per_chunk]
-            ph = ",".join(["(?,?)"] * len(batch))
-            flat = [v for row in batch for v in row]
+    # 2 columns per row → at most _SQLITE_BATCH/2 rows per chunk to stay
+    # under SQLITE_MAX_VARIABLE_NUMBER.
+    rows_per_chunk = max(1, _SQLITE_BATCH // 2)
+    for i in range(0, len(core_inserts), rows_per_chunk):
+        batch = core_inserts[i:i + rows_per_chunk]
+        ph = ",".join(["(?,?)"] * len(batch))
+        flat = [v for row in batch for v in row]
+        inserted = set()
+        for core_smi, core_smi_id in conn.execute(
+            f"INSERT OR IGNORE INTO frags "
+            f"(core_smi, core_smi_h_id) "
+            f"VALUES {ph} "
+            f"RETURNING core_smi, core_smi_id",
+            flat,
+        ):
+            core_smi_ids[core_smi] = core_smi_id
+            inserted.add(core_smi)
+        missing = [r[0] for r in batch if r[0] not in inserted]
+        if missing:
+            ph_sel = ",".join(["?"] * len(missing))
             for core_smi, core_smi_id in conn.execute(
-                f"INSERT OR IGNORE INTO frags "
-                f"(core_smi, core_smi_h_id) "
-                f"VALUES {ph} "
-                f"RETURNING core_smi, core_smi_id",
-                flat,
+                f"SELECT core_smi, core_smi_id FROM frags WHERE core_smi IN ({ph_sel})",
+                missing,
             ):
-                core_smi_cache[core_smi] = core_smi_id
+                core_smi_ids[core_smi] = core_smi_id
     if timings is not None:
         timings["cores"] = time.perf_counter() - t0
 
@@ -663,8 +698,8 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii,
                 continue
             rows = []
             for (env, core_smi, is_ring_closure), cnt in mapping.items():
-                env_id = env_cache.get(env)
-                core_smi_id = core_smi_cache.get(core_smi)
+                env_id = env_ids.get(env)
+                core_smi_id = core_smi_ids.get(core_smi)
                 if env_id is None or core_smi_id is None:
                     continue
                 core_entry = core_info.get(core_smi)
@@ -813,25 +848,10 @@ def run(
 
     conn = _open_shard(current_shard_idx)
 
-    # Python-side ID caches: avoid temp tables and JOIN-based lookups.
-    env_cache: dict = {}       # env str          -> env_id
-    smi_h_cache: dict = {}     # H-canonical SMI  -> core_smi_h_id
-    core_smi_cache: dict = {}  # core_smi         -> core_smi_id
-
-    # Pre-warm caches in non-shard mode so that re-invocations on an existing
-    # DB (resume runs, or appending a new SMILES batch) can resolve env_ids /
-    # core_smi_ids that already exist on disk. Without this, _flush_to_db's
-    # `INSERT OR IGNORE … RETURNING` would not surface IDs for pre-existing
-    # rows and step 4 would silently drop radius{N} rows whose env collided
-    # with prior content. Shard mode always opens a fresh DB, so caches start
-    # empty there. For an empty DB these SELECTs return zero rows.
-    if shard_size is None:
-        for env_str, env_id in conn.execute("SELECT env, env_id FROM envs"):
-            env_cache[env_str] = env_id
-        for smi_val, h_id in conn.execute("SELECT smi, core_smi_h_id FROM frags_h"):
-            smi_h_cache[smi_val] = h_id
-        for core_smi, core_smi_id in conn.execute("SELECT core_smi, core_smi_id FROM frags"):
-            core_smi_cache[core_smi] = core_smi_id
+    # No lifetime Python-side ID caches: _flush_to_db builds per-flush local
+    # maps via INSERT OR IGNORE RETURNING with a SELECT fallback for rows that
+    # already exist on disk. This keeps memory bounded by per-flush size
+    # instead of growing with the cumulative DB size.
 
     processed_handle = None
     if processed_chunks:
@@ -885,7 +905,6 @@ def run(
         _flush_to_db(
             conn, acc_envs, acc_core_info, acc_counts,
             set_names, radii,
-            env_cache, smi_h_cache, core_smi_cache,
             timings=_timings,
         )
 
@@ -916,9 +935,6 @@ def run(
         conn.close()
         current_shard_idx += 1
         conn = _open_shard(current_shard_idx)
-        env_cache.clear()
-        smi_h_cache.clear()
-        core_smi_cache.clear()
         flush_counter = 0
         structures_in_current_shard = 0
         sys.stderr.write(

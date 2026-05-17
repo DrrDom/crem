@@ -38,6 +38,37 @@ _SQLITE_BATCH = 32000
 # children to skip on resume.
 _STRIDE_SHARD_SENTINEL = 0xC0DECAFE
 
+# How many MMPA failures each worker is allowed to log to stderr before going
+# silent. Bad-molecule edge cases in rdMMPA.FragmentMol can come in clusters
+# (millions of structures), so we print the first few smi_ids for traceability
+# then rely on the aggregate counter in the end-of-run summary.
+_MMPA_LOG_BUDGET = 10
+_mmpa_log_remaining = _MMPA_LOG_BUDGET
+
+
+def _safe_mmpa_fragment(mol, smi_id, **kwargs):
+    """Call rdMMPA.FragmentMol; swallow the two RDKit edge-case exceptions.
+
+    Returns ``(frags, n_failures)``. The fragmenter is observed to occasionally
+    raise ``IndexError: map::at`` or ``RuntimeError: Pre-condition Violation
+    (endIdx not connected to end atom of bond)`` deep in
+    ``MMPA::detail::addBondsFromTemplate``; both kill the whole worker if
+    propagated. We log the first few offending smi_ids per worker, count the
+    failure, and let the build continue with whatever fragments were produced
+    by the other passes.
+    """
+    global _mmpa_log_remaining
+    try:
+        return rdMMPA.FragmentMol(mol, **kwargs), 0
+    except (RuntimeError, IndexError) as exc:
+        if _mmpa_log_remaining > 0:
+            sys.stderr.write(
+                f"[mmpa-fail] {type(exc).__name__}: smi_id={smi_id or '<no_id>'}\n"
+            )
+            sys.stderr.flush()
+            _mmpa_log_remaining -= 1
+        return [], 1
+
 def create_indices(conn: sqlite3.Connection, radii: List[int], verbose: bool = True):
     """
     Create optimized indices on the new database.
@@ -235,49 +266,53 @@ def _parse_line(line, sep):
 def _fragment_mol_acyclic(smi, smi_id, mode):
     """Acyclic-bond MMPA fragmentation (the historical CReM fragmenter).
 
-    Yields (core, chains) tuples. The caller tags each pair with
-    is_ring_closure=0 before storing.
+    Returns ``(outlines_set, n_mmpa_failures)``. Each MMPA call is wrapped in
+    ``_safe_mmpa_fragment`` so that an RDKit edge-case exception only drops
+    the offending pass for the offending molecule rather than killing the
+    whole worker.
     """
     mol = Chem.MolFromSmiles(smi)
     if mol is None:
-        return set()
+        return set(), 0
 
     outlines = set()
+    n_failures = 0
 
     if mode == 0 or mode == 1:
-        frags = rdMMPA.FragmentMol(
-            mol,
+        frags4, f1 = _safe_mmpa_fragment(
+            mol, smi_id,
             pattern="[!#1]!@!=!#[!#1]",
             maxCuts=4,
             resultsAsMols=False,
             maxCutBonds=30,
         )
-        frags += rdMMPA.FragmentMol(
-            mol,
+        frags3, f2 = _safe_mmpa_fragment(
+            mol, smi_id,
             pattern="[!#1]!@!=!#[!#1]",
             maxCuts=3,
             resultsAsMols=False,
             maxCutBonds=30,
         )
-        frags = set(frags)
-        for core, chains in frags:
+        n_failures += f1 + f2
+        for core, chains in set(list(frags4) + list(frags3)):
             outlines.add((core, chains))
 
     if mode == 0 or mode == 2:
         mol = Chem.AddHs(mol)
         n = mol.GetNumAtoms() - mol.GetNumHeavyAtoms()
         if n < 60:  # TODO: remove this limit, it is not very reasonable
-            frags = rdMMPA.FragmentMol(
-                mol,
+            frags, f3 = _safe_mmpa_fragment(
+                mol, smi_id,
                 pattern="[#1]!@!=!#[!#1]",
                 maxCuts=1,
                 resultsAsMols=False,
                 maxCutBonds=100,   # TODO: why we need this?
             )
+            n_failures += f3
             for core, chains in frags:
                 outlines.add((core, chains))
 
-    return outlines
+    return outlines, n_failures
 
 
 def _fragment_mol_ring(smi, smi_id):
@@ -293,11 +328,16 @@ def _fragment_mol_ring(smi, smi_id):
     """
     mol = Chem.MolFromSmiles(smi)
     if mol is None:
-        return set()
+        return set(), 0
 
-    bond_rings = mol.GetRingInfo().BondRings()
+    try:
+        bond_rings = mol.GetRingInfo().BondRings()
+    except (RuntimeError, IndexError):
+        # Defensive: RDKit corner cases have been observed to throw here.
+        # Treat as "no rings to cut" and continue.
+        return set(), 0
     if not bond_rings:
-        return set()
+        return set(), 0
 
     outlines = set()
     seen_pairs = set()
@@ -340,23 +380,30 @@ def _fragment_mol_ring(smi, smi_id):
             outlines.add((smi_a, smi_b))
             outlines.add((smi_b, smi_a))
 
-    return outlines
+    return outlines, 0
 
 
 def _fragment_mol(smi, smi_id, mode, frag_mode):
     """Drive acyclic and/or ring-bond fragmentation per `frag_mode`.
 
-    `frag_mode` is one of 'acyclic', 'ring', 'both'. Returns a set of
-    (smi, smi_id, core, chains, is_ring_closure) tuples.
+    Returns ``(out, n_mmpa_failures)`` where ``out`` is a set of
+    ``(smi, smi_id, core, chains, is_ring_closure)`` tuples and
+    ``n_mmpa_failures`` is how many RDKit fragmentation calls were skipped
+    due to edge-case exceptions on this molecule.
     """
     out = set()
+    n_failures = 0
     if frag_mode in ('acyclic', 'both'):
-        for core, chains in _fragment_mol_acyclic(smi, smi_id, mode):
+        outlines, f = _fragment_mol_acyclic(smi, smi_id, mode)
+        n_failures += f
+        for core, chains in outlines:
             out.add((smi, smi_id, core, chains, 0))
     if frag_mode in ('ring', 'both'):
-        for core, chains in _fragment_mol_ring(smi, smi_id):
+        outlines, f = _fragment_mol_ring(smi, smi_id)
+        n_failures += f
+        for core, chains in outlines:
             out.add((smi, smi_id, core, chains, 1))
-    return out
+    return out, n_failures
 
 
 def _core_dist2(core_smi):
@@ -445,12 +492,14 @@ def _process_chunk(task):
         "lines": 0,
         "fragments": 0,
         "pairs": 0,
+        "skipped_mmpa": 0,
     }
 
     for smi, smi_id, member_sets in items:
         stats["lines"] += 1
-        frags = _fragment_mol(smi, smi_id, _MODE, _FRAG_MODE)
+        frags, n_mmpa_fail = _fragment_mol(smi, smi_id, _MODE, _FRAG_MODE)
         stats["fragments"] += len(frags)
+        stats["skipped_mmpa"] += n_mmpa_fail
         for _, _, core, context, is_ring_closure in frags:
             for radius in _RADII:
                 for env, core_smi, core_num_atoms in _env_core_from_fragment(
@@ -859,7 +908,7 @@ def run(
 
     input_handle, zstd_handle = _open_input(input_path, force_zstd)
 
-    total_stats = {"lines": 0, "fragments": 0, "pairs": 0}
+    total_stats = {"lines": 0, "fragments": 0, "pairs": 0, "skipped_mmpa": 0}
     chunks_processed = 0
     chunks_skipped = 0
     start_time = time.time()
@@ -1004,6 +1053,7 @@ def run(
                 total_stats["lines"] += stats["lines"]
                 total_stats["fragments"] += stats["fragments"]
                 total_stats["pairs"] += stats["pairs"]
+                total_stats["skipped_mmpa"] += stats.get("skipped_mmpa", 0)
                 structures_in_current_shard += stats["lines"]
 
                 if len(acc_chunk_ids) >= flush_every:
@@ -1094,6 +1144,7 @@ def run(
         print(f"Molecules processed: {total_stats['lines']}")
         print(f"Fragments generated: {total_stats['fragments']}")
         print(f"Env/core pairs: {total_stats['pairs']}")
+        print(f"MMPA failures: {total_stats['skipped_mmpa']}")
         print(f"Unique envs: {env_count}")
         print(f"Unique frags: {frag_count}")
         print(f"Unique frags_h: {frag_h_count}")

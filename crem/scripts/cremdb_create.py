@@ -163,6 +163,38 @@ def _resolve_set_names(values):
     return [_validate_set_name(values[0])], None
 
 
+def _build_membership(set_names, set_ids):
+    """Fold ``set_ids`` into a single per-molecule lookup structure.
+
+    Returns ``(membership, all_mols_mask)`` where:
+
+      * ``membership`` is ``dict[smi_id, int]`` — bit ``i`` is set when
+        ``smi_id`` belongs to ``set_names[i]``. Sets that have no ID file
+        (membership is universal) are not represented in ``membership``;
+        their bits live in ``all_mols_mask``. Returns ``None`` if there is
+        no per-ID filtering at all (single set name without files).
+      * ``all_mols_mask`` is the bitmask of sets that include every input
+        molecule (``set_ids[name] is None``).
+
+    Folding into one dict deduplicates IDs that appear in multiple sets,
+    which materially shrinks the in-memory index when set files are nested
+    subsets of each other.
+    """
+    if set_ids is None:
+        return None, (1 << len(set_names)) - 1
+    membership: dict = {}
+    all_mols_mask = 0
+    for i, name in enumerate(set_names):
+        ids = set_ids.get(name)
+        bit = 1 << i
+        if ids is None:
+            all_mols_mask |= bit
+            continue
+        for smi_id in ids:
+            membership[smi_id] = membership.get(smi_id, 0) | bit
+    return membership, all_mols_mask
+
+
 # Workers are forked Python processes; each owns an independent cache. The
 # same core_smi typically appears many times across chunks within a worker
 # (it's the SMILES of a fragment core, of which there are far fewer than
@@ -375,28 +407,37 @@ def _env_core_from_fragment(core, context, radius, keep_stereo, max_heavy_atoms)
     return output
 
 
-def _init_worker(radii, keep_stereo, max_heavy_atoms, mode, sep, set_names, set_ids, frag_mode):
+def _init_worker(radii, keep_stereo, max_heavy_atoms, mode, set_names, frag_mode):
+    """Initialise fragmentation workers.
+
+    The set-membership index is intentionally NOT shipped here — set decisions
+    are made in the orchestrating main process so workers don't fork-inherit
+    huge per-file ID sets that Python's refcount-on-access would COW-duplicate
+    into every worker.
+    """
     global _RADII
     global _KEEP_STEREO
     global _MAX_HEAVY_ATOMS
     global _MODE
-    global _SEP
     global _SET_NAMES
-    global _SET_IDS
     global _FRAG_MODE
     _RADII = radii
     _KEEP_STEREO = keep_stereo
     _MAX_HEAVY_ATOMS = max_heavy_atoms
     _MODE = mode
-    _SEP = sep
     _SET_NAMES = set_names
-    _SET_IDS = set_ids
     _FRAG_MODE = frag_mode
     RDLogger.DisableLog('rdApp.warning')
 
 
 def _process_chunk(task):
-    chunk_id, lines = task
+    """Fragment one chunk of pre-parsed, pre-filtered molecules.
+
+    The main process performs line parsing and set-membership filtering and
+    hands workers ``(smi, smi_id, member_sets)`` triples. Workers therefore
+    never see the (potentially huge) per-set ID index.
+    """
+    chunk_id, items = task
     envs = set()
     core_info = {}
     counts = {name: {r: defaultdict(int) for r in _RADII} for name in _SET_NAMES}
@@ -406,23 +447,8 @@ def _process_chunk(task):
         "pairs": 0,
     }
 
-    for line in lines:
-        smi, smi_id = _parse_line(line, _SEP)
-        if not smi:
-            continue
+    for smi, smi_id, member_sets in items:
         stats["lines"] += 1
-        if _SET_IDS is None:
-            member_sets = _SET_NAMES
-        else:
-            member_sets = []
-            for name, ids in _SET_IDS.items():
-                if ids is None:
-                    member_sets.append(name)
-                elif smi_id in ids:
-                    member_sets.append(name)
-            if not member_sets:
-                continue
-
         frags = _fragment_mol(smi, smi_id, _MODE, _FRAG_MODE)
         stats["fragments"] += len(frags)
         for _, _, core, context, is_ring_closure in frags:
@@ -745,6 +771,14 @@ def run(
     if not radii:
         raise ValueError("At least one radius must be specified")
 
+    # Build the per-molecule membership index once, in the main process.
+    # Workers never see set_ids — see _init_worker's docstring for the why.
+    membership, all_mols_mask = _build_membership(set_names, set_ids)
+    # The full-membership case (all bits set, no per-ID filtering) lets us
+    # ship a single shared tuple as `member_sets` for every molecule.
+    full_member_sets = tuple(set_names) if membership is None else None
+    set_names_tuple = tuple(set_names)
+
     skip_chunks = _read_chunk_ids(processed_chunks)
 
     RDLogger.DisableLog("rdApp.warning")
@@ -821,9 +855,7 @@ def run(
             keep_stereo,
             max_heavy_atoms,
             mode,
-            sep,
             set_names,
-            set_ids,
             frag_mode,
         ),
     )
@@ -896,6 +928,14 @@ def run(
 
     try:
         def task_iter():
+            """Yield (chunk_id, items) where items are pre-parsed and
+            pre-filtered (smi, smi_id, member_sets) triples.
+
+            All line parsing and set-membership decisions happen here in the
+            main process, so workers don't need the (potentially huge) ID
+            index. Chunks whose every molecule is filtered out (no member
+            sets) are dropped entirely — the pool never sees them.
+            """
             nonlocal chunks_skipped
             for chunk_id, lines in enumerate(_iter_chunks(input_handle, chunk_size)):
                 if stride_mod > 1 and chunk_id % stride_mod != stride_idx:
@@ -903,7 +943,27 @@ def run(
                 if chunk_id in skip_chunks:
                     chunks_skipped += 1
                     continue
-                yield (chunk_id, lines)
+                items = []
+                for line in lines:
+                    smi, smi_id = _parse_line(line, sep)
+                    if not smi:
+                        continue
+                    if membership is None:
+                        # No per-ID filtering — every molecule is in every set.
+                        items.append((smi, smi_id, full_member_sets))
+                        continue
+                    mask = membership.get(smi_id, 0) | all_mols_mask
+                    if mask == 0:
+                        continue
+                    member_sets = tuple(
+                        name for i, name in enumerate(set_names_tuple)
+                        if mask & (1 << i)
+                    )
+                    items.append((smi, smi_id, member_sets))
+                # Yield even all-filtered chunks so chunk_id still flows
+                # through the pool and gets persisted in processed_chunks;
+                # without that, resume re-parses these chunks every time.
+                yield (chunk_id, items)
 
         tasks = task_iter()
 

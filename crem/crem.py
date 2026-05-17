@@ -20,6 +20,7 @@ __patt_remove_brackets = re.compile('\(\)')
 
 __molzip_params = rdmolops.MolzipParams()
 __molzip_params.label = rdmolops.MolzipLabel.AtomMapNumber
+__explicit_h_query = Chem.MolFromSmarts("[#1]")
 
 
 def __check_db_existence(fname):
@@ -462,7 +463,8 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
         sys.stderr.flush()
         return
 
-    smi = Chem.MolToSmiles(Chem.RemoveHs(p), isomericSmiles=True)
+    smi_mol = Chem.RemoveHs(p) if p.HasSubstructMatch(__explicit_h_query) else p
+    smi = Chem.MolToSmiles(smi_mol, isomericSmiles=True)
     yield smi, p, transformation_smi
 
 

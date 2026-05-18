@@ -417,7 +417,7 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
         # Renumber the context Mol so its * map numbers match the
         # standardised env / DB-side core numbering.
         std_context = __renumber_attachment_points(context, old_to_new_map)
-        context_smi = Chem.MolToSmiles(std_context, isomericSmiles=keep_stereo)
+        context_smi = Chem.MolToSmiles(std_context, isomericSmiles=True)
         output.add((env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist))
 
     res = []

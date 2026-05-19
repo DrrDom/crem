@@ -4,6 +4,7 @@ from rdkit import Chem
 
 
 ATOM_INDEX_PROP = "Index"
+RING_CUT_DUMMY_ISOTOPE = 1
 
 
 def _ensure_atom_indices(mol):
@@ -120,6 +121,12 @@ def _convert_dummy_isotopes_to_maps(mol):
                 atom.SetAtomMapNum(isotope)
 
 
+def _label_ring_cut_dummies(mol, ring_cut_maps):
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() == 0 and atom.GetAtomMapNum() in ring_cut_maps:
+            atom.SetIsotope(RING_CUT_DUMMY_ISOTOPE)
+
+
 def _combine_mols(mols):
     if not mols:
         return None
@@ -129,8 +136,9 @@ def _combine_mols(mols):
     return combined
 
 
-def _materialize_fragment(mol, cut_bond_ids, core_atom_ids):
+def _materialize_fragment(mol, cut_bond_ids, core_atom_ids, ring_cut_maps=None):
     cut_bond_ids = list(cut_bond_ids)
+    ring_cut_maps = set(ring_cut_maps or ())
     dummy_labels = [(i + 1, i + 1) for i in range(len(cut_bond_ids))]
     try:
         cut = Chem.FragmentOnBonds(mol, cut_bond_ids, dummyLabels=dummy_labels)
@@ -167,6 +175,10 @@ def _materialize_fragment(mol, cut_bond_ids, core_atom_ids):
     )
     if n_context_attachments != n_core_attachments:
         return None
+
+    if n_core_attachments > 2 and ring_cut_maps:
+        _label_ring_cut_dummies(core_mol, ring_cut_maps)
+        _label_ring_cut_dummies(context_mol, ring_cut_maps)
 
     return core_mol, context_mol, core_atom_ids
 
@@ -242,6 +254,7 @@ def iter_partial_ring_fragments(mol, max_acyclic_cuts=2, min_core_atoms=None, ma
                             mol,
                             sorted(ring_cut_bond_ids) + sorted(side_bond_ids),
                             core_atom_ids,
+                            ring_cut_maps=range(1, len(ring_cut_bond_ids) + 1),
                         )
                         if fragment is not None:
                             yield fragment

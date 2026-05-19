@@ -235,7 +235,22 @@ def _build_membership(set_names, set_ids):
 # per worker.
 @lru_cache(maxsize=200_000)
 def _replace_attachment_points_with_h(smiles):
-    return Chem.CanonSmiles(smiles.replace('*', 'H'))
+    mol = Chem.MolFromSmiles(smiles, sanitize=False)
+    if mol is None:
+        return ''
+
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() == 0:
+            atom.SetAtomicNum(1)
+            atom.SetIsotope(0)
+            atom.SetAtomMapNum(0)
+            atom.SetNoImplicit(True)
+            atom.SetNumExplicitHs(0)
+
+    if Chem.SanitizeMol(mol, catchErrors=True):
+        return None
+    mol = Chem.RemoveHs(mol, sanitize=True)
+    return Chem.MolToSmiles(mol, isomericSmiles=True)
 
 
 def _iter_chunks(handle, chunk_size):
@@ -427,7 +442,7 @@ def _count_heavy_atoms(smi):
     return mm.GetNumHeavyAtoms() if mm else float('inf')
 
 
-def _env_core_from_fragment(core, context, radius, keep_stereo):
+def _env_core_from_fragment(core, context, radius, keep_stereo, preserve_dummy_isotopes=False):
     output = []
 
     if not core:  # this part will never be invoked in the current implementation because output of fragmwentation was reshaped
@@ -437,12 +452,24 @@ def _env_core_from_fragment(core, context, radius, keep_stereo):
                 if ctx == '[H][*:1]':
                     continue
                 num_heavy_atoms = _count_heavy_atoms(c)
-                env, cores = get_std_context_core_permutations(ctx, c, radius, keep_stereo)
+                env, cores = get_std_context_core_permutations(
+                    ctx,
+                    c,
+                    radius,
+                    keep_stereo,
+                    preserve_dummy_isotopes=preserve_dummy_isotopes,
+                )
                 if env and cores:
                     output.append((env, cores[0], num_heavy_atoms))  # only one item in cores
     else:
         num_heavy_atoms = _count_heavy_atoms(core)
-        env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
+        env, cores = get_std_context_core_permutations(
+            context,
+            core,
+            radius,
+            keep_stereo,
+            preserve_dummy_isotopes=preserve_dummy_isotopes,
+        )
         if env and cores:
             for core_smi in cores:
                 output.append((env, core_smi, num_heavy_atoms))
@@ -509,6 +536,7 @@ def _process_chunk(task):
                     context,
                     radius,
                     _KEEP_STEREO,
+                    preserve_dummy_isotopes=bool(is_ring_closure),
                 ):
                     for set_name in member_sets:
                         counts[set_name][radius][(env, core_smi, is_ring_closure)] += 1

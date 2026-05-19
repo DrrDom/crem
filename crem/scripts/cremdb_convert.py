@@ -29,7 +29,7 @@ import re
 from tqdm import tqdm
 from rdkit import Chem, RDLogger
 from crem.mol_context import combine_core_env_to_rxn_smarts
-from crem.scripts.cremdb_create import create_indices
+from crem.scripts.cremdb_create import create_indices, _replace_attachment_points_with_h
 
 
 def replace_attachment_points_with_h(smiles: str) -> str:
@@ -42,8 +42,7 @@ def replace_attachment_points_with_h(smiles: str) -> str:
     Returns:
         SMILES string with hydrogens instead of attachment points
     """
-    # Simple replacement - in production you might want to use RDKit for proper canonicalization
-    return Chem.CanonSmiles(smiles.replace('*', 'H'))
+    return _replace_attachment_points_with_h(smiles)
 
 
 def _validate_set_name(set_name: str) -> str:

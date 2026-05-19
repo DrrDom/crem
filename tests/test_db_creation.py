@@ -197,9 +197,37 @@ def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
               AND r.dist2 != 0
               AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) > 2
         """).fetchone()[0]
+        labeled_partial = c.execute("""
+            SELECT count(*)
+            FROM radius2 r
+            JOIN frags f ON r.core_smi_id = f.core_smi_id
+            WHERE r.is_ring_closure = 1
+              AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) > 2
+              AND instr(f.core_smi, '[1*') > 0
+        """).fetchone()[0]
+        labeled_env_partial = c.execute("""
+            SELECT count(*)
+            FROM radius2 r
+            JOIN frags f ON r.core_smi_id = f.core_smi_id
+            JOIN envs e ON r.env_id = e.env_id
+            WHERE r.is_ring_closure = 1
+              AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) > 2
+              AND instr(e.env, '[1*') > 0
+        """).fetchone()[0]
+        labeled_two_point = c.execute("""
+            SELECT count(*)
+            FROM radius2 r
+            JOIN frags f ON r.core_smi_id = f.core_smi_id
+            WHERE r.is_ring_closure = 1
+              AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) = 2
+              AND instr(f.core_smi, '[1*') > 0
+        """).fetchone()[0]
 
     assert by_stars[2][0] > 0
     assert by_stars[2][2] > 0
     assert by_stars[3][0] > 0
     assert by_stars[4][0] > 0
     assert nonzero_dist_partial == 0
+    assert labeled_partial > 0
+    assert labeled_env_partial > 0
+    assert labeled_two_point == 0

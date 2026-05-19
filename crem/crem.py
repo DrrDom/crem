@@ -472,6 +472,7 @@ def __fragment_mol_partial_cycles(mol, radius=3, keep_stereo=False, protected_id
             radius,
             keep_stereo,
             return_att_map=True,
+            preserve_dummy_isotopes=True,
         )
         if env is None or not frag:
             continue
@@ -539,7 +540,18 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
     transformation_smi = f"{old_frag_smi}>>{new_frag_smi}"
     try:
         p = rdmolops.molzip(Chem.CombineMols(context_mol, repl_core_mol), __molzip_params)
-    except RuntimeError:
+    except RuntimeError as exc:
+        try:
+            context_smi = Chem.MolToSmiles(context_mol, isomericSmiles=True)
+        except Exception:
+            context_smi = '<unavailable>'
+        sys.stderr.write(
+            f"molzip RuntimeError: {exc}. "
+            f"old fragment: {old_frag_smi}; "
+            f"new fragment: {new_frag_smi}; "
+            f"context mol: {context_smi}\n"
+        )
+        sys.stderr.flush()
         return
     e = Chem.SanitizeMol(p, catchErrors=True)
     if e:

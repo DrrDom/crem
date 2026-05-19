@@ -15,6 +15,15 @@ def test_mutate_same_seed_five_runs(db):
     assert all(r == results[0] for r in results[1:])
 
 
+def test_mutate_ring_closures_same_seed_five_runs(db_rc):
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
+    kw = dict(radius=1, min_freq=0, min_size=1, max_size=8,
+              min_inc=-2, max_inc=4, ring_closures=True,
+              max_replacements=6, seed=42)
+    results = [list(mutate_mol(mol, db_rc, **kw)) for _ in range(5)]
+    assert all(r == results[0] for r in results[1:])
+
+
 def test_grow_same_seed_five_runs(db):
     mol = Chem.MolFromSmiles("c1ccccc1N")
     kw = dict(radius=3, min_freq=0, min_atoms=1, max_atoms=3, max_replacements=2, seed=7)

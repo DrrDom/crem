@@ -1,0 +1,247 @@
+from itertools import combinations
+
+from rdkit import Chem
+
+
+ATOM_INDEX_PROP = "Index"
+
+
+def _ensure_atom_indices(mol):
+    mol = Chem.Mol(mol)
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() and not atom.HasProp(ATOM_INDEX_PROP):
+            atom.SetIntProp(ATOM_INDEX_PROP, atom.GetIdx())
+    return mol
+
+
+def _bond_atom_ids(mol, bond_id):
+    bond = mol.GetBondWithIdx(bond_id)
+    return bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+
+
+def _components_after_cuts(mol, cut_bond_ids, allowed_atoms=None):
+    if allowed_atoms is None:
+        allowed_atoms = set(range(mol.GetNumAtoms()))
+    else:
+        allowed_atoms = set(allowed_atoms)
+
+    adjacency = {idx: [] for idx in allowed_atoms}
+    for bond in mol.GetBonds():
+        bond_id = bond.GetIdx()
+        if bond_id in cut_bond_ids:
+            continue
+        begin = bond.GetBeginAtomIdx()
+        end = bond.GetEndAtomIdx()
+        if begin in allowed_atoms and end in allowed_atoms:
+            adjacency[begin].append(end)
+            adjacency[end].append(begin)
+
+    components = []
+    seen = set()
+    for atom_id in sorted(allowed_atoms):
+        if atom_id not in seen:
+            stack = [atom_id]
+            seen.add(atom_id)
+            component = set()
+            while stack:
+                current = stack.pop()
+                component.add(current)
+                for neighbor in adjacency[current]:
+                    if neighbor not in seen:
+                        seen.add(neighbor)
+                        stack.append(neighbor)
+            components.append(component)
+    return components  # tuple of sets of atom ids
+
+
+def _ring_atoms_for_bonds(mol, bond_ids):
+    atom_ids = set()
+    for bond_id in bond_ids:
+        begin, end = _bond_atom_ids(mol, bond_id)
+        atom_ids.add(begin)
+        atom_ids.add(end)
+    return atom_ids
+
+
+def _acyclic_side_cut_candidates(mol, base_atoms, ring_arc_atoms, ring_cut_bond_ids):
+    candidates = []
+    ring_cut_bond_ids = set(ring_cut_bond_ids)
+    for bond in mol.GetBonds():
+        bond_id = bond.GetIdx()
+        if bond_id in ring_cut_bond_ids:
+            continue
+        if bond.IsInRing() or bond.GetBondType() != Chem.BondType.SINGLE:
+            continue
+        begin = bond.GetBeginAtomIdx()
+        end = bond.GetEndAtomIdx()
+        if begin not in base_atoms or end not in base_atoms:
+            continue
+        if not bond.GetBeginAtom().GetAtomicNum() or not bond.GetEndAtom().GetAtomicNum():
+            continue
+
+        components = _components_after_cuts(
+            mol,
+            ring_cut_bond_ids | {bond_id},
+            allowed_atoms=base_atoms,
+        )
+        core_side = [component for component in components if ring_arc_atoms <= component]
+        if len(core_side) != 1:
+            continue
+        detached = [component for component in components if component is not core_side[0]]
+        if len(detached) != 1:
+            continue
+        candidates.append((bond_id, detached[0]))
+    return candidates
+
+
+def _valid_side_cut_combo(combo):
+    detached_sets = [detached for _, detached in combo]
+    for i, detached in enumerate(detached_sets):
+        for other in detached_sets[i + 1:]:
+            if detached & other:
+                return False
+    return True
+
+
+def _atom_index_set(mol):
+    atom_ids = set()
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() and atom.HasProp(ATOM_INDEX_PROP):
+            atom_ids.add(atom.GetIntProp(ATOM_INDEX_PROP))
+    return atom_ids
+
+
+def _convert_dummy_isotopes_to_maps(mol):
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() == 0:
+            isotope = atom.GetIsotope()
+            if isotope:
+                atom.SetIsotope(0)
+                atom.SetAtomMapNum(isotope)
+
+
+def _combine_mols(mols):
+    if not mols:
+        return None
+    combined = Chem.Mol(mols[0])
+    for mol in mols[1:]:
+        combined = Chem.CombineMols(combined, mol)
+    return combined
+
+
+def _materialize_fragment(mol, cut_bond_ids, core_atom_ids):
+    cut_bond_ids = list(cut_bond_ids)
+    dummy_labels = [(i + 1, i + 1) for i in range(len(cut_bond_ids))]
+    try:
+        cut = Chem.FragmentOnBonds(mol, cut_bond_ids, dummyLabels=dummy_labels)
+        pieces = list(Chem.GetMolFrags(cut, asMols=True))
+    except Exception:
+        return None
+
+    core_mol = None
+    context_mols = []
+    for piece in pieces:
+        _convert_dummy_isotopes_to_maps(piece)
+        atom_ids = _atom_index_set(piece)
+        if atom_ids == core_atom_ids:
+            if core_mol is not None:
+                return None
+            core_mol = piece
+        else:
+            context_mols.append(piece)
+
+    if core_mol is None or not context_mols:
+        return None
+
+    n_core_attachments = sum(
+        atom.GetAtomicNum() == 0 and atom.GetAtomMapNum() > 0
+        for atom in core_mol.GetAtoms()
+    )
+    if not 2 <= n_core_attachments <= 4:
+        return None
+
+    context_mol = _combine_mols(context_mols)
+    n_context_attachments = sum(
+        atom.GetAtomicNum() == 0 and atom.GetAtomMapNum() > 0
+        for atom in context_mol.GetAtoms()
+    )
+    if n_context_attachments != n_core_attachments:
+        return None
+
+    return core_mol, context_mol, core_atom_ids
+
+
+def iter_partial_ring_fragments(mol, max_acyclic_cuts=2, min_core_atoms=None, max_core_atoms=None):
+    """Yield connected partial-ring fragments with 2-4 context attachments.
+
+    Two non-aromatic single bonds from the same ring are always cut. Up to
+    `max_acyclic_cuts` additional acyclic single heavy-atom bonds may be cut
+    on distinct detached side components of the selected ring arc.
+    """
+    mol = _ensure_atom_indices(mol)
+    try:
+        bond_rings = mol.GetRingInfo().BondRings()
+    except (RuntimeError, IndexError):
+        return
+
+    if not bond_rings:
+        return
+
+    seen_ring_pairs = set()
+    for ring_bond_ids in bond_rings:
+        ring_bond_ids = tuple(sorted(ring_bond_ids))
+        ring_atom_ids = _ring_atoms_for_bonds(mol, ring_bond_ids)
+        for bond_1, bond_2 in combinations(ring_bond_ids, 2):
+            ring_pair = (bond_1, bond_2)
+            if ring_pair in seen_ring_pairs:
+                continue
+            seen_ring_pairs.add(ring_pair)
+
+            b1 = mol.GetBondWithIdx(bond_1)
+            b2 = mol.GetBondWithIdx(bond_2)
+            if b1.GetBondType() != Chem.BondType.SINGLE or b1.GetIsAromatic():
+                continue
+            if b2.GetBondType() != Chem.BondType.SINGLE or b2.GetIsAromatic():
+                continue
+
+            ring_cut_bond_ids = {bond_1, bond_2}
+            base_components = _components_after_cuts(mol, ring_cut_bond_ids)
+            if len(base_components) != 2:
+                continue
+
+            for base_atoms in base_components:
+                ring_arc_atoms = base_atoms & ring_atom_ids
+                if not ring_arc_atoms:
+                    continue
+                side_candidates = _acyclic_side_cut_candidates(
+                    mol,
+                    base_atoms,
+                    ring_arc_atoms,
+                    ring_cut_bond_ids,
+                )
+                max_cuts = min(max_acyclic_cuts, len(side_candidates))
+                for n_cuts in range(max_cuts + 1):
+                    for side_combo in combinations(side_candidates, n_cuts):
+                        if not _valid_side_cut_combo(side_combo):
+                            continue
+                        detached = set()
+                        side_bond_ids = []
+                        for bond_id, detached_atoms in side_combo:
+                            side_bond_ids.append(bond_id)
+                            detached.update(detached_atoms)
+                        core_atoms = set(base_atoms) - detached
+                        core_atom_ids = {
+                            mol.GetAtomWithIdx(atom_id).GetIntProp(ATOM_INDEX_PROP)
+                            for atom_id in core_atoms
+                        }
+                        if min_core_atoms is not None and len(core_atom_ids) < min_core_atoms:
+                            continue
+                        if max_core_atoms is not None and len(core_atom_ids) > max_core_atoms:
+                            continue
+                        fragment = _materialize_fragment(
+                            mol,
+                            sorted(ring_cut_bond_ids) + sorted(side_bond_ids),
+                            core_atom_ids,
+                        )
+                        if fragment is not None:
+                            yield fragment

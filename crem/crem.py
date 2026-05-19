@@ -3,6 +3,7 @@
 import os
 import sys
 import re
+import math
 from collections import defaultdict
 from rdkit import Chem, RDLogger
 from rdkit.Chem import rdmolops
@@ -13,6 +14,7 @@ import sqlite3
 import random
 from itertools import product, combinations
 from crem.mol_context import patt_remove_map
+from crem.ring_fragments import _ensure_atom_indices, iter_partial_ring_fragments
 
 __cycle_pattern = re.compile("[a-zA-Z\]][1-9]+")
 Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
@@ -76,7 +78,8 @@ def __context_to_std_smi(context_mol, old_to_new_map):
     return Chem.MolToSmiles(context_std, isomericSmiles=True)
 
 
-def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_ids=None, symmetry_fixes=False):
+def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_ids=None, symmetry_fixes=False,
+                   min_core_atoms=None, max_core_atoms=None, include_cyclic_cores=False):
     """
     INPUT:
         mol - Mol
@@ -130,6 +133,10 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
         if protected_ids and not protected_ids.isdisjoint(core_ids):
             return
         num_heavy_atoms = core_mol.GetNumHeavyAtoms()
+        if (min_core_atoms is not None and num_heavy_atoms < min_core_atoms) or \
+                (max_core_atoms is not None and num_heavy_atoms > max_core_atoms):
+            if not include_cyclic_cores or not core_mol.GetRingInfo().NumRings():
+                return
         env, frag, old_to_new_map = get_canon_context_core(context_mol, core_mol, radius, keep_stereo,
                                                            return_att_map=True)
         context_std = __context_to_std_smi(context_mol, old_to_new_map)
@@ -427,6 +434,84 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
     return res
 
 
+def __fragment_mol_partial_cycles(mol, radius=3, keep_stereo=False, protected_ids=None, symmetry_fixes=False,
+                                  return_ids=True, min_core_atoms=None, max_core_atoms=None,
+                                  include_cyclic_cores=False):
+    """Fragment partial cycles for mutate_mol(ring_closures=True).
+
+    The source core is one connected ring arc made by two non-aromatic single
+    ring-bond cuts plus 0-2 acyclic side cuts. Explicit hydrogens are stripped
+    before enumeration so they do not create distinct ring-replacement contexts.
+    """
+    protected_ids = set(protected_ids) if protected_ids else set()
+
+    work_mol = _ensure_atom_indices(mol) if return_ids else Chem.Mol(mol)
+    work_mol = Chem.RemoveHs(work_mol)
+
+    atom_specific_output = set()
+    iter_min_core_atoms = None if include_cyclic_cores else min_core_atoms
+    iter_max_core_atoms = None if include_cyclic_cores else max_core_atoms
+    for core_mol, context_mol, core_atom_ids in iter_partial_ring_fragments(
+        work_mol,
+        max_acyclic_cuts=2,
+        min_core_atoms=iter_min_core_atoms,
+        max_core_atoms=iter_max_core_atoms,
+    ):
+        core_atom_ids = tuple(sorted(core_atom_ids))
+        if protected_ids and not protected_ids.isdisjoint(core_atom_ids):
+            continue
+
+        num_heavy_atoms = core_mol.GetNumHeavyAtoms()
+        if (min_core_atoms is not None and num_heavy_atoms < min_core_atoms) or \
+                (max_core_atoms is not None and num_heavy_atoms > max_core_atoms):
+            if not include_cyclic_cores or not core_mol.GetRingInfo().NumRings():
+                continue
+        env, frag, old_to_new_map = get_canon_context_core(
+            context_mol,
+            core_mol,
+            radius,
+            keep_stereo,
+            return_att_map=True,
+        )
+        if env is None or not frag:
+            continue
+        context_std = __context_to_std_smi(context_mol, old_to_new_map)
+        atom_specific_output.add((env, frag, core_atom_ids, context_std, num_heavy_atoms))
+
+    if symmetry_fixes:
+        output = atom_specific_output
+    else:
+        output = {
+            (env, frag, tuple(), context_smi, num_heavy_atoms)
+            for env, frag, _, context_smi, num_heavy_atoms in atom_specific_output
+        }
+
+    res = []
+    for env, frag, _, context_smi, num_heavy_atoms in output:
+        context_mol = Chem.MolFromSmiles(context_smi)
+        res.append((env, frag, context_mol, num_heavy_atoms))
+    return res
+
+
+# def __molzip_would_duplicate_bond(mol):
+#     neighbors_by_map = defaultdict(list)
+#     for atom in mol.GetAtoms():
+#         if atom.GetAtomicNum() != 0 or not atom.GetAtomMapNum():
+#             continue
+#         heavy_neighbors = [neighbor.GetIdx() for neighbor in atom.GetNeighbors() if neighbor.GetAtomicNum()]
+#         if len(heavy_neighbors) == 1:
+#             neighbors_by_map[atom.GetAtomMapNum()].append(heavy_neighbors[0])
+#
+#     for neighbor_ids in neighbors_by_map.values():
+#         if len(neighbor_ids) != 2:
+#             continue
+#         if neighbor_ids[0] == neighbor_ids[1]:
+#             return True
+#         if mol.GetBondBetweenAtoms(neighbor_ids[0], neighbor_ids[1]) is not None:
+#             return True
+#     return False
+
+
 def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=None, frag_ids_1=None, frag_ids_2=None,
                    intramol=False):
     """
@@ -452,7 +537,10 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
     repl_core_mol = Chem.MolFromSmiles(new_frag_smi)
 
     transformation_smi = f"{old_frag_smi}>>{new_frag_smi}"
-    p = rdmolops.molzip(Chem.CombineMols(context_mol, repl_core_mol), __molzip_params)
+    try:
+        p = rdmolops.molzip(Chem.CombineMols(context_mol, repl_core_mol), __molzip_params)
+    except RuntimeError:
+        return
     e = Chem.SanitizeMol(p, catchErrors=True)
     if e:
         sys.stderr.write(f"Molecule {Chem.MolToSmiles(p, isomericSmiles=True)} caused "
@@ -537,7 +625,7 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
         # core_num_atoms and dist2 are denormalized into radius{N} alongside
         # env_id / core_smi_id and must be excluded when listing set columns.
         radius_columns = schema_meta['radius_columns']
-        reserved = {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2'}
+        reserved = {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2', 'is_ring_closure'}
         available = sorted(radius_columns - reserved)
 
         # Normalize set_names: None → all available set columns
@@ -625,11 +713,9 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
             else:
                 sql += f" AND r.dist2 = {_sql_value(dist)}"
 
-        # Filter by fragment provenance. is_ring_closure=1 restricts to arc-cut
-        # rows (ring-closure mode); None disables the filter, returning rows of
-        # both provenances (the broad mode used by __gen_replacements when
-        # ring_closure=False). is_ring_closure=0 is still accepted for callerss
-        # that want acyclic-only.
+        # Filter by fragment provenance. is_ring_closure=1 restricts to
+        # ring-cut rows; 0 restricts to acyclic-cut rows; None disables the
+        # filter, which is used by broad cycle generation.
         if is_ring_closure is not None:
             radius_columns = schema_meta['radius_columns']
             if 'is_ring_closure' not in radius_columns:
@@ -682,11 +768,20 @@ def _get_replacements(db_cur, radius, row_ids, schema_meta=None):
     return db_cur.fetchall()
 
 
+def __fragment_tuple_sort_key(item):
+    context_mol = item[2]
+    if isinstance(context_mol, Chem.Mol):
+        context_smi = Chem.MolToSmiles(context_mol, isomericSmiles=True)
+    else:
+        raise TypeError(f'context_mol can only be RDKit.Mol object: {type(context_mol)}')
+    return item[0], item[1], context_smi, item[3], repr(item[4]), -1 if item[5] is None else item[5]
+
+
 def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_size=8, min_rel_size=0, max_rel_size=1,
                        min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
                        protected_ids_1=None, protected_ids_2=None, min_freq=10, set_names=None,
                        symmetry_fixes=False, filter_func=None, sample_func=None, return_frag_smi_only=False,
-                       ring_closure=None, ring_size=None,
+                       operation="mutate", ring_closures=False, ring_size=None,
                        seed=None, **kwargs):
 
     rng = random.Random(seed)
@@ -697,37 +792,96 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
     if isinstance(mol1, Chem.Mol) and isinstance(mol2, Chem.Mol):
         link = True
 
-    if ring_closure is True:
-        # Strict cycle mode: arc-cut fragmenter only.
+    if operation not in {"mutate", "link", "cycle"}:
+        raise ValueError("operation must be one of: 'mutate', 'link', 'cycle'")
+
+    # fragmentation output f should be a tuple of
+    # (env: str,
+    #  core: str,
+    #  context_mol: Chem.Mol,
+    #  num_heavy_atoms: int,
+    #  query_dist2: None | int | tuple[int, int],
+    #  is_ring_closure: None | int)
+    # individual fragmentation functions return different data shape, that are reshaped afterwards as needed
+    if operation == "mutate":
         if link:
-            raise ValueError("ring_closure mode expects a single molecule")
+            raise ValueError("mutate operation expects a single molecule")
         mol = mol1
-        f = __fragment_mol_ring_closure(mol=mol, radius=radius, ring_size=ring_size,
-                                        protected_ids=protected_ids_1)
-    elif ring_closure is False:
-        # Broad cycle mode: union of both fragmenters so the DB can return
-        # both arc-cut (connected-env) and acyclic-cut (disconnected-env)
-        # rows. The SQL-side is_ring_closure filter is disabled below
-        # because `(1 if ring_closure else None)` evaluates to None for False.
+        mol_hac = mol.GetNumHeavyAtoms()
+        lower_core_atoms = max(min_size, math.ceil(min_rel_size * mol_hac))
+        upper_core_atoms = min(max_size, math.floor(max_rel_size * mol_hac))
+        f = [
+            (*frag, None, 0)
+            for frag in __fragment_mol(
+                mol,
+                radius,
+                protected_ids=protected_ids_1,
+                symmetry_fixes=symmetry_fixes,
+                min_core_atoms=lower_core_atoms,
+                max_core_atoms=upper_core_atoms,
+                include_cyclic_cores=replace_cycles,
+            )
+        ]
+        if ring_closures:
+            f.extend(
+                (*frag, None, 1)
+                for frag in __fragment_mol_partial_cycles(
+                    mol,
+                    radius=radius,
+                    protected_ids=protected_ids_1,
+                    symmetry_fixes=symmetry_fixes,
+                    min_core_atoms=lower_core_atoms,
+                    max_core_atoms=upper_core_atoms,
+                    include_cyclic_cores=replace_cycles,
+                )
+            )
+    elif operation == "cycle":
         if link:
-            raise ValueError("ring_closure=False (broad cycle) mode expects a single molecule")
+            raise ValueError("cycle operation expects a single molecule")
         mol = mol1
-        f = __fragment_mol_macrocycle(mol=mol, radius=radius, ring_size=ring_size,
-                                      protected_ids=protected_ids_1)
-        f = f + __fragment_mol_ring_closure(mol=mol, radius=radius, ring_size=ring_size,
-                                            protected_ids=protected_ids_1)
-    elif link:
+        if ring_closures:
+            # Strict cycle mode: arc-cut fragmenter only.
+            f = [
+                (*frag, 1)
+                for frag in __fragment_mol_ring_closure(
+                    mol=mol,
+                    radius=radius,
+                    ring_size=ring_size,
+                    protected_ids=protected_ids_1,
+                )
+            ]
+        else:
+            # Broad cycle mode: union of both fragmenters so the DB can return
+            # both arc-cut (connected-env) and acyclic-cut (disconnected-env)
+            # rows. The SQL-side is_ring_closure filter is disabled.
+            f = [
+                (*frag, None)
+                for frag in __fragment_mol_macrocycle(
+                    mol=mol,
+                    radius=radius,
+                    ring_size=ring_size,
+                    protected_ids=protected_ids_1,
+                )
+            ]
+            f.extend(
+                (*frag, None)
+                for frag in __fragment_mol_ring_closure(
+                    mol=mol,
+                    radius=radius,
+                    ring_size=ring_size,
+                    protected_ids=protected_ids_1,
+                )
+            )
+    elif operation == "link":
+        if not link:
+            raise ValueError("link operation expects two molecules")
         f = __fragment_mol_link(mol1=mol1, mol2=mol2, radius=radius, protected_ids_1=protected_ids_1,
                                 protected_ids_2=protected_ids_2)
+        f = [(*frag, None, None) for frag in f]
         mol = Chem.CombineMols(mol1, mol2)
-    else:
-        mol = mol1
-        f = __fragment_mol(mol, radius, protected_ids=protected_ids_1, symmetry_fixes=symmetry_fixes)
 
     if not f:
         return
-
-    mol_hac = mol.GetNumHeavyAtoms()
 
     with sqlite3.connect(db_name) as con:
         # Read-side tuning. The fragment DB is queried, never written, in this
@@ -748,61 +902,48 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
         returned_values = 0
         preliminary_return = 0
         if max_replacements is not None:
-            f.sort(key=lambda x: (x[0], x[1]))  # canonical order before seeded shuffle (set iteration is hash-ordered)
+            f.sort(key=__fragment_tuple_sort_key)  # canonical order before seeded shuffle
             rng.shuffle(f)
             preliminary_return = max_replacements // len(f)
             if preliminary_return == 0:
                 preliminary_return = 1
 
         for frag_tuple in f:
-            # Ring-closure helper appends a per-fragment dist filter (the
-            # dist2 window derived from ring_size and the in-input anchor
-            # distance). Other helpers produce 4-tuples; in that case the
-            # caller-supplied global `dist` applies.
-            if len(frag_tuple) == 5:
-                env, core, context_mol, num_heavy_atoms, frag_dist = frag_tuple
+            env, core, context_mol, num_heavy_atoms, query_dist2, is_ring_closure = frag_tuple
+            effective_dist = query_dist2 if query_dist2 is not None else dist
+
+            min_atoms = num_heavy_atoms + min_inc
+            max_atoms = num_heavy_atoms + max_inc
+
+            row_ids = __get_replacements_rowids(cur, env, effective_dist, min_atoms, max_atoms, radius, min_freq,
+                                                set_names=set_names, schema_meta=schema_meta,
+                                                is_ring_closure=is_ring_closure, **kwargs)
+
+            if filter_func:
+                row_ids = set(filter_func(row_ids, cur, radius))
+
+            if max_replacements is None:
+                res = _get_replacements(cur, radius, row_ids, schema_meta=schema_meta)
             else:
-                env, core, context_mol, num_heavy_atoms = frag_tuple
-                frag_dist = None
-            effective_dist = frag_dist if frag_dist is not None else dist
-
-            hac_ratio = num_heavy_atoms / mol_hac
-
-            if (min_size <= num_heavy_atoms <= max_size and min_rel_size <= hac_ratio <= max_rel_size) \
-                    or (replace_cycles and __cycle_pattern.search(core)):
-
-                min_atoms = num_heavy_atoms + min_inc
-                max_atoms = num_heavy_atoms + max_inc
-
-                row_ids = __get_replacements_rowids(cur, env, effective_dist, min_atoms, max_atoms, radius, min_freq,
-                                                    set_names=set_names, schema_meta=schema_meta,
-                                                    is_ring_closure=(1 if ring_closure else None), **kwargs)
-
-                if filter_func:
-                    row_ids = set(filter_func(row_ids, cur, radius))
-
-                if max_replacements is None:
-                    res = _get_replacements(cur, radius, row_ids, schema_meta=schema_meta)
+                n = min(len(row_ids), preliminary_return)
+                if sample_func is not None:
+                    selected_row_ids = sample_func(list(row_ids), cur, radius, n)
                 else:
-                    n = min(len(row_ids), preliminary_return)
-                    if sample_func is not None:
-                        selected_row_ids = sample_func(list(row_ids), cur, radius, n)
-                    else:
-                        selected_row_ids = rng.sample(sorted(row_ids), n)
-                    row_ids.difference_update(selected_row_ids)
-                    replacements.update({i: (core, context_mol) for i in row_ids})
-                    res = _get_replacements(cur, radius, selected_row_ids, schema_meta=schema_meta)
+                    selected_row_ids = rng.sample(sorted(row_ids), n)
+                row_ids.difference_update(selected_row_ids)
+                replacements.update({i: (core, context_mol) for i in row_ids})
+                res = _get_replacements(cur, radius, selected_row_ids, schema_meta=schema_meta)
 
-                for row_id, core_smi, _, freq in res:
-                    if core_smi != core:
-                        if return_frag_smi_only:
-                            yield core_smi
-                        else:
-                            yield core, core_smi, freq, context_mol
-                        if max_replacements is not None:
-                            returned_values += 1
-                            if returned_values >= max_replacements:
-                                return
+            for row_id, core_smi, _, freq in res:
+                if core_smi != core:
+                    if return_frag_smi_only:
+                        yield core_smi
+                    else:
+                        yield core, core_smi, freq, context_mol
+                    if max_replacements is not None:
+                        returned_values += 1
+                        if returned_values >= max_replacements:
+                            return
 
         if max_replacements is not None:
             n = min(len(replacements), max_replacements - returned_values)
@@ -835,21 +976,24 @@ def __frag_replace_mp(items):
 
 def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
                replace_cycles, protected_ids, min_freq, set_names, max_replacements, symmetry_fixes, filter_func=None,
-               sample_func=None, seed=None, **kwargs):
+               sample_func=None, ring_closures=False, seed=None, **kwargs):
     for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol, mol2=None, db_name=db_name,
-                                                                     radius=radius, min_size=min_size,
-                                                                     max_size=max_size, min_rel_size=min_rel_size,
-                                                                     max_rel_size=max_rel_size, min_inc=min_inc,
-                                                                     max_inc=max_inc,
-                                                                     max_replacements=max_replacements,
-                                                                     replace_cycles=replace_cycles,
-                                                                     protected_ids_1=protected_ids,
-                                                                     protected_ids_2=None, min_freq=min_freq,
-                                                                     set_names=set_names,
-                                                                     symmetry_fixes=symmetry_fixes,
-                                                                     filter_func=filter_func,
-                                                                     sample_func=sample_func,
-                                                                     return_frag_smi_only=False, seed=seed, **kwargs):
+                                                                    radius=radius, min_size=min_size,
+                                                                    max_size=max_size, min_rel_size=min_rel_size,
+                                                                    max_rel_size=max_rel_size, min_inc=min_inc,
+                                                                    max_inc=max_inc,
+                                                                    max_replacements=max_replacements,
+                                                                    replace_cycles=replace_cycles,
+                                                                    protected_ids_1=protected_ids,
+                                                                    protected_ids_2=None, min_freq=min_freq,
+                                                                    set_names=set_names,
+                                                                    symmetry_fixes=symmetry_fixes,
+                                                                    filter_func=filter_func,
+                                                                    sample_func=sample_func,
+                                                                    return_frag_smi_only=False,
+                                                                    operation="mutate",
+                                                                    ring_closures=ring_closures,
+                                                                    seed=seed, **kwargs):
         yield mol, None, frag_sma, core_sma, radius, context_mol, freq
 
 
@@ -867,6 +1011,7 @@ def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, pro
                                                                      min_freq=min_freq, set_names=set_names,
                                                                      filter_func=filter_func,
                                                                      sample_func=sample_func,
+                                                                     operation="link",
                                                                      return_frag_smi_only=False, seed=seed, **kwargs):
         yield mol1, mol2, frag_sma, core_sma, radius, context_mol, freq
 
@@ -875,28 +1020,29 @@ def __get_data_cycle(mol, db_name, radius, ring_size, ring_closures, min_size, m
                      min_freq, set_names, max_replacements, filter_func=None, sample_func=None,
                      seed=None, **kwargs):
     for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol, mol2=None, db_name=db_name,
-                                                                     radius=radius,
-                                                                     min_size=0, max_size=0,
-                                                                     min_rel_size=0, max_rel_size=1,
-                                                                     min_inc=min_size, max_inc=max_size,
-                                                                     max_replacements=max_replacements,
-                                                                     replace_cycles=False,
-                                                                     protected_ids_1=protected_ids,
-                                                                     protected_ids_2=None,
-                                                                     min_freq=min_freq, set_names=set_names,
-                                                                     filter_func=filter_func,
-                                                                     sample_func=sample_func,
-                                                                     return_frag_smi_only=False,
-                                                                     ring_closure=ring_closures,
-                                                                     ring_size=ring_size,
-                                                                     seed=seed, **kwargs):
+                                                                    radius=radius,
+                                                                    min_size=0, max_size=0,
+                                                                    min_rel_size=0, max_rel_size=1,
+                                                                    min_inc=min_size, max_inc=max_size,
+                                                                    max_replacements=max_replacements,
+                                                                    replace_cycles=False,
+                                                                    protected_ids_1=protected_ids,
+                                                                    protected_ids_2=None,
+                                                                    min_freq=min_freq, set_names=set_names,
+                                                                    filter_func=filter_func,
+                                                                    sample_func=sample_func,
+                                                                    return_frag_smi_only=False,
+                                                                    operation="cycle",
+                                                                    ring_closures=ring_closures,
+                                                                    ring_size=ring_size,
+                                                                    seed=seed, **kwargs):
         yield mol, None, frag_sma, core_sma, radius, context_mol, freq
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
-               max_replacements=None, replace_cycles=False, replace_ids=None, protected_ids=None, symmetry_fixes=False,
-               min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
-               sample_func=None, set_names=None, seed=None, **kwargs):
+               max_replacements=None, replace_cycles=False, ring_closures=False, replace_ids=None, protected_ids=None,
+               symmetry_fixes=False, min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1,
+               filter_func=None, sample_func=None, set_names=None, seed=None, **kwargs):
     """
     Generator of new molecules by replacement of fragments in the supplied molecule with fragments from DB.
 
@@ -920,6 +1066,9 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                              will be applied. Default: None.
     :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size.
                            Default: False.
+    :param ring_closures: if True, also replace partial cycles using fragments built from two non-aromatic single ring
+                          bond cuts and up to two acyclic side cuts. Ordinary mutations query only acyclic-cut DB rows
+                          regardless of this value. Default: False.
     :param replace_ids: iterable with atom ids to replace, it has lower priority over `protected_ids` (replace_ids
                         which are present in protected_ids would be protected).
                         Ids of hydrogen atoms (if any) connected to the specified heavy atoms will be automatically
@@ -994,20 +1143,23 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
     if ncores == 1:
 
         for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol, mol2=None, db_name=db_name,
-                                                                         radius=radius, min_size=min_size,
-                                                                         max_size=max_size,
-                                                                         min_rel_size=min_rel_size,
-                                                                         max_rel_size=max_rel_size,
-                                                                         min_inc=min_inc, max_inc=max_inc,
-                                                                         max_replacements=max_replacements,
-                                                                         replace_cycles=replace_cycles,
-                                                                         protected_ids_1=protected_ids,
-                                                                         protected_ids_2=None, min_freq=min_freq,
-                                                                         set_names=set_names,
-                                                                         symmetry_fixes=symmetry_fixes,
-                                                                         filter_func=filter_func,
-                                                                         sample_func=sample_func,
-                                                                         return_frag_smi_only=False, seed=seed, **kwargs):
+                                                                        radius=radius, min_size=min_size,
+                                                                        max_size=max_size,
+                                                                        min_rel_size=min_rel_size,
+                                                                        max_rel_size=max_rel_size,
+                                                                        min_inc=min_inc, max_inc=max_inc,
+                                                                        max_replacements=max_replacements,
+                                                                        replace_cycles=replace_cycles,
+                                                                        protected_ids_1=protected_ids,
+                                                                        protected_ids_2=None, min_freq=min_freq,
+                                                                        set_names=set_names,
+                                                                        symmetry_fixes=symmetry_fixes,
+                                                                        filter_func=filter_func,
+                                                                        sample_func=sample_func,
+                                                                        return_frag_smi_only=False,
+                                                                        operation="mutate",
+                                                                        ring_closures=ring_closures,
+                                                                        seed=seed, **kwargs):
             for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, context_mol):
                 if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
                     if smi not in products:
@@ -1031,7 +1183,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                               max_rel_size, min_inc, max_inc, replace_cycles,
                                                               protected_ids, min_freq, set_names, max_replacements,
                                                               symmetry_fixes, filter_func=filter_func,
-                                                              sample_func=sample_func, seed=seed, **kwargs),
+                                                              sample_func=sample_func, ring_closures=ring_closures,
+                                                              seed=seed, **kwargs),
                                 chunksize=100):
                 for smi, m, rxn, freq in items:
                     if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
@@ -1284,6 +1437,7 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                                                                          filter_func=filter_func,
                                                                          sample_func=sample_func,
                                                                          return_frag_smi_only=False,
+                                                                         operation="link",
                                                                          seed=seed, **kwargs):
             for smi, m, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, context_mol):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
@@ -1371,8 +1525,9 @@ def link_mols2(*args, **kwargs):
 
 def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, max_size=8, min_rel_size=0,
                      max_rel_size=1, min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
-                     protected_ids_1=None, protected_ids_2=None, replace_ids_1=None, replace_ids_2=None, min_freq=0,
-                     symmetry_fixes=False, filter_func=None, sample_func=None, return_frag_smi_only=True,
+                     ring_closures=False, protected_ids_1=None, protected_ids_2=None, replace_ids_1=None,
+                     replace_ids_2=None, min_freq=0, symmetry_fixes=False, filter_func=None, sample_func=None,
+                     return_frag_smi_only=True,
                      set_names=None, seed=None, **kwargs):
     """
     An auxiliary function, which returns smiles of fragments in a DB which satisfy given criteria
@@ -1399,6 +1554,8 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                              will be applied.
     :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size.
                            Default: False.
+    :param ring_closures: for single-molecule replacement searches, include partial-cycle replacements from DB rows with
+                          ``is_ring_closure=1``. Ordinary mutation candidates query only ``is_ring_closure=0``.
 
     :param protected_ids_1: iterable with atom ids which will not be mutated in mol1. If the molecule was supplied with
                             explicit hydrogen the ids of protected hydrogens should be supplied as well, otherwise they
@@ -1468,13 +1625,16 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
         protected_ids_2 = None
 
     for res in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius, dist=dist,
-                                       min_size=min_size, max_size=max_size, min_rel_size=min_rel_size,
-                                       max_rel_size=max_rel_size, min_inc=min_inc, max_inc=max_inc,
-                                       max_replacements=max_replacements, replace_cycles=replace_cycles,
-                                       protected_ids_1=protected_ids_1, protected_ids_2=protected_ids_2,
-                                       min_freq=min_freq, set_names=set_names, symmetry_fixes=symmetry_fixes,
-                                       filter_func=filter_func, sample_func=sample_func,
-                                       return_frag_smi_only=return_frag_smi_only, seed=seed, **kwargs):
+                                  min_size=min_size, max_size=max_size, min_rel_size=min_rel_size,
+                                  max_rel_size=max_rel_size, min_inc=min_inc, max_inc=max_inc,
+                                  max_replacements=max_replacements, replace_cycles=replace_cycles,
+                                  protected_ids_1=protected_ids_1, protected_ids_2=protected_ids_2,
+                                  min_freq=min_freq, set_names=set_names, symmetry_fixes=symmetry_fixes,
+                                  filter_func=filter_func, sample_func=sample_func,
+                                  return_frag_smi_only=return_frag_smi_only,
+                                  operation=("link" if isinstance(mol2, Chem.Mol) else "mutate"),
+                                  ring_closures=(False if isinstance(mol2, Chem.Mol) else ring_closures),
+                                  seed=seed, **kwargs):
         yield res
 
 
@@ -1630,21 +1790,22 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
     if ncores == 1:
 
         for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol, mol2=None, db_name=db_name,
-                                                                         radius=radius,
-                                                                         min_size=0, max_size=0,
-                                                                         min_rel_size=0, max_rel_size=1,
-                                                                         min_inc=min_atoms, max_inc=max_atoms,
-                                                                         max_replacements=max_replacements,
-                                                                         replace_cycles=False,
-                                                                         protected_ids_1=protected_ids,
-                                                                         protected_ids_2=None,
-                                                                         min_freq=min_freq, set_names=set_names,
-                                                                         filter_func=filter_func,
-                                                                         sample_func=sample_func,
-                                                                         return_frag_smi_only=False,
-                                                                         ring_closure=ring_closures,
-                                                                         ring_size=ring_size,
-                                                                         seed=seed, **kwargs):
+                                                                        radius=radius,
+                                                                        min_size=0, max_size=0,
+                                                                        min_rel_size=0, max_rel_size=1,
+                                                                        min_inc=min_atoms, max_inc=max_atoms,
+                                                                        max_replacements=max_replacements,
+                                                                        replace_cycles=False,
+                                                                        protected_ids_1=protected_ids,
+                                                                        protected_ids_2=None,
+                                                                        min_freq=min_freq, set_names=set_names,
+                                                                        filter_func=filter_func,
+                                                                        sample_func=sample_func,
+                                                                        return_frag_smi_only=False,
+                                                                        operation="cycle",
+                                                                        ring_closures=ring_closures,
+                                                                        ring_size=ring_size,
+                                                                        seed=seed, **kwargs):
             for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, context_mol):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi != source_smi and smi not in products:

@@ -119,6 +119,35 @@ def test_mutate_nonexistent_db():
         list(mutate_mol(mol, "/nonexistent/path.db"))
 
 
+def test_mutate_ring_closures_false_queries_acyclic_rows_only(db_rc):
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
+
+    def assert_acyclic(row_ids, cur, radius):
+        if row_ids:
+            bad = cur.execute(
+                f"SELECT count(*) FROM radius{radius} "
+                f"WHERE rowid IN ({','.join(map(str, row_ids))}) "
+                f"AND is_ring_closure != 0"
+            ).fetchone()[0]
+            assert bad == 0
+        return row_ids
+
+    list(mutate_mol(mol, db_rc, radius=1, min_freq=0, min_size=1,
+                    max_size=8, ring_closures=False,
+                    filter_func=assert_acyclic))
+
+
+def test_mutate_ring_closures_true_adds_partial_cycle_products(db_rc):
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
+    kw = dict(radius=1, min_freq=0, min_size=1, max_size=8,
+              min_inc=-2, max_inc=4)
+    base = set(mutate_mol(mol, db_rc, ring_closures=False, **kw))
+    ring = set(mutate_mol(mol, db_rc, ring_closures=True, **kw))
+    assert base.issubset(ring)
+    assert ring - base
+    assert all(_valid(s) for s in ring)
+
+
 # ---------------------------------------------------------------------------
 # grow_mol
 # ---------------------------------------------------------------------------
@@ -189,25 +218,29 @@ def test_link_max_replacements_cap(db, mol_link1, mol_link2):
 
 def test_macrocycle_returns_results(db, mol_macrocycle):
     res = list(make_cycle(mol_macrocycle, db, radius=1, min_freq=0,
-                          min_atoms=1, max_atoms=8))
+                          min_atoms=1, max_atoms=8,
+                          ring_closures=False))
     assert res
 
 
 def test_macrocycle_valid_smiles(db, mol_macrocycle):
     res = list(make_cycle(mol_macrocycle, db, radius=1, min_freq=0,
-                          min_atoms=1, max_atoms=8))
+                          min_atoms=1, max_atoms=8,
+                          ring_closures=False))
     assert all(_valid(s) for s in res)
 
 
 def test_macrocycle_no_duplicates(db, mol_macrocycle):
     res = list(make_cycle(mol_macrocycle, db, radius=1, min_freq=0,
-                          min_atoms=1, max_atoms=8))
+                          min_atoms=1, max_atoms=8,
+                          ring_closures=False))
     assert len(res) == len(set(res))
 
 
 def test_macrocycle_max_replacements_cap(db, mol_macrocycle):
     res = list(make_cycle(mol_macrocycle, db, radius=1, min_freq=0,
-                          min_atoms=1, max_atoms=8, max_replacements=1))
+                          min_atoms=1, max_atoms=8,
+                          max_replacements=1, ring_closures=False))
     assert len(res) <= 1
 
 

@@ -18,7 +18,7 @@ import sys
 import time
 from collections import defaultdict
 from functools import lru_cache
-from itertools import combinations, islice, permutations
+from itertools import islice, permutations
 from multiprocessing import Pool, cpu_count
 from operator import itemgetter
 from pathlib import Path
@@ -29,6 +29,7 @@ from rdkit.Chem import rdMMPA
 from tqdm import tqdm
 
 from crem.mol_context import get_std_context_core_permutations
+from crem.ring_fragments import iter_partial_ring_fragments
 
 
 _SQLITE_BATCH = 32000
@@ -263,7 +264,18 @@ def _parse_line(line, sep):
     return smi, smi_id
 
 
-def _fragment_mol_acyclic(smi, smi_id, mode):
+def _core_size_allowed(core_smi, min_heavy_atoms=None, max_heavy_atoms=None):
+    num_heavy_atoms = _count_heavy_atoms(core_smi)
+    if num_heavy_atoms == float('inf'):
+        return False
+    if min_heavy_atoms is not None and num_heavy_atoms < min_heavy_atoms:
+        return False
+    if max_heavy_atoms is not None and num_heavy_atoms > max_heavy_atoms:
+        return False
+    return True
+
+
+def _fragment_mol_acyclic(smi, smi_id, mode, min_heavy_atoms=None, max_heavy_atoms=None):
     """Acyclic-bond MMPA fragmentation (the historical CReM fragmenter).
 
     Returns ``(outlines_set, n_mmpa_failures)``. Each MMPA call is wrapped in
@@ -277,6 +289,7 @@ def _fragment_mol_acyclic(smi, smi_id, mode):
 
     outlines = set()
     n_failures = 0
+    frags = []
 
     if mode == 0 or mode == 1:
         frags4, f1 = _safe_mmpa_fragment(
@@ -293,97 +306,71 @@ def _fragment_mol_acyclic(smi, smi_id, mode):
             resultsAsMols=False,
             maxCutBonds=30,
         )
+        frags.extend(frags3 + frags4)
         n_failures += f1 + f2
-        for core, chains in set(list(frags4) + list(frags3)):
-            outlines.add((core, chains))
 
     if mode == 0 or mode == 2:
         mol = Chem.AddHs(mol)
         n = mol.GetNumAtoms() - mol.GetNumHeavyAtoms()
         if n < 60:  # TODO: remove this limit, it is not very reasonable
-            frags, f3 = _safe_mmpa_fragment(
+            frags_h, f3 = _safe_mmpa_fragment(
                 mol, smi_id,
                 pattern="[#1]!@!=!#[!#1]",
                 maxCuts=1,
                 resultsAsMols=False,
                 maxCutBonds=100,   # TODO: why we need this?
             )
+            frags.extend(frags_h)
             n_failures += f3
-            for core, chains in frags:
+
+    for core, chains in set(frags):
+        if core:
+            if _core_size_allowed(core, min_heavy_atoms, max_heavy_atoms):
                 outlines.add((core, chains))
+        else:  # single cut
+            residues = chains.split('.')
+            if len(residues) != 2:
+                continue
+            for context_, core_ in permutations(residues, 2):
+                if context_ == '[H][*:1]':
+                    continue
+                if _core_size_allowed(core_, min_heavy_atoms, max_heavy_atoms):
+                    outlines.add((core_, context_))
 
     return outlines, n_failures
 
 
-def _fragment_mol_ring(smi, smi_id):
+def _fragment_mol_ring(smi, smi_id, min_heavy_atoms=None, max_heavy_atoms=None):
     """Ring-bond fragmentation: cut every pair of SINGLE bonds that lies
-    inside the same ring, yielding 2-AP arc fragments.
+    inside the same ring, yielding 2-AP arc fragments and 3/4-AP partial-cycle
+    fragments from up to two additional acyclic side cuts.
 
     Aromatic / double / triple ring bonds are NOT cut. Cuts that don't
     disconnect the graph (e.g. spanning two rings of a fused system without
-    severing both paths) are skipped — only pairs producing exactly two
-    fragments, each with exactly two * atoms, are kept.
-
-    Both arcs are emitted as candidate cores: (arc_a, arc_b) and (arc_b, arc_a).
+    severing both paths) are skipped. Both arcs are emitted as candidate cores.
     """
     mol = Chem.MolFromSmiles(smi)
     if mol is None:
         return set(), 0
 
-    try:
-        bond_rings = mol.GetRingInfo().BondRings()
-    except (RuntimeError, IndexError):
-        # Defensive: RDKit corner cases have been observed to throw here.
-        # Treat as "no rings to cut" and continue.
-        return set(), 0
-    if not bond_rings:
-        return set(), 0
-
     outlines = set()
-    seen_pairs = set()
-    for ring_bond_ids in bond_rings:
-        for b1, b2 in combinations(sorted(ring_bond_ids), 2):
-            if (b1, b2) in seen_pairs:
-                continue
-            seen_pairs.add((b1, b2))
-            if mol.GetBondWithIdx(b1).GetBondType() != Chem.BondType.SINGLE:
-                continue
-            if mol.GetBondWithIdx(b2).GetBondType() != Chem.BondType.SINGLE:
-                continue
-            try:
-                cut = Chem.FragmentOnBonds(mol, [b1, b2], dummyLabels=[(1, 1), (2, 2)])
-                pieces = Chem.GetMolFrags(cut, asMols=True)
-            except Exception:
-                continue
-            if len(pieces) != 2:
-                continue  # didn't disconnect (fused ring system)
-            valid = True
-            for piece in pieces:
-                stars = [a for a in piece.GetAtoms() if a.GetAtomicNum() == 0]
-                if len(stars) != 2:
-                    valid = False
-                    break
-                # FragmentOnBonds stores cut labels as isotopes; convert to
-                # atom map numbers so SMILES carry [*:N] as elsewhere in CReM.
-                for a in stars:
-                    iso = a.GetIsotope()
-                    if iso:
-                        a.SetIsotope(0)
-                        a.SetAtomMapNum(iso)
-            if not valid:
-                continue
-            try:
-                smi_a = Chem.MolToSmiles(pieces[0])
-                smi_b = Chem.MolToSmiles(pieces[1])
-            except Exception:
-                continue
-            outlines.add((smi_a, smi_b))
-            outlines.add((smi_b, smi_a))
+    for core_mol, context_mol, _ in iter_partial_ring_fragments(
+        mol,
+        max_acyclic_cuts=2,
+        min_core_atoms=min_heavy_atoms,
+        max_core_atoms=max_heavy_atoms,
+    ):
+        try:
+            core_smi = Chem.MolToSmiles(core_mol)
+            context_smi = Chem.MolToSmiles(context_mol)
+        except Exception:
+            continue
+        outlines.add((core_smi, context_smi))
 
     return outlines, 0
 
 
-def _fragment_mol(smi, smi_id, mode, frag_mode):
+def _fragment_mol(smi, smi_id, mode, frag_mode, min_heavy_atoms=None, max_heavy_atoms=None):
     """Drive acyclic and/or ring-bond fragmentation per `frag_mode`.
 
     Returns ``(out, n_mmpa_failures)`` where ``out`` is a set of
@@ -394,15 +381,26 @@ def _fragment_mol(smi, smi_id, mode, frag_mode):
     out = set()
     n_failures = 0
     if frag_mode in ('acyclic', 'both'):
-        outlines, f = _fragment_mol_acyclic(smi, smi_id, mode)
+        outlines, f = _fragment_mol_acyclic(
+            smi,
+            smi_id,
+            mode,
+            min_heavy_atoms=min_heavy_atoms,
+            max_heavy_atoms=max_heavy_atoms,
+        )
         n_failures += f
         for core, chains in outlines:
-            out.add((smi, smi_id, core, chains, 0))
+            out.add((core, chains, 0))  # 0 - not ring closure
     if frag_mode in ('ring', 'both'):
-        outlines, f = _fragment_mol_ring(smi, smi_id)
+        outlines, f = _fragment_mol_ring(
+            smi,
+            smi_id,
+            min_heavy_atoms=min_heavy_atoms,
+            max_heavy_atoms=max_heavy_atoms,
+        )
         n_failures += f
         for core, chains in outlines:
-            out.add((smi, smi_id, core, chains, 1))
+            out.add((core, chains, 1))  # 1 - ring closure
     return out, n_failures
 
 
@@ -429,27 +427,25 @@ def _count_heavy_atoms(smi):
     return mm.GetNumHeavyAtoms() if mm else float('inf')
 
 
-def _env_core_from_fragment(core, context, radius, keep_stereo, max_heavy_atoms):
+def _env_core_from_fragment(core, context, radius, keep_stereo):
     output = []
 
-    if not core:
+    if not core:  # this part will never be invoked in the current implementation because output of fragmwentation was reshaped
         residues = context.split('.')
         if len(residues) == 2:
             for ctx, c in permutations(residues, 2):
                 if ctx == '[H][*:1]':
                     continue
                 num_heavy_atoms = _count_heavy_atoms(c)
-                if num_heavy_atoms <= max_heavy_atoms:
-                    env, cores = get_std_context_core_permutations(ctx, c, radius, keep_stereo)
-                    if env and cores:
-                        output.append((env, cores[0], num_heavy_atoms))  # only one item in cores
+                env, cores = get_std_context_core_permutations(ctx, c, radius, keep_stereo)
+                if env and cores:
+                    output.append((env, cores[0], num_heavy_atoms))  # only one item in cores
     else:
         num_heavy_atoms = _count_heavy_atoms(core)
-        if num_heavy_atoms <= max_heavy_atoms:
-            env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
-            if env and cores:
-                for core_smi in cores:
-                    output.append((env, core_smi, num_heavy_atoms))
+        env, cores = get_std_context_core_permutations(context, core, radius, keep_stereo)
+        if env and cores:
+            for core_smi in cores:
+                output.append((env, core_smi, num_heavy_atoms))
 
     return output
 
@@ -497,17 +493,22 @@ def _process_chunk(task):
 
     for smi, smi_id, member_sets in items:
         stats["lines"] += 1
-        frags, n_mmpa_fail = _fragment_mol(smi, smi_id, _MODE, _FRAG_MODE)
+        frags, n_mmpa_fail = _fragment_mol(
+            smi,
+            smi_id,
+            _MODE,
+            _FRAG_MODE,
+            max_heavy_atoms=_MAX_HEAVY_ATOMS,
+        )
         stats["fragments"] += len(frags)
         stats["skipped_mmpa"] += n_mmpa_fail
-        for _, _, core, context, is_ring_closure in frags:
+        for core, context, is_ring_closure in frags:
             for radius in _RADII:
                 for env, core_smi, core_num_atoms in _env_core_from_fragment(
                     core,
                     context,
                     radius,
                     _KEEP_STEREO,
-                    _MAX_HEAVY_ATOMS,
                 ):
                     for set_name in member_sets:
                         counts[set_name][radius][(env, core_smi, is_ring_closure)] += 1
@@ -835,7 +836,8 @@ def run(
         shard_size: Max input structures per shard DB (None = single DB).
         frag_mode: Fragmentation source — 'acyclic' (today's MMPA cuts of
             acyclic bonds), 'ring' (cuts of pairs of SINGLE bonds inside the
-            same ring; used by make_cycle(ring_closures=True)), or 'both'.
+            same ring plus 0-2 acyclic side cuts; used by make_cycle and
+            mutate_mol ring closures), or 'both'.
         stride_mod: When > 1, only process chunks whose ``chunk_id %
             stride_mod == stride_idx``. Used by ``run_parallel_shards`` to
             split the input across N concurrent shard builders.
@@ -1395,7 +1397,8 @@ def main():
         help=(
             "Fragmentation source: 'acyclic' (cuts of acyclic bonds, today's "
             "CReM behaviour); 'ring' (cuts of pairs of SINGLE bonds inside "
-            "the same ring, used by make_cycle(ring_closures=True)); "
+            "the same ring plus 0-2 acyclic side cuts, used by cycle-aware "
+            "generation); "
             "'both' includes both kinds, tagging each row with is_ring_closure "
             "(default: both)"
         ),

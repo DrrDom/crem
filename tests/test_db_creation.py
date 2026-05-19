@@ -170,3 +170,36 @@ def test_unique_constraint_includes_provenance(db_rc):
     # The hard guarantee is that the schema permits it (no UNIQUE violation
     # on the build); the count assertion is informational.
     assert n_shared >= 0
+
+
+def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
+    # --frag-mode both should now store the historical 2-attachment ring arcs
+    # and partial-cycle fragments with side cuts, i.e. 3/4 attachment points.
+    with sqlite3.connect(db_rc) as c:
+        rows = c.execute("""
+            SELECT
+                length(f.core_smi) - length(replace(f.core_smi, '*', '')) AS nstars,
+                count(*),
+                min(r.dist2),
+                max(r.dist2)
+            FROM radius2 r
+            JOIN frags f ON r.core_smi_id = f.core_smi_id
+            WHERE r.is_ring_closure = 1
+            GROUP BY nstars
+        """).fetchall()
+        by_stars = {nstars: (count, min_dist, max_dist)
+                    for nstars, count, min_dist, max_dist in rows}
+        nonzero_dist_partial = c.execute("""
+            SELECT count(*)
+            FROM radius2 r
+            JOIN frags f ON r.core_smi_id = f.core_smi_id
+            WHERE r.is_ring_closure = 1
+              AND r.dist2 != 0
+              AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) > 2
+        """).fetchone()[0]
+
+    assert by_stars[2][0] > 0
+    assert by_stars[2][2] > 0
+    assert by_stars[3][0] > 0
+    assert by_stars[4][0] > 0
+    assert nonzero_dist_partial == 0

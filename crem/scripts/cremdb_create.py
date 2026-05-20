@@ -1408,7 +1408,7 @@ def main():
         ),
     )
     parser.add_argument(
-        "--radii",
+        "-r", "--radii",
         nargs="+",
         type=int,
         default=[1, 2, 3, 4, 5],
@@ -1423,7 +1423,7 @@ def main():
         choices=["acyclic", "ring", "both"],
         default="both",
         help=(
-            "Fragmentation source: 'acyclic' (cuts of acyclic bonds, today's "
+            "Fragmentation source: 'acyclic' (cuts of acyclic bonds, standard "
             "CReM behaviour); 'ring' (cuts of pairs of SINGLE bonds inside "
             "the same ring plus 0-2 acyclic side cuts, used by cycle-aware "
             "generation); "
@@ -1435,7 +1435,7 @@ def main():
     parser.add_argument("--processed-chunks", default=None, help="Path to processed chunks file (append)")
     parser.add_argument("--zstd", action="store_true", help="Force zstd input")
     parser.add_argument("--log-every", type=int, default=None, help="Log progress every N chunks (default: None)")
-    parser.add_argument("--ncpu", type=int, default=1, help="Number of worker processes (default: 1)")
+    parser.add_argument("-c", "--ncpu", type=int, default=1, help="Number of worker processes (default: 1)")
     parser.add_argument(
         "--flush-every",
         type=int,

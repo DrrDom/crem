@@ -5,7 +5,7 @@ import sys
 import re
 import math
 from collections import defaultdict
-from rdkit import Chem, RDLogger
+from rdkit import Chem, rdBase
 from rdkit.Chem import rdmolops
 from rdkit.Chem import rdMMPA
 from crem.mol_context import get_canon_context_core
@@ -535,7 +535,8 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
     if not isinstance(context_mol, Chem.Mol):
         return
 
-    repl_core_mol = Chem.MolFromSmiles(new_frag_smi)
+    with rdBase.BlockLogs():
+        repl_core_mol = Chem.MolFromSmiles(new_frag_smi)
 
     transformation_smi = f"{old_frag_smi}>>{new_frag_smi}"
     try:

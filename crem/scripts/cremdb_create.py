@@ -60,7 +60,7 @@ def _safe_mmpa_fragment(mol, smi_id, **kwargs):
     global _mmpa_log_remaining
     try:
         return rdMMPA.FragmentMol(mol, **kwargs), 0
-    except (RuntimeError, IndexError) as exc:
+    except (RuntimeError, IndexError, KeyError) as exc:
         if _mmpa_log_remaining > 0:
             sys.stderr.write(
                 f"[mmpa-fail] {type(exc).__name__}: smi_id={smi_id or '<no_id>'}\n"

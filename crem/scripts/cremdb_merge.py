@@ -67,7 +67,7 @@ def merge_into(
     # double-count radius rows on the second invocation.
     target_conn.execute(
         "CREATE TABLE IF NOT EXISTS _merge_history("
-        "source_id TEXT PRIMARY KEY, merged_at REAL)"
+        "source_id TEXT PRIMARY KEY, merged_at TEXT)"
     )
     target_conn.commit()
 
@@ -198,7 +198,7 @@ def merge_into(
             # commit-or-nothing semantics make merge_into idempotent.
             target_conn.execute(
                 "INSERT OR IGNORE INTO _merge_history(source_id, merged_at) "
-                "VALUES (?, julianday('now'))",
+                "VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
                 (source_id,),
             )
 

@@ -1,5 +1,6 @@
 import functools
 import sqlite3
+from datetime import datetime
 
 import pytest
 
@@ -207,6 +208,28 @@ def test_merge_rebuild_index_false(tmp_path):
     merge_dbs(db_a, [db_b], rebuild_index=False, verbose=False)
     # Covering index was dropped before merge and not recreated
     assert "idx_radius3_lookup" not in _indices(db_a)
+
+
+def test_merge_history_timestamp_is_human_readable(tmp_path):
+    db_a = str(tmp_path / "a.db")
+    db_b = str(tmp_path / "b.db")
+    create_db(db_a, CORPUS_A, "s", radii=(1, 2, 3), verbose=False)
+    create_db(db_b, CORPUS_B, "s", radii=(1, 2, 3), verbose=False)
+    merge_dbs(db_a, [db_b], verbose=False)
+
+    with sqlite3.connect(db_a) as conn:
+        columns = {
+            row[1]: row[2]
+            for row in conn.execute("PRAGMA table_info(_merge_history)")
+        }
+        source_id, merged_at, storage_type = conn.execute(
+            "SELECT source_id, merged_at, typeof(merged_at) FROM _merge_history"
+        ).fetchone()
+
+    assert columns["merged_at"].upper() == "TEXT"
+    assert source_id == "b.db"
+    assert storage_type == "text"
+    datetime.strptime(merged_at, "%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,8 @@ import sqlite3
 
 from rdkit import Chem
 
+from crem.scripts.cremdb_create import _fragment_mol, _fragment_mol_ring
+
 
 def test_user_version(db):
     with sqlite3.connect(db) as c:
@@ -124,7 +126,7 @@ def test_core_smi_ids_consistent(db):
 
 
 # ---------------------------------------------------------------------------
-# Ring-closure provenance (--frag-mode both / ring)
+# Ring-closure provenance (--frag-mode both / ring / *_optimal)
 # ---------------------------------------------------------------------------
 
 def test_default_frag_mode_includes_acyclic_rows(db):
@@ -170,3 +172,85 @@ def test_unique_constraint_includes_provenance(db_rc):
     # The hard guarantee is that the schema permits it (no UNIQUE violation
     # on the build); the count assertion is informational.
     assert n_shared >= 0
+
+
+def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
+    # --frag-mode both should now store the historical 2-attachment ring arcs
+    # and partial-cycle fragments with side cuts, i.e. 3/4 attachment points.
+    with sqlite3.connect(db_rc) as c:
+        rows = c.execute("""
+            SELECT
+                length(f.core_smi) - length(replace(f.core_smi, '*', '')) AS nstars,
+                count(*),
+                min(r.dist2),
+                max(r.dist2)
+            FROM radius2 r
+            JOIN frags f ON r.core_smi_id = f.core_smi_id
+            WHERE r.is_ring_closure = 1
+            GROUP BY nstars
+        """).fetchall()
+        by_stars = {nstars: (count, min_dist, max_dist)
+                    for nstars, count, min_dist, max_dist in rows}
+        nonzero_dist_partial = c.execute("""
+            SELECT count(*)
+            FROM radius2 r
+            JOIN frags f ON r.core_smi_id = f.core_smi_id
+            WHERE r.is_ring_closure = 1
+              AND r.dist2 != 0
+              AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) > 2
+        """).fetchone()[0]
+        labeled_partial = c.execute("""
+            SELECT count(*)
+            FROM radius2 r
+            JOIN frags f ON r.core_smi_id = f.core_smi_id
+            WHERE r.is_ring_closure = 1
+              AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) > 2
+              AND instr(f.core_smi, '[1*') > 0
+        """).fetchone()[0]
+        labeled_env_partial = c.execute("""
+            SELECT count(*)
+            FROM radius2 r
+            JOIN frags f ON r.core_smi_id = f.core_smi_id
+            JOIN envs e ON r.env_id = e.env_id
+            WHERE r.is_ring_closure = 1
+              AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) > 2
+              AND instr(e.env, '[1*') > 0
+        """).fetchone()[0]
+        labeled_two_point = c.execute("""
+            SELECT count(*)
+            FROM radius2 r
+            JOIN frags f ON r.core_smi_id = f.core_smi_id
+            WHERE r.is_ring_closure = 1
+              AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) = 2
+              AND instr(f.core_smi, '[1*') > 0
+        """).fetchone()[0]
+
+    assert by_stars[2][0] > 0
+    assert by_stars[2][2] > 0
+    assert by_stars[3][0] > 0
+    assert by_stars[4][0] > 0
+    assert nonzero_dist_partial == 0
+    assert labeled_partial > 0
+    assert labeled_env_partial > 0
+    assert labeled_two_point == 0
+
+
+def test_ring_optimal_restricts_side_cuts_to_exo_bonds():
+    smi = "CC1CCC(CCC)CC1"
+    full, _ = _fragment_mol_ring(smi, "", max_heavy_atoms=15, side_cut_mode="all")
+    optimal, _ = _fragment_mol_ring(smi, "", max_heavy_atoms=15, side_cut_mode="exo")
+
+    assert optimal
+    assert optimal < full
+    assert {core.count("*") for core, _ in optimal} == {2, 3, 4}
+
+
+def test_both_optimal_combines_acyclic_and_optimal_ring_fragments():
+    smi = "CC1CCC(CCC)CC1"
+    both_optimal, _ = _fragment_mol(smi, "", 1, "both_optimal", max_heavy_atoms=15)
+    ring_optimal, _ = _fragment_mol(smi, "", 1, "ring_optimal", max_heavy_atoms=15)
+    ring_full, _ = _fragment_mol(smi, "", 1, "ring", max_heavy_atoms=15)
+
+    assert {item[2] for item in both_optimal} == {0, 1}
+    assert {item for item in both_optimal if item[2] == 1} == ring_optimal
+    assert ring_optimal < ring_full

@@ -106,8 +106,10 @@ def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3
                     one on a specified number of heavy atoms. Default: -2.
     :max_inc: maximum change of a number of heavy atoms in replacing fragments to a number of heavy atoms in
                     replaced one. Default: 2.
-    :replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size.
-                    Default: False.
+    :replace_cycles: controls replacement of cyclic source fragments in analogs mode. Use ``"no"``/False for ordinary
+                    mutation, ``"forced"``/True to allow cyclic cores through size filters, ``"partial_all"`` for
+                    exhaustive partial-ring replacement, or ``"partial_exo"`` for faster exo-only partial-ring
+                    replacement. Default: ``"no"``.
 
     '''
 

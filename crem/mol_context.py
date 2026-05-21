@@ -6,8 +6,8 @@ from .functions import mol_to_smarts
 
 __author__ = 'pavel'
 
-patt_remove_map = re.compile("\[\*\:[0-9]+\]")   # to change CC([*:1])O to CC([*])O
-patt_remove_h = re.compile("(?<!\[)H[1-9]*(?=:[0-9])")   # to remove H after atoms with maps: [CH2:1] to [C:1], but not touching [H] or [nH]
+patt_remove_map = re.compile(r"\[(?:\d+)?\*:[0-9]+\]")    # to change CC([*:1])O to CC([*])O
+patt_remove_h = re.compile(r"(?<!\[)H[1-9]*(?=:[0-9])")   # to remove H after atoms with maps: [CH2:1] to [C:1], but not touching [H] or [nH]
 
 
 def __get_submol(mol, atom_ids):
@@ -86,7 +86,32 @@ def __replace_att(mol, repl_dict):
             a.SetAtomMapNum(repl_dict[map_num])
 
 
-def __compute_att_keys(env, keep_stereo=False):
+def __clear_ignored_isotopes(mol, keep_stereo=False, preserve_dummy_isotopes=False):
+    if keep_stereo:
+        return
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() != 0 or not preserve_dummy_isotopes:
+            atom.SetIsotope(0)
+
+
+def __mol_to_smiles(mol, keep_stereo=False, preserve_dummy_isotopes=False, **kwargs):
+    if keep_stereo or not preserve_dummy_isotopes:
+        return Chem.MolToSmiles(mol, isomericSmiles=keep_stereo, **kwargs)
+
+    # RDKit omits isotopes when isomericSmiles=False. This branch removes
+    # stereochemistry explicitly, then uses isomeric output only to keep
+    # isotope labels on dummy atoms such as [1*:2].
+    tmp = Chem.Mol(mol)
+    Chem.RemoveStereochemistry(tmp)
+    __clear_ignored_isotopes(
+        tmp,
+        keep_stereo=False,
+        preserve_dummy_isotopes=preserve_dummy_isotopes,
+    )
+    return Chem.MolToSmiles(tmp, isomericSmiles=True, **kwargs)
+
+
+def __compute_att_keys(env, keep_stereo=False, preserve_dummy_isotopes=False):
     """
     Compute a sort key for every attachment point (* atom with non-zero map)
     in env. Returns a list of (key, original_map) tuples.
@@ -109,6 +134,11 @@ def __compute_att_keys(env, keep_stereo=False):
     tmp = Chem.Mol(env)
     out = []
     for comp in Chem.GetMolFrags(tmp, asMols=True, sanitizeFrags=False):
+        __clear_ignored_isotopes(
+            comp,
+            keep_stereo,
+            preserve_dummy_isotopes=preserve_dummy_isotopes,
+        )
         star_atoms = [a for a in comp.GetAtoms()
                       if a.GetAtomicNum() == 0 and a.GetAtomMapNum()]
         if not star_atoms:
@@ -118,7 +148,11 @@ def __compute_att_keys(env, keep_stereo=False):
         recorded = [(a.GetIdx(), a.GetAtomMapNum()) for a in star_atoms]
         for a in star_atoms:
             a.SetAtomMapNum(0)
-        comp_smi = Chem.MolToSmiles(comp, isomericSmiles=keep_stereo)
+        comp_smi = __mol_to_smiles(
+            comp,
+            keep_stereo,
+            preserve_dummy_isotopes=preserve_dummy_isotopes,
+        )
         if len(star_atoms) > 1:
             if comp.NeedsUpdatePropertyCache():
                 comp.UpdatePropertyCache()
@@ -134,7 +168,7 @@ def __compute_att_keys(env, keep_stereo=False):
     return out
 
 
-def __standardize_att_by_env(env, core, keep_stereo=False):
+def __standardize_att_by_env(env, core, keep_stereo=False, preserve_dummy_isotopes=False):
     """
     Set attachment point map numbers in core and env based on canonical sort
     keys of the * atoms in env. Map numbers are assigned 1..N in sorted-key
@@ -142,7 +176,11 @@ def __standardize_att_by_env(env, core, keep_stereo=False):
     by sorting on the original map number. Modifies env and core in place.
     Returns {original_map: new_map}.
     """
-    pairs = __compute_att_keys(env, keep_stereo)
+    pairs = __compute_att_keys(
+        env,
+        keep_stereo,
+        preserve_dummy_isotopes=preserve_dummy_isotopes,
+    )
     sorted_pairs = sorted(pairs, key=lambda kp: (kp[0], kp[1]))
     new_att = {original_map: i + 1 for i, (_, original_map) in enumerate(sorted_pairs)}
     __replace_att(core, new_att)
@@ -150,13 +188,17 @@ def __standardize_att_by_env(env, core, keep_stereo=False):
     return new_att
 
 
-def __get_att_permutations(env, keep_stereo=False):
+def __get_att_permutations(env, keep_stereo=False, preserve_dummy_isotopes=False):
     """
     Return possible permutations of attachment-point map numbers consistent
     with env's symmetry. Each returned dict maps current-map to permuted-map.
     Suitable for use after __standardize_att_by_env.
     """
-    pairs = __compute_att_keys(env, keep_stereo)
+    pairs = __compute_att_keys(
+        env,
+        keep_stereo,
+        preserve_dummy_isotopes=preserve_dummy_isotopes,
+    )
     if not pairs:
         return ({},)
     by_key = defaultdict(list)
@@ -184,7 +226,13 @@ def __merge_dicts(*dicts):
     return res
 
 
-def __standardize_smiles_with_att_points(mol, keep_stereo=False):
+def __att_point_smiles(isotope, atom_map):
+    if isotope:
+        return f"[{isotope}*:{atom_map}]"
+    return f"[*:{atom_map}]"
+
+
+def __standardize_smiles_with_att_points(mol, keep_stereo=False, preserve_dummy_isotopes=False):
     """
     to avoid different order of atoms in SMILES with different map number of attachment points
 
@@ -218,6 +266,12 @@ def __standardize_smiles_with_att_points(mol, keep_stereo=False):
     if mol.NeedsUpdatePropertyCache():
         mol.UpdatePropertyCache()
 
+    __clear_ignored_isotopes(
+        mol,
+        keep_stereo,
+        preserve_dummy_isotopes=preserve_dummy_isotopes,
+    )
+
     # store original maps and remove map numbers from mol
     backup_atom_map = "backupAtomMap"
     for a in mol.GetAtoms():
@@ -237,19 +291,29 @@ def __standardize_smiles_with_att_points(mol, keep_stereo=False):
         a = mol.GetAtomWithIdx(atom_idx)
         if a.HasProp(backup_atom_map):
             a.SetAtomMapNum(atom_map)
-            rep["[*:%i]" % atom_map] = "[*:%i]" % a.GetIntProp(backup_atom_map)
+            isotope = a.GetIsotope() if keep_stereo or preserve_dummy_isotopes else 0
+            original_map = a.GetIntProp(backup_atom_map)
+            rep[__att_point_smiles(isotope, atom_map)] = __att_point_smiles(
+                isotope, original_map
+            )
             atom_map += 1
 
     # get SMILES and relabel with original map numbers
-    s = Chem.MolToSmiles(mol, isomericSmiles=keep_stereo)
-    rep = dict((re.escape(k), v) for k, v in rep.items())
-    patt = re.compile("|".join(rep.keys()))
-    s = patt.sub(lambda m: rep[re.escape(m.group(0))], s)
+    s = __mol_to_smiles(
+        mol,
+        keep_stereo,
+        preserve_dummy_isotopes=preserve_dummy_isotopes,
+    )
+    if rep:
+        rep = dict((re.escape(k), v) for k, v in rep.items())
+        patt = re.compile("|".join(rep.keys()))
+        s = patt.sub(lambda m: rep[re.escape(m.group(0))], s)
 
     return s
 
 
-def get_std_context_core_permutations(context, core, radius, keep_stereo, return_att_map=False):
+def get_std_context_core_permutations(context, core, radius, keep_stereo, return_att_map=False,
+                                      preserve_dummy_isotopes=False):
     """
     INPUT:
         context - Mol or SMILES containing full chain(s) of a context with labeled attachment point(s),
@@ -257,6 +321,7 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
         core    - Mol or SMILES of a core fragment with labeled attachment point(s)
         keep_stereo - boolean to keep stereo information in output
         radius  - integer (0, 1, 2, etc), number of bonds to cut context
+        preserve_dummy_isotopes - keep isotope labels on dummy atoms when keep_stereo is False
     OUTPUT:
         SMILES of a context environment of a specified radius,
         list of SMILES of a core fragment with possible permutations of attachment point numbers
@@ -286,7 +351,11 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
         if not keep_stereo:
             Chem.RemoveStereochemistry(core)
 
-        s = __standardize_smiles_with_att_points(core, keep_stereo)
+        s = __standardize_smiles_with_att_points(
+            core,
+            keep_stereo,
+            preserve_dummy_isotopes=preserve_dummy_isotopes,
+        )
         s = patt_remove_map.sub("[*]", s)
 
         if return_att_map:
@@ -308,17 +377,35 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
             Chem.RemoveStereochemistry(core)
 
         env = __get_context_env(context, radius)   # cut context to radius
-        old_to_std = __standardize_att_by_env(env, core, keep_stereo)
-        env_smi = Chem.MolToSmiles(env, isomericSmiles=keep_stereo, allBondsExplicit=True)
+        old_to_std = __standardize_att_by_env(
+            env,
+            core,
+            keep_stereo,
+            preserve_dummy_isotopes=preserve_dummy_isotopes,
+        )
+        env_smi = __mol_to_smiles(
+            env,
+            keep_stereo,
+            preserve_dummy_isotopes=preserve_dummy_isotopes,
+            allBondsExplicit=True,
+        )
 
         if att_num == 1:
-            core_smi = __standardize_smiles_with_att_points(core, keep_stereo)
+            core_smi = __standardize_smiles_with_att_points(
+                core,
+                keep_stereo,
+                preserve_dummy_isotopes=preserve_dummy_isotopes,
+            )
             if return_att_map:
                 return env_smi, (core_smi, ), {core_smi: old_to_std}
             return env_smi, (core_smi, )
 
         else:
-            p = __get_att_permutations(env, keep_stereo)
+            p = __get_att_permutations(
+                env,
+                keep_stereo,
+                preserve_dummy_isotopes=preserve_dummy_isotopes,
+            )
             smi_to_map = {}
 
             # permute attachment point numbering only in core,
@@ -326,7 +413,11 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
             if len(p) > 1:
                 for d in p:
                     c = __permute_att(core, d)
-                    smi = __standardize_smiles_with_att_points(c, keep_stereo)
+                    smi = __standardize_smiles_with_att_points(
+                        c,
+                        keep_stereo,
+                        preserve_dummy_isotopes=preserve_dummy_isotopes,
+                    )
                     if smi not in smi_to_map:
                         """
                         Because d and the required mapping are in different coordinate systems, 
@@ -339,7 +430,11 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
                         """
                         smi_to_map[smi] = {old: d.get(std, std) for old, std in old_to_std.items()}
             else:
-                smi = __standardize_smiles_with_att_points(core, keep_stereo)
+                smi = __standardize_smiles_with_att_points(
+                    core,
+                    keep_stereo,
+                    preserve_dummy_isotopes=preserve_dummy_isotopes,
+                )
                 smi_to_map[smi] = old_to_std
 
             d = tuple(smi_to_map.keys())
@@ -353,10 +448,18 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
     return None, None
 
 
-def get_canon_context_core(context, core, radius, keep_stereo=False, return_att_map=False):
+def get_canon_context_core(context, core, radius, keep_stereo=False, return_att_map=False,
+                           preserve_dummy_isotopes=False):
     # context and core are Mols or SMILES
     # returns SMILES by default
-    res = get_std_context_core_permutations(context, core, radius, keep_stereo, return_att_map=return_att_map)
+    res = get_std_context_core_permutations(
+        context,
+        core,
+        radius,
+        keep_stereo,
+        return_att_map=return_att_map,
+        preserve_dummy_isotopes=preserve_dummy_isotopes,
+    )
     if res is not None:
         if return_att_map:
             env, cores, smi_to_map = res

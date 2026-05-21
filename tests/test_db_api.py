@@ -1,5 +1,6 @@
 import functools
 import sqlite3
+from datetime import datetime
 
 import pytest
 
@@ -13,6 +14,7 @@ CORPUS_B = [
     "CCNCC mol6", "c1ccc(O)cc1 mol7", "CC(C)O mol8",
     "c1ccncc1 mol9", "CCOCC mol10",
 ]
+CORPUS_RING = ["CC1CCC(CCC)CC1 ring1"]
 
 
 def _frag_count(db):
@@ -44,6 +46,13 @@ def _null_count(db, table, col):
         return c.execute(
             f"SELECT count(*) FROM {table} WHERE {col} IS NULL"
         ).fetchone()[0]
+
+
+def _provenance_counts(db, radius=2):
+    with sqlite3.connect(db) as c:
+        return dict(c.execute(
+            f"SELECT is_ring_closure, count(*) FROM radius{radius} GROUP BY is_ring_closure"
+        ).fetchall())
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +141,22 @@ def test_create_max_heavy_atoms(tmp_path):
     assert _frag_count(db_strict) <= _frag_count(db_loose)
 
 
+def test_create_frag_mode_default_matches_both_optimal(tmp_path):
+    db_default = str(tmp_path / "default.db")
+    db_explicit = str(tmp_path / "explicit.db")
+    create_db(db_default, CORPUS_RING, "s", radii=(2,), verbose=False)
+    create_db(db_explicit, CORPUS_RING, "s", radii=(2,), frag_mode="both_optimal", verbose=False)
+    assert _provenance_counts(db_default) == _provenance_counts(db_explicit)
+
+
+def test_create_frag_mode_argument_forwarded(tmp_path):
+    db = str(tmp_path / "ring.db")
+    create_db(db, CORPUS_RING, "s", radii=(2,), frag_mode="ring", verbose=False)
+    counts = _provenance_counts(db)
+    assert counts.get(0, 0) == 0
+    assert counts.get(1, 0) > 0
+
+
 def test_create_invalid_set_name_type(tmp_path):
     db = str(tmp_path / "test.db")
     with pytest.raises(TypeError):
@@ -183,6 +208,28 @@ def test_merge_rebuild_index_false(tmp_path):
     merge_dbs(db_a, [db_b], rebuild_index=False, verbose=False)
     # Covering index was dropped before merge and not recreated
     assert "idx_radius3_lookup" not in _indices(db_a)
+
+
+def test_merge_history_timestamp_is_human_readable(tmp_path):
+    db_a = str(tmp_path / "a.db")
+    db_b = str(tmp_path / "b.db")
+    create_db(db_a, CORPUS_A, "s", radii=(1, 2, 3), verbose=False)
+    create_db(db_b, CORPUS_B, "s", radii=(1, 2, 3), verbose=False)
+    merge_dbs(db_a, [db_b], verbose=False)
+
+    with sqlite3.connect(db_a) as conn:
+        columns = {
+            row[1]: row[2]
+            for row in conn.execute("PRAGMA table_info(_merge_history)")
+        }
+        source_id, merged_at, storage_type = conn.execute(
+            "SELECT source_id, merged_at, typeof(merged_at) FROM _merge_history"
+        ).fetchone()
+
+    assert columns["merged_at"].upper() == "TEXT"
+    assert source_id == "b.db"
+    assert storage_type == "text"
+    datetime.strptime(merged_at, "%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------

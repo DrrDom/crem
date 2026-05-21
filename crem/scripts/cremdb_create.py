@@ -33,6 +33,7 @@ from crem.ring_fragments import iter_partial_ring_fragments
 
 
 _SQLITE_BATCH = 32000
+_FRAG_MODES = ("acyclic", "ring", "both", "ring_optimal", "both_optimal")
 
 # Magic value written into PRAGMA application_id at the end of a stride-mode
 # shard build. The parallel-shards orchestrator reads this to decide which
@@ -355,10 +356,12 @@ def _fragment_mol_acyclic(smi, smi_id, mode, min_heavy_atoms=None, max_heavy_ato
     return outlines, n_failures
 
 
-def _fragment_mol_ring(smi, smi_id, min_heavy_atoms=None, max_heavy_atoms=None):
+def _fragment_mol_ring(smi, smi_id, min_heavy_atoms=None, max_heavy_atoms=None, side_cut_mode="all"):
     """Ring-bond fragmentation: cut every pair of SINGLE bonds that lies
     inside the same ring, yielding 2-AP arc fragments and 3/4-AP partial-cycle
-    fragments from up to two additional acyclic side cuts.
+    fragments from up to two additional acyclic side cuts. ``side_cut_mode``
+    controls whether these side cuts are exhaustive (``"all"``) or restricted
+    to exo acyclic bonds adjacent to the selected ring arc (``"exo"``).
 
     Aromatic / double / triple ring bonds are NOT cut. Cuts that don't
     disconnect the graph (e.g. spanning two rings of a fused system without
@@ -374,6 +377,7 @@ def _fragment_mol_ring(smi, smi_id, min_heavy_atoms=None, max_heavy_atoms=None):
         max_acyclic_cuts=2,
         min_core_atoms=min_heavy_atoms,
         max_core_atoms=max_heavy_atoms,
+        side_cut_mode=side_cut_mode,
     ):
         try:
             core_smi = Chem.MolToSmiles(core_mol)
@@ -393,9 +397,14 @@ def _fragment_mol(smi, smi_id, mode, frag_mode, min_heavy_atoms=None, max_heavy_
     ``n_mmpa_failures`` is how many RDKit fragmentation calls were skipped
     due to edge-case exceptions on this molecule.
     """
+    if frag_mode not in _FRAG_MODES:
+        raise ValueError(
+            f"frag_mode must be one of {', '.join(_FRAG_MODES)} (got {frag_mode!r})"
+        )
+
     out = set()
     n_failures = 0
-    if frag_mode in ('acyclic', 'both'):
+    if frag_mode in ('acyclic', 'both', 'both_optimal'):
         outlines, f = _fragment_mol_acyclic(
             smi,
             smi_id,
@@ -412,6 +421,18 @@ def _fragment_mol(smi, smi_id, mode, frag_mode, min_heavy_atoms=None, max_heavy_
             smi_id,
             min_heavy_atoms=min_heavy_atoms,
             max_heavy_atoms=max_heavy_atoms,
+            side_cut_mode="all",
+        )
+        n_failures += f
+        for core, chains in outlines:
+            out.add((core, chains, 1))  # 1 - ring closure
+    if frag_mode in ('ring_optimal', 'both_optimal'):
+        outlines, f = _fragment_mol_ring(
+            smi,
+            smi_id,
+            min_heavy_atoms=min_heavy_atoms,
+            max_heavy_atoms=max_heavy_atoms,
+            side_cut_mode="exo",
         )
         n_failures += f
         for core, chains in outlines:
@@ -837,7 +858,7 @@ def run(
     timings: bool = False,
     shard_size=None,
     verbose: bool = True,
-    frag_mode: str = 'both',
+    frag_mode: str = 'both_optimal',
     stride_mod: int = 1,
     stride_idx: int = 0,
 ) -> None:
@@ -864,17 +885,18 @@ def run(
         shard_size: Max input structures per shard DB (None = single DB).
         frag_mode: Fragmentation source — 'acyclic' (today's MMPA cuts of
             acyclic bonds), 'ring' (cuts of pairs of SINGLE bonds inside the
-            same ring plus 0-2 acyclic side cuts; used by make_cycle and
-            mutate_mol ring closures), or 'both'.
+            same ring plus 0-2 acyclic side cuts), 'ring_optimal' (same ring
+            cuts, but side cuts only on exo acyclic bonds adjacent to the
+            selected ring arc), 'both', or 'both_optimal'.
         stride_mod: When > 1, only process chunks whose ``chunk_id %
             stride_mod == stride_idx``. Used by ``run_parallel_shards`` to
             split the input across N concurrent shard builders.
         stride_idx: Stride index for this build; meaningful only when
             ``stride_mod > 1``.
     """
-    if frag_mode not in ('acyclic', 'ring', 'both'):
+    if frag_mode not in _FRAG_MODES:
         raise ValueError(
-            f"frag_mode must be one of 'acyclic', 'ring', 'both' (got {frag_mode!r})"
+            f"frag_mode must be one of {', '.join(_FRAG_MODES)} (got {frag_mode!r})"
         )
     if stride_mod < 1:
         raise ValueError("stride_mod must be >= 1")
@@ -1215,7 +1237,7 @@ def run_parallel_shards(
     prefetch: int = 4,
     timings: bool = False,
     verbose: bool = True,
-    frag_mode: str = 'both',
+    frag_mode: str = 'both_optimal',
     merge_parallel: int = None,
 ) -> None:
     """Build a v1 CReM fragment DB using N concurrent shard builders.
@@ -1420,15 +1442,16 @@ def main():
     parser.add_argument("--mode", type=int, choices=[0, 1, 2], default=0, help="Fragmentation mode: 0 - all atoms, 1 - only heavy atoms, 2 - only hydrogen atoms (default: 0)")
     parser.add_argument(
         "--frag-mode",
-        choices=["acyclic", "ring", "both"],
-        default="both",
+        choices=list(_FRAG_MODES),
+        default="both_optimal",
         help=(
             "Fragmentation source: 'acyclic' (cuts of acyclic bonds, standard "
             "CReM behaviour); 'ring' (cuts of pairs of SINGLE bonds inside "
-            "the same ring plus 0-2 acyclic side cuts, used by cycle-aware "
-            "generation); "
-            "'both' includes both kinds, tagging each row with is_ring_closure "
-            "(default: both)"
+            "the same ring plus 0-2 acyclic side cuts); 'ring_optimal' "
+            "(same ring cuts but only exo acyclic side cuts adjacent to the "
+            "selected ring arc); 'both' includes acyclic plus full ring; "
+            "'both_optimal' includes acyclic plus ring_optimal "
+            "(default: both_optimal)"
         ),
     )
     parser.add_argument("--sep", default=None, help="Input delimiter (default: whitespace)")

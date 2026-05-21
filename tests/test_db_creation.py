@@ -2,6 +2,8 @@ import sqlite3
 
 from rdkit import Chem
 
+from crem.scripts.cremdb_create import _fragment_mol, _fragment_mol_ring
+
 
 def test_user_version(db):
     with sqlite3.connect(db) as c:
@@ -124,7 +126,7 @@ def test_core_smi_ids_consistent(db):
 
 
 # ---------------------------------------------------------------------------
-# Ring-closure provenance (--frag-mode both / ring)
+# Ring-closure provenance (--frag-mode both / ring / *_optimal)
 # ---------------------------------------------------------------------------
 
 def test_default_frag_mode_includes_acyclic_rows(db):
@@ -231,3 +233,24 @@ def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
     assert labeled_partial > 0
     assert labeled_env_partial > 0
     assert labeled_two_point == 0
+
+
+def test_ring_optimal_restricts_side_cuts_to_exo_bonds():
+    smi = "CC1CCC(CCC)CC1"
+    full, _ = _fragment_mol_ring(smi, "", max_heavy_atoms=15, side_cut_mode="all")
+    optimal, _ = _fragment_mol_ring(smi, "", max_heavy_atoms=15, side_cut_mode="exo")
+
+    assert optimal
+    assert optimal < full
+    assert {core.count("*") for core, _ in optimal} == {2, 3, 4}
+
+
+def test_both_optimal_combines_acyclic_and_optimal_ring_fragments():
+    smi = "CC1CCC(CCC)CC1"
+    both_optimal, _ = _fragment_mol(smi, "", 1, "both_optimal", max_heavy_atoms=15)
+    ring_optimal, _ = _fragment_mol(smi, "", 1, "ring_optimal", max_heavy_atoms=15)
+    ring_full, _ = _fragment_mol(smi, "", 1, "ring", max_heavy_atoms=15)
+
+    assert {item[2] for item in both_optimal} == {0, 1}
+    assert {item for item in both_optimal if item[2] == 1} == ring_optimal
+    assert ring_optimal < ring_full

@@ -34,7 +34,7 @@ _PROPS_DEFAULT = object()
 def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name: Union[str, Dict[str, Optional[set]]],
               radii=(1, 2, 3, 4, 5), *, ncpu: int = 1, max_heavy_atoms: int = 15, keep_stereo: bool = False,
               mode: int = 0, chunk_size: int = 100, flush_every: int = 100, shard_size: Optional[int] = None,
-              parallel_shards: int = 1, verbose: bool = True) -> None:
+              parallel_shards: int = 1, frag_mode: str = 'both_optimal', verbose: bool = True) -> None:
     """Create or extend a v1 CReM fragment database.
 
     Calling on an existing database is safe and additive: ``_ensure_schema``
@@ -62,6 +62,9 @@ def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name:
             evenly across them. Shard DBs live in ``<output>.parts/`` and
             are merged into ``output`` via a parallel binary-tree reduction.
             Default 1 (single-process build).
+        frag_mode: Fragmentation source: ``'acyclic'``, ``'ring'``,
+            ``'both'``, ``'ring_optimal'``, or ``'both_optimal'``.
+            Default ``'both_optimal'`` matches ``cremdb_create``.
         verbose: Print progress and statistics to stdout/stderr.
     """
     if parallel_shards < 1:
@@ -118,6 +121,7 @@ def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name:
                 mode=mode,
                 flush_every=flush_every,
                 verbose=verbose,
+                frag_mode=frag_mode,
                 # pass-through defaults for rarely needed options
                 sep=None,
                 force_zstd=False,
@@ -139,6 +143,7 @@ def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name:
                 shard_size=shard_size,
                 ncpu=ncpu,
                 verbose=verbose,
+                frag_mode=frag_mode,
                 # pass-through defaults for rarely needed options
                 sep=None,
                 processed_chunks=None,

@@ -64,7 +64,7 @@ def _ring_atoms_for_bonds(mol, bond_ids):
     return atom_ids
 
 
-def _acyclic_side_cut_candidates(mol, base_atoms, ring_arc_atoms, ring_cut_bond_ids):
+def _acyclic_side_cut_candidates(mol, base_atoms, ring_arc_atoms, ring_cut_bond_ids, side_cut_mode="all"):
     candidates = []
     ring_cut_bond_ids = set(ring_cut_bond_ids)
     for bond in mol.GetBonds():
@@ -79,6 +79,11 @@ def _acyclic_side_cut_candidates(mol, base_atoms, ring_arc_atoms, ring_cut_bond_
             continue
         if not bond.GetBeginAtom().GetAtomicNum() or not bond.GetEndAtom().GetAtomicNum():
             continue
+        if side_cut_mode == "exo":
+            begin_in_arc = begin in ring_arc_atoms
+            end_in_arc = end in ring_arc_atoms
+            if begin_in_arc == end_in_arc:
+                continue
 
         components = _components_after_cuts(
             mol,
@@ -183,13 +188,19 @@ def _materialize_fragment(mol, cut_bond_ids, core_atom_ids, ring_cut_maps=None):
     return core_mol, context_mol, core_atom_ids
 
 
-def iter_partial_ring_fragments(mol, max_acyclic_cuts=2, min_core_atoms=None, max_core_atoms=None):
+def iter_partial_ring_fragments(mol, max_acyclic_cuts=2, min_core_atoms=None, max_core_atoms=None,
+                                side_cut_mode="all"):
     """Yield connected partial-ring fragments with 2-4 context attachments.
 
     Two non-aromatic single bonds from the same ring are always cut. Up to
     `max_acyclic_cuts` additional acyclic single heavy-atom bonds may be cut
-    on distinct detached side components of the selected ring arc.
+    on distinct detached side components of the selected ring arc. With
+    ``side_cut_mode="exo"``, those side cuts are limited to acyclic bonds
+    adjacent to an atom of the selected ring arc.
     """
+    if side_cut_mode not in {"all", "exo"}:
+        raise ValueError("side_cut_mode must be one of: 'all', 'exo'")
+
     mol = _ensure_atom_indices(mol)
     try:
         bond_rings = mol.GetRingInfo().BondRings()
@@ -230,6 +241,7 @@ def iter_partial_ring_fragments(mol, max_acyclic_cuts=2, min_core_atoms=None, ma
                     base_atoms,
                     ring_arc_atoms,
                     ring_cut_bond_ids,
+                    side_cut_mode=side_cut_mode,
                 )
                 max_cuts = min(max_acyclic_cuts, len(side_candidates))
                 for n_cuts in range(max_cuts + 1):

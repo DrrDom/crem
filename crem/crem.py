@@ -1701,7 +1701,8 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
       filtered, so DB rows of either provenance can match.
     * ``ring_closures=True`` (strict): only the connected-env arc-cut
       fragmenter runs and the query is restricted to ``is_ring_closure=1``
-      rows (populated by ``--frag-mode ring`` / ``both`` at DB build time).
+      rows (populated by ``--frag-mode ring`` / ``both`` or the corresponding
+      ``*_optimal`` modes at DB build time).
       Useful for closing native (typically aliphatic) rings.
 
     :param mol: RDKit Mol object.

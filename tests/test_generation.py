@@ -119,7 +119,7 @@ def test_mutate_nonexistent_db():
         list(mutate_mol(mol, "/nonexistent/path.db"))
 
 
-def test_mutate_ring_closures_false_queries_acyclic_rows_only(db_rc):
+def test_mutate_replace_cycles_no_queries_acyclic_rows_only(db_rc):
     mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
 
     def assert_acyclic(row_ids, cur, radius):
@@ -133,19 +133,50 @@ def test_mutate_ring_closures_false_queries_acyclic_rows_only(db_rc):
         return row_ids
 
     list(mutate_mol(mol, db_rc, radius=1, min_freq=0, min_size=1,
-                    max_size=8, ring_closures=False,
+                    max_size=8, replace_cycles="no",
                     filter_func=assert_acyclic))
 
 
-def test_mutate_ring_closures_true_adds_partial_cycle_products(db_rc):
+def test_mutate_replace_cycles_partial_all_adds_partial_cycle_products(db_rc):
     mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
     kw = dict(radius=1, min_freq=0, min_size=1, max_size=8,
               min_inc=-2, max_inc=4)
-    base = set(mutate_mol(mol, db_rc, ring_closures=False, **kw))
-    ring = set(mutate_mol(mol, db_rc, ring_closures=True, **kw))
+    base = set(mutate_mol(mol, db_rc, replace_cycles="no", **kw))
+    ring = set(mutate_mol(mol, db_rc, replace_cycles="partial_all", **kw))
     assert base.issubset(ring)
     assert ring - base
     assert all(_valid(s) for s in ring)
+
+
+def test_mutate_replace_cycles_partial_exo_is_subset_of_partial_all(db_rc):
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
+    kw = dict(radius=1, min_freq=0, min_size=1, max_size=8,
+              min_inc=-2, max_inc=4)
+    partial_all = set(mutate_mol(mol, db_rc, replace_cycles="partial_all", **kw))
+    partial_exo = set(mutate_mol(mol, db_rc, replace_cycles="partial_exo", **kw))
+    assert partial_exo
+    assert partial_exo <= partial_all
+
+
+def test_mutate_replace_cycles_boolean_aliases(db_rc):
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
+    kw = dict(radius=1, min_freq=0, min_size=1, max_size=8)
+    assert set(mutate_mol(mol, db_rc, replace_cycles=False, **kw)) == \
+        set(mutate_mol(mol, db_rc, replace_cycles="no", **kw))
+    assert set(mutate_mol(mol, db_rc, replace_cycles=True, **kw)) == \
+        set(mutate_mol(mol, db_rc, replace_cycles="forced", **kw))
+
+
+def test_mutate_rejects_removed_ring_closures_argument(db_rc):
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
+    with pytest.raises(TypeError, match="ring_closures was removed"):
+        list(mutate_mol(mol, db_rc, radius=1, ring_closures=True))
+
+
+def test_mutate_rejects_unknown_replace_cycles_mode(db_rc):
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
+    with pytest.raises(ValueError, match="replace_cycles must be one of"):
+        list(mutate_mol(mol, db_rc, radius=1, replace_cycles="partial"))
 
 
 # ---------------------------------------------------------------------------
@@ -371,3 +402,19 @@ def test_get_replacements_max_replacements_cap(db, mol_aniline):
     res = list(get_replacements(mol_aniline, db, radius=3, min_freq=0,
                                 max_size=8, max_replacements=2))
     assert len(res) <= 2
+
+
+def test_get_replacements_replace_cycles_partial_all_matches_mutate(db_rc):
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
+    kw = dict(radius=1, min_freq=0, min_size=1, max_size=8,
+              min_inc=-2, max_inc=4, replace_cycles="partial_all")
+    replacements = list(get_replacements(mol, db_rc, return_frag_smi_only=False, **kw))
+    via_repl = set(get_mols_from_replacements(mol, 1, replacements))
+    direct = set(mutate_mol(mol, db_rc, **kw))
+    assert via_repl == direct
+
+
+def test_get_replacements_rejects_removed_ring_closures_argument(db_rc):
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
+    with pytest.raises(TypeError, match="ring_closures was removed"):
+        list(get_replacements(mol, db_rc, radius=1, ring_closures=True))

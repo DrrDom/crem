@@ -436,8 +436,8 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
 
 def __fragment_mol_partial_cycles(mol, radius=3, keep_stereo=False, protected_ids=None, symmetry_fixes=False,
                                   return_ids=True, min_core_atoms=None, max_core_atoms=None,
-                                  include_cyclic_cores=False):
-    """Fragment partial cycles for mutate_mol(ring_closures=True).
+                                  include_cyclic_cores=False, side_cut_mode="all"):
+    """Fragment partial cycles for mutate_mol(..., replace_cycles='partial_*').
 
     The source core is one connected ring arc made by two non-aromatic single
     ring-bond cuts plus 0-2 acyclic side cuts. Explicit hydrogens are stripped
@@ -456,6 +456,7 @@ def __fragment_mol_partial_cycles(mol, radius=3, keep_stereo=False, protected_id
         max_acyclic_cuts=2,
         min_core_atoms=iter_min_core_atoms,
         max_core_atoms=iter_max_core_atoms,
+        side_cut_mode=side_cut_mode,
     ):
         core_atom_ids = tuple(sorted(core_atom_ids))
         if protected_ids and not protected_ids.isdisjoint(core_atom_ids):
@@ -790,6 +791,19 @@ def __fragment_tuple_sort_key(item):
     return item[0], item[1], context_smi, item[3], repr(item[4]), -1 if item[5] is None else item[5]
 
 
+def _normalize_replace_cycles(replace_cycles):
+    if replace_cycles is False or replace_cycles == "no":
+        return "no"
+    if replace_cycles is True or replace_cycles == "forced":
+        return "forced"
+    if replace_cycles in ("partial_all", "partial_exo"):
+        return replace_cycles
+    raise ValueError(
+        "replace_cycles must be one of False, True, 'no', 'forced', "
+        "'partial_all', or 'partial_exo'"
+    )
+
+
 def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_size=8, min_rel_size=0, max_rel_size=1,
                        min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
                        protected_ids_1=None, protected_ids_2=None, min_freq=10, set_names=None,
@@ -807,6 +821,8 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
     if operation not in {"mutate", "link", "cycle"}:
         raise ValueError("operation must be one of: 'mutate', 'link', 'cycle'")
+
+    replace_cycle_mode = _normalize_replace_cycles(replace_cycles)
 
     # fragmentation output f should be a tuple of
     # (env: str,
@@ -832,10 +848,11 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                 symmetry_fixes=symmetry_fixes,
                 min_core_atoms=lower_core_atoms,
                 max_core_atoms=upper_core_atoms,
-                include_cyclic_cores=replace_cycles,
+                include_cyclic_cores=(replace_cycle_mode == "forced"),
             )
         ]
-        if ring_closures:
+        if replace_cycle_mode in {"partial_all", "partial_exo"}:
+            side_cut_mode = "all" if replace_cycle_mode == "partial_all" else "exo"
             f.extend(
                 (*frag, None, 1)
                 for frag in __fragment_mol_partial_cycles(
@@ -845,7 +862,8 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                     symmetry_fixes=symmetry_fixes,
                     min_core_atoms=lower_core_atoms,
                     max_core_atoms=upper_core_atoms,
-                    include_cyclic_cores=replace_cycles,
+                    include_cyclic_cores=False,
+                    side_cut_mode=side_cut_mode,
                 )
             )
     elif operation == "cycle":
@@ -989,7 +1007,7 @@ def __frag_replace_mp(items):
 
 def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
                replace_cycles, protected_ids, min_freq, set_names, max_replacements, symmetry_fixes, filter_func=None,
-               sample_func=None, ring_closures=False, seed=None, **kwargs):
+               sample_func=None, seed=None, **kwargs):
     for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol, mol2=None, db_name=db_name,
                                                                     radius=radius, min_size=min_size,
                                                                     max_size=max_size, min_rel_size=min_rel_size,
@@ -1005,7 +1023,6 @@ def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_s
                                                                     sample_func=sample_func,
                                                                     return_frag_smi_only=False,
                                                                     operation="mutate",
-                                                                    ring_closures=ring_closures,
                                                                     seed=seed, **kwargs):
         yield mol, None, frag_sma, core_sma, radius, context_mol, freq
 
@@ -1053,7 +1070,7 @@ def __get_data_cycle(mol, db_name, radius, ring_size, ring_closures, min_size, m
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
-               max_replacements=None, replace_cycles=False, ring_closures=False, replace_ids=None, protected_ids=None,
+               max_replacements=None, replace_cycles="no", replace_ids=None, protected_ids=None,
                symmetry_fixes=False, min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1,
                filter_func=None, sample_func=None, set_names=None, seed=None, **kwargs):
     """
@@ -1077,11 +1094,15 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
     :param max_replacements: maximum number of replacements to make. If the number of replacements available in DB is
                              greater than the specified value the specified number of randomly chosen replacements
                              will be applied. Default: None.
-    :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size.
-                           Default: False.
-    :param ring_closures: if True, also replace partial cycles using fragments built from two non-aromatic single ring
-                          bond cuts and up to two acyclic side cuts. Ordinary mutations query only acyclic-cut DB rows
-                          regardless of this value. Default: False.
+    :param replace_cycles: controls replacement of cyclic source fragments.
+                           ``"no"``/False uses ordinary acyclic-cut mutation
+                           only. ``"forced"``/True allows cyclic cores from
+                           ordinary fragmentation to be replaced ignoring the size filters.
+                           ``"partial_all"`` additionally replaces partial
+                           ring arcs using exhaustive side cuts.
+                           ``"partial_exo"`` additionally replaces partial
+                           ring arcs using only exo side cuts adjacent to the
+                           selected ring arc. Default: ``"no"``.
     :param replace_ids: iterable with atom ids to replace, it has lower priority over `protected_ids` (replace_ids
                         which are present in protected_ids would be protected).
                         Ids of hydrogen atoms (if any) connected to the specified heavy atoms will be automatically
@@ -1139,6 +1160,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
 
     """
 
+    replace_cycles = _normalize_replace_cycles(replace_cycles)
+
     __check_db_existence(db_name)
     products = {Chem.MolToSmiles(Chem.RemoveHs(mol))}
 
@@ -1171,7 +1194,6 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                                         sample_func=sample_func,
                                                                         return_frag_smi_only=False,
                                                                         operation="mutate",
-                                                                        ring_closures=ring_closures,
                                                                         seed=seed, **kwargs):
             for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, context_mol):
                 if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
@@ -1196,7 +1218,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                               max_rel_size, min_inc, max_inc, replace_cycles,
                                                               protected_ids, min_freq, set_names, max_replacements,
                                                               symmetry_fixes, filter_func=filter_func,
-                                                              sample_func=sample_func, ring_closures=ring_closures,
+                                                              sample_func=sample_func,
                                                               seed=seed, **kwargs),
                                 chunksize=100):
                 for smi, m, rxn, freq in items:
@@ -1537,8 +1559,8 @@ def link_mols2(*args, **kwargs):
 
 
 def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, max_size=8, min_rel_size=0,
-                     max_rel_size=1, min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
-                     ring_closures=False, protected_ids_1=None, protected_ids_2=None, replace_ids_1=None,
+                     max_rel_size=1, min_inc=-2, max_inc=2, max_replacements=None, replace_cycles="no",
+                     protected_ids_1=None, protected_ids_2=None, replace_ids_1=None,
                      replace_ids_2=None, min_freq=0, symmetry_fixes=False, filter_func=None, sample_func=None,
                      return_frag_smi_only=True,
                      set_names=None, seed=None, **kwargs):
@@ -1565,10 +1587,16 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
     :param max_replacements: maximum number of replacements to make. If the number of replacements available in DB is
                              greater than the specified value the specified number of randomly chosen replacements
                              will be applied.
-    :param replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size.
-                           Default: False.
-    :param ring_closures: for single-molecule replacement searches, include partial-cycle replacements from DB rows with
-                          ``is_ring_closure=1``. Ordinary mutation candidates query only ``is_ring_closure=0``.
+    :param replace_cycles: controls replacement of cyclic source fragments for
+                           single-molecule searches. ``"no"``/False uses
+                           ordinary acyclic-cut mutation only.
+                           ``"forced"``/True allows cyclic cores from
+                           ordinary fragmentation to be replaced ignoring the size filters.
+                           ``"partial_all"`` additionally searches partial
+                           ring arcs with exhaustive side cuts.
+                           ``"partial_exo"`` additionally searches partial
+                           ring arcs with only exo side cuts. Ignored for
+                           link searches. Default: ``"no"``.
 
     :param protected_ids_1: iterable with atom ids which will not be mutated in mol1. If the molecule was supplied with
                             explicit hydrogen the ids of protected hydrogens should be supplied as well, otherwise they
@@ -1625,6 +1653,8 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
     :return: generator over smiles of fragments in a DB which satisfy given criteria
     """
 
+    replace_cycles = _normalize_replace_cycles(replace_cycles)
+
     protected_ids_1 = set(protected_ids_1) if protected_ids_1 else set()
     if replace_ids_1:
         replace_ids_1 = set(replace_ids_1) if replace_ids_1 else set()
@@ -1646,7 +1676,6 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                                   filter_func=filter_func, sample_func=sample_func,
                                   return_frag_smi_only=return_frag_smi_only,
                                   operation=("link" if isinstance(mol2, Chem.Mol) else "mutate"),
-                                  ring_closures=(False if isinstance(mol2, Chem.Mol) else ring_closures),
                                   seed=seed, **kwargs):
         yield res
 

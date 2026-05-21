@@ -132,6 +132,14 @@ output
  'COc1ccc(C)cc1CCl']
 ```
 
+Control cyclic source fragments with `replace_cycles`. The default `"no"` performs ordinary mutation only. Use
+`"forced"` to allow cyclic cores through the size filters, `"partial_all"` to additionally enumerate exhaustive
+partial ring-arc replacements, or `"partial_exo"` to use the faster exo-only partial-ring mode. `partial_all` can be
+substantially slower on ring-rich molecules; `partial_exo` is faster but may return fewer products.
+```python
+mols = list(mutate_mol(m, db_name='fragments_v1.db', replace_cycles='partial_exo'))
+```
+
 **Grow** molecule. Only hydrogens will be replaced. Hydrogens should not be added explicitly.
 ```python
 mols = list(grow_mol(m, db_name='replacements.db'))

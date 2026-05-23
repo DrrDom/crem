@@ -1558,6 +1558,19 @@ def link_mols2(*args, **kwargs):
     return list(link_mols(*args, **kwargs))
 
 
+def make_cycle2(*args, **kwargs):
+    """
+    Convenience function which can be used to process molecules in parallel using multiprocessing module.
+    It calls make_cycle which cannot be used directly in multiprocessing because it is a generator
+
+    :param args: positional arguments, the same as in make_cycle function
+    :param kwargs: keyword arguments, the same as in make_cycle function
+    :return: list with output molecules
+
+    """
+    return list(make_cycle(*args, **kwargs))
+
+
 def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, max_size=8, min_rel_size=0,
                      max_rel_size=1, min_inc=-2, max_inc=2, max_replacements=None, replace_cycles="no",
                      protected_ids_1=None, protected_ids_2=None, replace_ids_1=None,

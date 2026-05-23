@@ -2,7 +2,7 @@ import sqlite3
 
 from rdkit import Chem
 
-from crem.scripts.cremdb_create import _fragment_mol, _fragment_mol_ring
+from crem.scripts.cremdb_create import _fragment_mol, _fragment_mol_ring, _normalize_input_mol
 
 
 def test_user_version(db):
@@ -237,8 +237,9 @@ def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
 
 def test_ring_optimal_restricts_side_cuts_to_exo_bonds():
     smi = "CC1CCC(CCC)CC1"
-    full, _ = _fragment_mol_ring(smi, "", max_heavy_atoms=15, side_cut_mode="all")
-    optimal, _ = _fragment_mol_ring(smi, "", max_heavy_atoms=15, side_cut_mode="exo")
+    mol = _normalize_input_mol(Chem.MolFromSmiles(smi))
+    full, _ = _fragment_mol_ring(Chem.Mol(mol), "", max_heavy_atoms=15, side_cut_mode="all")
+    optimal, _ = _fragment_mol_ring(Chem.Mol(mol), "", max_heavy_atoms=15, side_cut_mode="exo")
 
     assert optimal
     assert optimal < full

@@ -291,7 +291,13 @@ def _core_size_allowed(core_smi, min_heavy_atoms=None, max_heavy_atoms=None):
     return True
 
 
-def _fragment_mol_acyclic(smi, smi_id, mode, min_heavy_atoms=None, max_heavy_atoms=None):
+def _normalize_input_mol(mol):
+    for atom in mol.GetAtoms():
+        atom.SetIsotope(0)
+    return Chem.RemoveHs(mol)
+
+
+def _fragment_mol_acyclic(mol, smi_id, mode, min_heavy_atoms=None, max_heavy_atoms=None):
     """Acyclic-bond MMPA fragmentation (the historical CReM fragmenter).
 
     Returns ``(outlines_set, n_mmpa_failures)``. Each MMPA call is wrapped in
@@ -299,10 +305,6 @@ def _fragment_mol_acyclic(smi, smi_id, mode, min_heavy_atoms=None, max_heavy_ato
     the offending pass for the offending molecule rather than killing the
     whole worker.
     """
-    mol = Chem.MolFromSmiles(smi)
-    if mol is None:
-        return set(), 0
-
     outlines = set()
     n_failures = 0
     frags = []
@@ -356,7 +358,7 @@ def _fragment_mol_acyclic(smi, smi_id, mode, min_heavy_atoms=None, max_heavy_ato
     return outlines, n_failures
 
 
-def _fragment_mol_ring(smi, smi_id, min_heavy_atoms=None, max_heavy_atoms=None, side_cut_mode="all"):
+def _fragment_mol_ring(mol, smi_id, min_heavy_atoms=None, max_heavy_atoms=None, side_cut_mode="all"):
     """Ring-bond fragmentation: cut every pair of SINGLE bonds that lies
     inside the same ring, yielding 2-AP arc fragments and 3/4-AP partial-cycle
     fragments from up to two additional acyclic side cuts. ``side_cut_mode``
@@ -367,10 +369,6 @@ def _fragment_mol_ring(smi, smi_id, min_heavy_atoms=None, max_heavy_atoms=None, 
     disconnect the graph (e.g. spanning two rings of a fused system without
     severing both paths) are skipped. Both arcs are emitted as candidate cores.
     """
-    mol = Chem.MolFromSmiles(smi)
-    if mol is None:
-        return set(), 0
-
     outlines = set()
     for core_mol, context_mol, _ in iter_partial_ring_fragments(
         mol,
@@ -402,11 +400,16 @@ def _fragment_mol(smi, smi_id, mode, frag_mode, min_heavy_atoms=None, max_heavy_
             f"frag_mode must be one of {', '.join(_FRAG_MODES)} (got {frag_mode!r})"
         )
 
+    mol = Chem.MolFromSmiles(smi)
+    if mol is None:
+        return set(), 0
+    mol = _normalize_input_mol(mol)
+
     out = set()
     n_failures = 0
     if frag_mode in ('acyclic', 'both', 'both_optimal'):
         outlines, f = _fragment_mol_acyclic(
-            smi,
+            Chem.Mol(mol),
             smi_id,
             mode,
             min_heavy_atoms=min_heavy_atoms,
@@ -417,7 +420,7 @@ def _fragment_mol(smi, smi_id, mode, frag_mode, min_heavy_atoms=None, max_heavy_
             out.add((core, chains, 0))  # 0 - not ring closure
     if frag_mode in ('ring', 'both'):
         outlines, f = _fragment_mol_ring(
-            smi,
+            Chem.Mol(mol),
             smi_id,
             min_heavy_atoms=min_heavy_atoms,
             max_heavy_atoms=max_heavy_atoms,
@@ -428,7 +431,7 @@ def _fragment_mol(smi, smi_id, mode, frag_mode, min_heavy_atoms=None, max_heavy_
             out.add((core, chains, 1))  # 1 - ring closure
     if frag_mode in ('ring_optimal', 'both_optimal'):
         outlines, f = _fragment_mol_ring(
-            smi,
+            Chem.Mol(mol),
             smi_id,
             min_heavy_atoms=min_heavy_atoms,
             max_heavy_atoms=max_heavy_atoms,

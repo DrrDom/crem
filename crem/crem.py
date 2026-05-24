@@ -1727,7 +1727,7 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
 
 def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                min_atoms=1, max_atoms=10, max_replacements=None,
-               replace_cycles=False, replace_ids=None, protected_ids=None, symmetry_fixes=False, min_freq=0,
+               replace_ids=None, protected_ids=None, symmetry_fixes=False, min_freq=0,
                return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
                sample_func=None, set_names=None, seed=None, **kwargs):
     """
@@ -1765,7 +1765,6 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
     :param max_replacements: maximum number of replacements to make. If the number of replacements available in DB is
                              greater than the specified value the specified number of randomly chosen replacements
                              will be applied. Default: None.
-    :param replace_cycles: accepted for API compatibility with mutate/grow functions but not used here.
     :param replace_ids: iterable with ids of heavy atom with replaceable Hs or/and ids of H atoms to replace,
                         it has lower priority over `protected_ids` (replace_ids
                         which are present in protected_ids would be protected). Default: None.

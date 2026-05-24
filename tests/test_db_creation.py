@@ -265,6 +265,49 @@ def test_fragment_issue_records_allow_valid_h_attachment_core():
     assert records == []
 
 
+def test_normalize_input_mol_removes_isotopic_alkene_stereo_hs():
+    mol = Chem.MolFromSmiles("[3H]/C=C(\\[3H])CC")
+    normalized = _normalize_input_mol(mol)
+
+    assert "[H]" not in Chem.MolToSmiles(normalized, isomericSmiles=True)
+    assert all(atom.GetAtomicNum() != 1 for atom in normalized.GetAtoms())
+
+
+def test_normalize_input_mol_preserves_tetrahedral_chiral_hydrogen():
+    mol = Chem.MolFromSmiles("[H][C@](F)(Cl)Br")
+    normalized = _normalize_input_mol(mol)
+
+    assert Chem.MolToSmiles(normalized, isomericSmiles=True) == "F[C@@H](Cl)Br"
+
+
+def test_reported_tritium_alkene_generates_no_explicit_h_core_issues():
+    smi = (
+        "[3H]/C=C(\\[3H])C[C@@]1(c2cccc(C3(C(F)(F)F)N=N3)c2)"
+        "C(=O)NC(=O)N(C)C1=O"
+    )
+    frags, _ = _fragment_mol(
+        smi,
+        "CHEMBL2163547",
+        0,
+        "both_optimal",
+        max_heavy_atoms=15,
+    )
+    issues = [
+        record
+        for core, context, is_ring_closure in frags
+        for record in _fragment_issue_records(
+            11606,
+            smi,
+            "CHEMBL2163547",
+            core,
+            context,
+            is_ring_closure,
+        )
+    ]
+
+    assert issues == []
+
+
 def test_fragment_error_log_path_replaces_db_extension(tmp_path):
     path = tmp_path / "output.db"
 

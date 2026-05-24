@@ -48,6 +48,9 @@ _STRIDE_SHARD_SENTINEL = 0xC0DECAFE
 _MMPA_LOG_BUDGET = 10
 _mmpa_log_remaining = _MMPA_LOG_BUDGET
 
+_REMOVE_HS_PARAMS = Chem.RemoveHsParameters()
+_REMOVE_HS_PARAMS.removeDefiningBondStereo = True
+
 _ATTACHMENT_POINT_RE = re.compile(r"\[(\d*)\*:(\d+)\]")
 _FRAGMENT_ISSUE_COLUMNS = (
     "timestamp",
@@ -382,7 +385,7 @@ def _core_size_allowed(core_smi, min_heavy_atoms=None, max_heavy_atoms=None):
 def _normalize_input_mol(mol):
     for atom in mol.GetAtoms():
         atom.SetIsotope(0)
-    return Chem.RemoveHs(mol)
+    return Chem.RemoveHs(mol, _REMOVE_HS_PARAMS)
 
 
 def _fragment_issue_records(chunk_id, smi, smi_id, core, context, is_ring_closure):

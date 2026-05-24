@@ -2,7 +2,14 @@ import sqlite3
 
 from rdkit import Chem
 
-from crem.scripts.cremdb_create import _fragment_mol, _fragment_mol_ring, _normalize_input_mol
+from crem.scripts.cremdb_create import (
+    _FRAGMENT_ISSUE_COLUMNS,
+    _FragmentIssueWriter,
+    _fragment_issue_records,
+    _fragment_mol,
+    _fragment_mol_ring,
+    _normalize_input_mol,
+)
 
 
 def test_user_version(db):
@@ -235,11 +242,61 @@ def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
     assert labeled_two_point == 0
 
 
+def test_fragment_issue_records_detect_defensive_checks():
+    core = "[H]C([H])(N(C[1*:3])[*:1])C([H])([*:3])[1*:2]"
+    records = list(
+        _fragment_issue_records(4, "input_smi", "mol1", core, "ctx", 1)
+    )
+    issues = [record[3] for record in records]
+
+    assert issues.count("explicit_h_core_smi") == 1
+    assert issues.count("duplicate_attachment_map") == 1
+    assert issues.count("mixed_ring_external_attachment_map") == 1
+    assert all(record[:3] == (4, "mol1", "input_smi") for record in records)
+
+
+def test_fragment_issue_records_allow_valid_h_attachment_core():
+    records = list(
+        _fragment_issue_records(0, "[H][*:1]", "mol1", "[H][*:1]", "ctx", 0)
+    )
+
+    assert records == []
+
+
+def test_fragment_issue_writer_preserves_repeated_tsv_records(tmp_path):
+    path = tmp_path / "fragment_errors.tsv"
+    record = (
+        1,
+        "mol\t1",
+        "C\nC",
+        "duplicate_attachment_map",
+        "C([*:1])[*:1]",
+        "ctx",
+        0,
+        "map=1;isotopes=0,0",
+    )
+    writer = _FragmentIssueWriter(str(path))
+    try:
+        writer.write([record, record])
+    finally:
+        writer.close()
+
+    lines = path.read_text().splitlines()
+    assert lines[0] == "\t".join(_FRAGMENT_ISSUE_COLUMNS)
+    assert len(lines) == 3
+    assert lines[1] == lines[2]
+    assert lines[1].split("\t")[:3] == ["1", "mol\\t1", "C\\nC"]
+
+
 def test_ring_optimal_restricts_side_cuts_to_exo_bonds():
     smi = "CC1CCC(CCC)CC1"
     mol = _normalize_input_mol(Chem.MolFromSmiles(smi))
-    full, _ = _fragment_mol_ring(Chem.Mol(mol), "", max_heavy_atoms=15, side_cut_mode="all")
-    optimal, _ = _fragment_mol_ring(Chem.Mol(mol), "", max_heavy_atoms=15, side_cut_mode="exo")
+    full, _ = _fragment_mol_ring(
+        Chem.Mol(mol), "", max_heavy_atoms=15, side_cut_mode="all"
+    )
+    optimal, _ = _fragment_mol_ring(
+        Chem.Mol(mol), "", max_heavy_atoms=15, side_cut_mode="exo"
+    )
 
     assert optimal
     assert optimal < full

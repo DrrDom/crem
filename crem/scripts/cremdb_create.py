@@ -47,6 +47,78 @@ _STRIDE_SHARD_SENTINEL = 0xC0DECAFE
 _MMPA_LOG_BUDGET = 10
 _mmpa_log_remaining = _MMPA_LOG_BUDGET
 
+_ATTACHMENT_POINT_RE = re.compile(r"\[(\d*)\*:(\d+)\]")
+_FRAGMENT_ISSUE_COLUMNS = (
+    "chunk_id",
+    "smi_id",
+    "smi",
+    "issue",
+    "core_smi",
+    "context_smi",
+    "is_ring_closure",
+    "detail",
+)
+
+
+def _tsv_field(value):
+    if value is None:
+        return ""
+    return (
+        str(value)
+        .replace("\t", "\\t")
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    )
+
+
+def _fragment_issue_tsv_line(record):
+    return "\t".join(_tsv_field(value) for value in record) + "\n"
+
+
+class _FragmentIssueWriter:
+    def __init__(self, path=None):
+        self._handle = open(path, "w", encoding="utf-8") if path else sys.stderr
+        self._close_handle = bool(path)
+        self._header_written = False
+
+    def write(self, records):
+        if not records:
+            return
+        if not self._header_written:
+            self._handle.write("\t".join(_FRAGMENT_ISSUE_COLUMNS) + "\n")
+            self._header_written = True
+        for record in records:
+            self._handle.write(_fragment_issue_tsv_line(record))
+        self._handle.flush()
+
+    def close(self):
+        if self._close_handle:
+            self._handle.close()
+
+
+def _copy_fragment_issue_logs(paths, output_handle):
+    header = "\t".join(_FRAGMENT_ISSUE_COLUMNS)
+    header_written = False
+    for path in paths:
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            continue
+        with open(path, "rt", encoding="utf-8") as handle:
+            first_line = True
+            for line in handle:
+                if first_line and line.rstrip("\n") == header:
+                    first_line = False
+                    if not header_written:
+                        output_handle.write(line)
+                        header_written = True
+                    continue
+                first_line = False
+                if not header_written:
+                    output_handle.write(header + "\n")
+                    header_written = True
+                output_handle.write(line)
+    if header_written:
+        output_handle.flush()
+
 
 def _safe_mmpa_fragment(mol, smi_id, **kwargs):
     """Call rdMMPA.FragmentMol; swallow the two RDKit edge-case exceptions.
@@ -297,6 +369,49 @@ def _normalize_input_mol(mol):
     return Chem.RemoveHs(mol)
 
 
+def _fragment_issue_records(chunk_id, smi, smi_id, core, context, is_ring_closure):
+    if "[H]" in core and core != "[H][*:1]":
+        yield (
+            chunk_id,
+            smi_id,
+            smi,
+            "explicit_h_core_smi",
+            core,
+            context,
+            int(is_ring_closure),
+            "",
+        )
+
+    attachment_maps = defaultdict(list)
+    for isotope, atom_map in _ATTACHMENT_POINT_RE.findall(core):
+        attachment_maps[atom_map].append(isotope or "0")
+
+    for atom_map, isotopes in attachment_maps.items():
+        detail = f"map={atom_map};isotopes={','.join(isotopes)}"
+        if len(isotopes) > 1:
+            yield (
+                chunk_id,
+                smi_id,
+                smi,
+                "duplicate_attachment_map",
+                core,
+                context,
+                int(is_ring_closure),
+                detail,
+            )
+        if "0" in isotopes and any(isotope != "0" for isotope in isotopes):
+            yield (
+                chunk_id,
+                smi_id,
+                smi,
+                "mixed_ring_external_attachment_map",
+                core,
+                context,
+                int(is_ring_closure),
+                detail,
+            )
+
+
 def _fragment_mol_acyclic(mol, smi_id, mode, min_heavy_atoms=None, max_heavy_atoms=None):
     """Acyclic-bond MMPA fragmentation (the historical CReM fragmenter).
 
@@ -534,12 +649,14 @@ def _process_chunk(task):
     chunk_id, items = task
     envs = set()
     core_info = {}
+    fragment_issues = []
     counts = {name: {r: defaultdict(int) for r in _RADII} for name in _SET_NAMES}
     stats = {
         "lines": 0,
         "fragments": 0,
         "pairs": 0,
         "skipped_mmpa": 0,
+        "fragment_issues": 0,
     }
 
     for smi, smi_id, member_sets in items:
@@ -554,6 +671,14 @@ def _process_chunk(task):
         stats["fragments"] += len(frags)
         stats["skipped_mmpa"] += n_mmpa_fail
         for core, context, is_ring_closure in frags:
+            fragment_issues.extend(_fragment_issue_records(
+                chunk_id,
+                smi,
+                smi_id,
+                core,
+                context,
+                is_ring_closure,
+            ))
             for radius in _RADII:
                 for env, core_smi, core_num_atoms in _env_core_from_fragment(
                     core,
@@ -571,7 +696,8 @@ def _process_chunk(task):
                         core_info[core_smi] = (core_num_atoms, dist2, core_smi_h)
                     stats["pairs"] += 1
 
-    return chunk_id, envs, core_info, counts, stats
+    stats["fragment_issues"] = len(fragment_issues)
+    return chunk_id, envs, core_info, counts, stats, fragment_issues
 
 
 def _read_chunk_ids(path):
@@ -864,6 +990,7 @@ def run(
     frag_mode: str = 'both_optimal',
     stride_mod: int = 1,
     stride_idx: int = 0,
+    fragment_error_log: str = None,
 ) -> None:
     """Build or extend a v1 CReM fragment database.
 
@@ -896,6 +1023,8 @@ def run(
             split the input across N concurrent shard builders.
         stride_idx: Stride index for this build; meaningful only when
             ``stride_mod > 1``.
+        fragment_error_log: Optional TSV file for defensive fragment
+            validation issues. If omitted, issues are written to stderr.
     """
     if frag_mode not in _FRAG_MODES:
         raise ValueError(
@@ -963,10 +1092,17 @@ def run(
 
     input_handle, zstd_handle = _open_input(input_path, force_zstd)
 
-    total_stats = {"lines": 0, "fragments": 0, "pairs": 0, "skipped_mmpa": 0}
+    total_stats = {
+        "lines": 0,
+        "fragments": 0,
+        "pairs": 0,
+        "skipped_mmpa": 0,
+        "fragment_issues": 0,
+    }
     chunks_processed = 0
     chunks_skipped = 0
     start_time = time.time()
+    fragment_issue_writer = _FragmentIssueWriter(fragment_error_log)
 
     _ncpu = min(cpu_count(), max(ncpu, 1))
     batch_size = _ncpu * max(prefetch, 1)
@@ -1093,10 +1229,14 @@ def run(
             if not current_batch:
                 break
 
-            for chunk_id, envs, core_info, counts, stats in pool.imap_unordered(
-                _process_chunk, current_batch, chunksize=1
-            ):
+            results = pool.imap_unordered(
+                _process_chunk,
+                current_batch,
+                chunksize=1,
+            )
+            for chunk_id, envs, core_info, counts, stats, fragment_issues in results:
                 t0 = time.perf_counter()
+                fragment_issue_writer.write(fragment_issues)
                 acc_envs.update(envs)
                 _merge_core_info(acc_core_info, core_info)
                 _merge_counts(acc_counts, counts, set_names, radii)
@@ -1109,6 +1249,7 @@ def run(
                 total_stats["fragments"] += stats["fragments"]
                 total_stats["pairs"] += stats["pairs"]
                 total_stats["skipped_mmpa"] += stats.get("skipped_mmpa", 0)
+                total_stats["fragment_issues"] += stats.get("fragment_issues", 0)
                 structures_in_current_shard += stats["lines"]
 
                 if len(acc_chunk_ids) >= flush_every:
@@ -1174,6 +1315,7 @@ def run(
             zstd_handle.close()
         if processed_handle:
             processed_handle.close()
+        fragment_issue_writer.close()
         if conn is not None:
             conn.close()
 
@@ -1200,6 +1342,7 @@ def run(
         print(f"Fragments generated: {total_stats['fragments']}")
         print(f"Env/core pairs: {total_stats['pairs']}")
         print(f"MMPA failures: {total_stats['skipped_mmpa']}")
+        print(f"Fragment validation issues: {total_stats['fragment_issues']}")
         print(f"Unique envs: {env_count}")
         print(f"Unique frags: {frag_count}")
         print(f"Unique frags_h: {frag_h_count}")
@@ -1242,6 +1385,7 @@ def run_parallel_shards(
     verbose: bool = True,
     frag_mode: str = 'both_optimal',
     merge_parallel: int = None,
+    fragment_error_log: str = None,
 ) -> None:
     """Build a v1 CReM fragment DB using N concurrent shard builders.
 
@@ -1297,11 +1441,14 @@ def run_parallel_shards(
 
     procs: List[subprocess.Popen] = []
     log_handles: List = []
+    fragment_issue_logs: List[str] = []
     try:
         for i in range(parallel_shards):
             shard_db = str(parts_dir / f"shard_{i:03d}.db")
             chunk_file = str(parts_dir / f"processed_chunks_{i:03d}.txt")
             log_file = str(parts_dir / f"shard_{i:03d}.log")
+            fragment_issue_log = str(parts_dir / f"fragment_errors_{i:03d}.tsv")
+            fragment_issue_logs.append(fragment_issue_log)
 
             if _shard_is_finalised(shard_db):
                 if verbose:
@@ -1315,6 +1462,7 @@ def run_parallel_shards(
             child_argv.extend(["--ncpu", str(ncpu_per_shard)])
             child_argv.extend(["--stride-mod", str(parallel_shards)])
             child_argv.extend(["--stride-idx", str(i)])
+            child_argv.extend(["--fragment-error-log", fragment_issue_log])
 
             log_fh = open(log_file, "ab")
             log_handles.append(log_fh)
@@ -1357,6 +1505,12 @@ def run_parallel_shards(
                 f"{len(failures)} shard builder(s) failed: {details}. "
                 f"Parts left in {parts_dir} for inspection/resume."
             )
+
+        if fragment_error_log:
+            with open(fragment_error_log, "w", encoding="utf-8") as handle:
+                _copy_fragment_issue_logs(fragment_issue_logs, handle)
+        else:
+            _copy_fragment_issue_logs(fragment_issue_logs, sys.stderr)
     finally:
         for fh in log_handles:
             try:
@@ -1459,6 +1613,14 @@ def main():
     )
     parser.add_argument("--sep", default=None, help="Input delimiter (default: whitespace)")
     parser.add_argument("--processed-chunks", default=None, help="Path to processed chunks file (append)")
+    parser.add_argument(
+        "--fragment-error-log",
+        default=None,
+        help=(
+            "Optional TSV file for defensive fragment validation issues. "
+            "If omitted, issues are written to stderr."
+        ),
+    )
     parser.add_argument("--zstd", action="store_true", help="Force zstd input")
     parser.add_argument("--log-every", type=int, default=None, help="Log progress every N chunks (default: None)")
     parser.add_argument("-c", "--ncpu", type=int, default=1, help="Number of worker processes (default: 1)")
@@ -1536,6 +1698,7 @@ def main():
             prefetch=args.prefetch,
             timings=args.timings,
             frag_mode=args.frag_mode,
+            fragment_error_log=args.fragment_error_log,
         )
         return
 
@@ -1560,6 +1723,7 @@ def main():
         frag_mode=args.frag_mode,
         stride_mod=args.stride_mod,
         stride_idx=args.stride_idx,
+        fragment_error_log=args.fragment_error_log,
     )
 
 

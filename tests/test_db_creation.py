@@ -1,10 +1,12 @@
 import sqlite3
+from datetime import datetime
 
 from rdkit import Chem
 
 from crem.scripts.cremdb_create import (
     _FRAGMENT_ISSUE_COLUMNS,
     _FragmentIssueWriter,
+    _fragment_error_log_path,
     _fragment_issue_records,
     _fragment_mol,
     _fragment_mol_ring,
@@ -263,8 +265,14 @@ def test_fragment_issue_records_allow_valid_h_attachment_core():
     assert records == []
 
 
-def test_fragment_issue_writer_preserves_repeated_tsv_records(tmp_path):
-    path = tmp_path / "fragment_errors.tsv"
+def test_fragment_error_log_path_replaces_db_extension(tmp_path):
+    path = tmp_path / "output.db"
+
+    assert _fragment_error_log_path(path) == str(tmp_path / "output.errors")
+
+
+def test_fragment_issue_writer_appends_repeated_tsv_records(tmp_path):
+    path = tmp_path / "output.errors"
     record = (
         1,
         "mol\t1",
@@ -277,15 +285,23 @@ def test_fragment_issue_writer_preserves_repeated_tsv_records(tmp_path):
     )
     writer = _FragmentIssueWriter(str(path))
     try:
-        writer.write([record, record])
+        writer.write([record])
+    finally:
+        writer.close()
+    writer = _FragmentIssueWriter(str(path))
+    try:
+        writer.write([record])
     finally:
         writer.close()
 
     lines = path.read_text().splitlines()
     assert lines[0] == "\t".join(_FRAGMENT_ISSUE_COLUMNS)
     assert len(lines) == 3
-    assert lines[1] == lines[2]
-    assert lines[1].split("\t")[:3] == ["1", "mol\\t1", "C\\nC"]
+    for line in lines[1:]:
+        fields = line.split("\t")
+        datetime.fromisoformat(fields[0])
+        assert fields[1:4] == ["1", "mol\\t1", "C\\nC"]
+    assert lines[1].split("\t")[1:] == lines[2].split("\t")[1:]
 
 
 def test_ring_optimal_restricts_side_cuts_to_exo_bonds():

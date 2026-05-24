@@ -31,10 +31,31 @@ _CUSTOM_WRITE_BATCH = 10_000
 _PROPS_DEFAULT = object()
 
 
-def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name: Union[str, Dict[str, Optional[set]]],
-              radii=(1, 2, 3, 4, 5), *, ncpu: int = 1, max_heavy_atoms: int = 15, keep_stereo: bool = False,
-              mode: int = 0, chunk_size: int = 100, flush_every: int = 100, shard_size: Optional[int] = None,
-              parallel_shards: int = 1, frag_mode: str = 'both_optimal', verbose: bool = True) -> None:
+def create_db(
+    input: Union[PathLike, Iterable[str]],
+    output: PathLike,
+    set_name: Union[str, Dict[str, Optional[set]]],
+    radii=(1, 2, 3, 4, 5),
+    *,
+    ncpu: int = 1,
+    max_heavy_atoms: int = 15,
+    keep_stereo: bool = False,
+    mode: int = 0,
+    chunk_size: int = 100,
+    flush_every: int = 100,
+    shard_size: Optional[int] = None,
+    parallel_shards: int = 1,
+    frag_mode: str = 'both_optimal',
+    verbose: bool = True,
+    sep: Optional[str] = None,
+    processed_chunks: Optional[PathLike] = None,
+    force_zstd: bool = False,
+    log_every: Optional[int] = None,
+    prefetch: int = 4,
+    timings: bool = False,
+    merge_parallel: Optional[int] = None,
+    fragment_error_log: bool = False,
+) -> None:
     """Create or extend a v1 CReM fragment database.
 
     Calling on an existing database is safe and additive: ``_ensure_schema``
@@ -66,6 +87,18 @@ def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name:
             ``'both'``, ``'ring_optimal'``, or ``'both_optimal'``.
             Default ``'both_optimal'`` matches ``cremdb_create``.
         verbose: Print progress and statistics to stdout/stderr.
+        sep: Input delimiter (``None`` = whitespace).
+        processed_chunks: Path to a processed-chunks file for resumable
+            non-parallel builds from file input. Ignored when ``input`` is an
+            iterable. Also ignored for ``parallel_shards > 1``; parallel
+            builds manage per-shard processed-chunk files internally.
+        force_zstd: Force zstd input decompression regardless of file suffix.
+        log_every: Print a progress line every N chunks (``None`` = silent).
+        prefetch: In-flight task batches per worker.
+        timings: Print per-flush timing breakdown to stderr.
+        merge_parallel: Max concurrent pair-merges for ``parallel_shards > 1``.
+        fragment_error_log: Write defensive fragment validation issues to
+            ``<output>.errors``. If false, issues are written to stderr.
     """
     if parallel_shards < 1:
         raise ValueError("parallel_shards must be >= 1")
@@ -80,7 +113,11 @@ def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name:
         # --- resolve input ---------------------------------------------------
         if isinstance(input, (str, Path)):
             input_path = str(input)
+            processed_chunks_arg = (
+                str(processed_chunks) if processed_chunks is not None else None
+            )
         else:
+            processed_chunks_arg = None
             with tempfile.NamedTemporaryFile(
                 mode='w', suffix='.smi', delete=False, encoding='utf-8'
             ) as fh:
@@ -122,12 +159,13 @@ def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name:
                 flush_every=flush_every,
                 verbose=verbose,
                 frag_mode=frag_mode,
-                # pass-through defaults for rarely needed options
-                sep=None,
-                force_zstd=False,
-                log_every=None,
-                prefetch=4,
-                timings=False,
+                sep=sep,
+                force_zstd=force_zstd,
+                log_every=log_every,
+                prefetch=prefetch,
+                timings=timings,
+                merge_parallel=merge_parallel,
+                fragment_error_log=fragment_error_log,
             )
         else:
             _run(
@@ -144,13 +182,13 @@ def create_db(output: PathLike, input: Union[PathLike, Iterable[str]], set_name:
                 ncpu=ncpu,
                 verbose=verbose,
                 frag_mode=frag_mode,
-                # pass-through defaults for rarely needed options
-                sep=None,
-                processed_chunks=None,
-                force_zstd=False,
-                log_every=None,
-                prefetch=4,
-                timings=False,
+                sep=sep,
+                processed_chunks=processed_chunks_arg,
+                force_zstd=force_zstd,
+                log_every=log_every,
+                prefetch=prefetch,
+                timings=timings,
+                fragment_error_log=fragment_error_log,
             )
 
     finally:

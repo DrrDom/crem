@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
+from datetime import datetime
 from functools import lru_cache
 from itertools import islice, permutations
 from multiprocessing import Pool, cpu_count
@@ -49,6 +50,7 @@ _mmpa_log_remaining = _MMPA_LOG_BUDGET
 
 _ATTACHMENT_POINT_RE = re.compile(r"\[(\d*)\*:(\d+)\]")
 _FRAGMENT_ISSUE_COLUMNS = (
+    "timestamp",
     "chunk_id",
     "smi_id",
     "smi",
@@ -72,14 +74,23 @@ def _tsv_field(value):
 
 
 def _fragment_issue_tsv_line(record):
-    return "\t".join(_tsv_field(value) for value in record) + "\n"
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    return "\t".join(_tsv_field(value) for value in (timestamp, *record)) + "\n"
+
+
+def _fragment_error_log_path(output_db):
+    return str(Path(output_db).with_suffix(".errors"))
 
 
 class _FragmentIssueWriter:
     def __init__(self, path=None):
-        self._handle = open(path, "w", encoding="utf-8") if path else sys.stderr
+        self._handle = open(path, "a", encoding="utf-8") if path else sys.stderr
         self._close_handle = bool(path)
-        self._header_written = False
+        self._header_written = (
+            bool(path)
+            and os.path.exists(path)
+            and os.path.getsize(path) > 0
+        )
 
     def write(self, records):
         if not records:
@@ -96,15 +107,20 @@ class _FragmentIssueWriter:
             self._handle.close()
 
 
-def _copy_fragment_issue_logs(paths, output_handle):
+def _copy_fragment_issue_logs(sources, output_handle, header_written=False):
     header = "\t".join(_FRAGMENT_ISSUE_COLUMNS)
-    header_written = False
-    for path in paths:
+    for source in sources:
+        if isinstance(source, tuple):
+            path, offset = source
+        else:
+            path, offset = source, 0
         if not os.path.exists(path) or os.path.getsize(path) == 0:
             continue
-        with open(path, "rt", encoding="utf-8") as handle:
-            first_line = True
-            for line in handle:
+        with open(path, "rb") as handle:
+            handle.seek(offset)
+            first_line = offset == 0
+            for raw_line in handle:
+                line = raw_line.decode("utf-8", errors="replace")
                 if first_line and line.rstrip("\n") == header:
                     first_line = False
                     if not header_written:
@@ -990,7 +1006,7 @@ def run(
     frag_mode: str = 'both_optimal',
     stride_mod: int = 1,
     stride_idx: int = 0,
-    fragment_error_log: str = None,
+    fragment_error_log: bool = False,
 ) -> None:
     """Build or extend a v1 CReM fragment database.
 
@@ -1023,8 +1039,9 @@ def run(
             split the input across N concurrent shard builders.
         stride_idx: Stride index for this build; meaningful only when
             ``stride_mod > 1``.
-        fragment_error_log: Optional TSV file for defensive fragment
-            validation issues. If omitted, issues are written to stderr.
+        fragment_error_log: Write defensive fragment validation issues to a
+            TSV file next to the output DB with extension ``.errors``. If
+            false, issues are written to stderr.
     """
     if frag_mode not in _FRAG_MODES:
         raise ValueError(
@@ -1102,7 +1119,9 @@ def run(
     chunks_processed = 0
     chunks_skipped = 0
     start_time = time.time()
-    fragment_issue_writer = _FragmentIssueWriter(fragment_error_log)
+    fragment_issue_writer = _FragmentIssueWriter(
+        _fragment_error_log_path(output_db) if fragment_error_log else None
+    )
 
     _ncpu = min(cpu_count(), max(ncpu, 1))
     batch_size = _ncpu * max(prefetch, 1)
@@ -1385,7 +1404,7 @@ def run_parallel_shards(
     verbose: bool = True,
     frag_mode: str = 'both_optimal',
     merge_parallel: int = None,
-    fragment_error_log: str = None,
+    fragment_error_log: bool = False,
 ) -> None:
     """Build a v1 CReM fragment DB using N concurrent shard builders.
 
@@ -1441,14 +1460,13 @@ def run_parallel_shards(
 
     procs: List[subprocess.Popen] = []
     log_handles: List = []
-    fragment_issue_logs: List[str] = []
+    fragment_issue_logs: List[tuple] = []
     try:
         for i in range(parallel_shards):
             shard_db = str(parts_dir / f"shard_{i:03d}.db")
             chunk_file = str(parts_dir / f"processed_chunks_{i:03d}.txt")
             log_file = str(parts_dir / f"shard_{i:03d}.log")
-            fragment_issue_log = str(parts_dir / f"fragment_errors_{i:03d}.tsv")
-            fragment_issue_logs.append(fragment_issue_log)
+            fragment_issue_log = _fragment_error_log_path(shard_db)
 
             if _shard_is_finalised(shard_db):
                 if verbose:
@@ -1456,13 +1474,20 @@ def run_parallel_shards(
                     sys.stderr.flush()
                 continue
 
+            fragment_issue_offset = (
+                os.path.getsize(fragment_issue_log)
+                if os.path.exists(fragment_issue_log)
+                else 0
+            )
+            fragment_issue_logs.append((fragment_issue_log, fragment_issue_offset))
+
             child_argv = list(base_argv)
             child_argv.extend(["--output", shard_db])
             child_argv.extend(["--processed-chunks", chunk_file])
             child_argv.extend(["--ncpu", str(ncpu_per_shard)])
             child_argv.extend(["--stride-mod", str(parallel_shards)])
             child_argv.extend(["--stride-idx", str(i)])
-            child_argv.extend(["--fragment-error-log", fragment_issue_log])
+            child_argv.append("--fragment-error-log")
 
             log_fh = open(log_file, "ab")
             log_handles.append(log_fh)
@@ -1507,8 +1532,17 @@ def run_parallel_shards(
             )
 
         if fragment_error_log:
-            with open(fragment_error_log, "w", encoding="utf-8") as handle:
-                _copy_fragment_issue_logs(fragment_issue_logs, handle)
+            final_log = _fragment_error_log_path(output_db)
+            header_written = (
+                os.path.exists(final_log)
+                and os.path.getsize(final_log) > 0
+            )
+            with open(final_log, "a", encoding="utf-8") as handle:
+                _copy_fragment_issue_logs(
+                    fragment_issue_logs,
+                    handle,
+                    header_written=header_written,
+                )
         else:
             _copy_fragment_issue_logs(fragment_issue_logs, sys.stderr)
     finally:
@@ -1615,10 +1649,10 @@ def main():
     parser.add_argument("--processed-chunks", default=None, help="Path to processed chunks file (append)")
     parser.add_argument(
         "--fragment-error-log",
-        default=None,
+        action="store_true",
         help=(
-            "Optional TSV file for defensive fragment validation issues. "
-            "If omitted, issues are written to stderr."
+            "Write defensive fragment validation issues to <output>.errors "
+            "as TSV. If omitted, issues are written to stderr."
         ),
     )
     parser.add_argument("--zstd", action="store_true", help="Force zstd input")
@@ -1645,7 +1679,7 @@ def main():
         default=None,
         metavar="N",
         help=(
-            "Max number of input structures per shard database. "
+            "Max number of input structures per shard database generated sequentially. "
             "If omitted, all data goes to one DB (default behaviour). "
             "Shard 0 is the output file itself; subsequent shards get a "
             "numeric suffix (e.g. output_001.db, output_002.db, ...). "

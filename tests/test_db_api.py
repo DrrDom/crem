@@ -63,7 +63,7 @@ def test_create_from_file_path(tmp_path):
     smi = tmp_path / "mols.smi"
     smi.write_text("\n".join(CORPUS_A))
     db = str(tmp_path / "test.db")
-    create_db(db, str(smi), "chembl", radii=(1, 2, 3), verbose=False)
+    create_db(str(smi), db, "chembl", radii=(1, 2, 3), verbose=False)
     assert _frag_count(db) > 0
 
 
@@ -71,19 +71,27 @@ def test_create_from_path_object(tmp_path):
     smi = tmp_path / "mols.smi"
     smi.write_text("\n".join(CORPUS_A))
     db = tmp_path / "test.db"
-    create_db(db, smi, "chembl", radii=(1, 2, 3), verbose=False)
+    create_db(smi, db, "chembl", radii=(1, 2, 3), verbose=False)
     assert _frag_count(db) > 0
 
 
 def test_create_from_iterable(tmp_path):
     db = str(tmp_path / "test.db")
-    create_db(db, CORPUS_A, "chembl", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db, "chembl", radii=(1, 2, 3), verbose=False)
+    assert _frag_count(db) > 0
+
+
+def test_create_custom_separator_forwarded(tmp_path):
+    smi = tmp_path / "mols.smi"
+    smi.write_text("CCO|mol1\nCCCO|mol2\n")
+    db = str(tmp_path / "test.db")
+    create_db(smi, db, "chembl", radii=(1,), sep="|", verbose=False)
     assert _frag_count(db) > 0
 
 
 def test_create_valid_schema(tmp_path):
     db = str(tmp_path / "test.db")
-    create_db(db, CORPUS_A, "chembl", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db, "chembl", radii=(1, 2, 3), verbose=False)
     with sqlite3.connect(db) as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
     assert ver == 1
@@ -93,7 +101,7 @@ def test_create_valid_schema(tmp_path):
 
 def test_create_only_requested_radii(tmp_path):
     db = str(tmp_path / "test.db")
-    create_db(db, CORPUS_A, "chembl", radii=(1, 2), verbose=False)
+    create_db(CORPUS_A, db, "chembl", radii=(1, 2), verbose=False)
     tbls = _tables(db)
     assert "radius1" in tbls and "radius2" in tbls
     assert "radius3" not in tbls
@@ -101,22 +109,22 @@ def test_create_only_requested_radii(tmp_path):
 
 def test_create_is_additive(tmp_path):
     db = str(tmp_path / "test.db")
-    create_db(db, CORPUS_A, "chembl", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db, "chembl", radii=(1, 2, 3), verbose=False)
     n1 = _frag_count(db)
-    create_db(db, CORPUS_B, "chembl", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_B, db, "chembl", radii=(1, 2, 3), verbose=False)
     n2 = _frag_count(db)
     assert n2 > n1
 
 
 def test_create_set_name_str_creates_column(tmp_path):
     db = str(tmp_path / "test.db")
-    create_db(db, CORPUS_A, "myset", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db, "myset", radii=(1, 2, 3), verbose=False)
     assert "myset" in _cols(db, "radius3")
 
 
 def test_create_set_name_dict_all_mols(tmp_path):
     db = str(tmp_path / "test.db")
-    create_db(db, CORPUS_A, {"myset": None}, radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db, {"myset": None}, radii=(1, 2, 3), verbose=False)
     assert "myset" in _cols(db, "radius3")
     assert _frag_count(db) > 0
 
@@ -125,10 +133,10 @@ def test_create_set_name_dict_filtered(tmp_path):
     db_all = str(tmp_path / "all.db")
     db_filtered = str(tmp_path / "filtered.db")
     # All molecules in one set
-    create_db(db_all, CORPUS_A, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db_all, "s", radii=(1, 2, 3), verbose=False)
     # Only the first two molecule IDs
     id_filter = {"mol1", "mol2"}
-    create_db(db_filtered, CORPUS_A, {"s": id_filter}, radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db_filtered, {"s": id_filter}, radii=(1, 2, 3), verbose=False)
     # Filtered DB should have fewer or equal fragments
     assert _frag_count(db_filtered) <= _frag_count(db_all)
 
@@ -136,31 +144,95 @@ def test_create_set_name_dict_filtered(tmp_path):
 def test_create_max_heavy_atoms(tmp_path):
     db_strict = str(tmp_path / "strict.db")
     db_loose = str(tmp_path / "loose.db")
-    create_db(db_strict, CORPUS_A, "s", radii=(1, 2, 3), max_heavy_atoms=3, verbose=False)
-    create_db(db_loose, CORPUS_A, "s", radii=(1, 2, 3), max_heavy_atoms=15, verbose=False)
+    create_db(CORPUS_A, db_strict, "s", radii=(1, 2, 3), max_heavy_atoms=3, verbose=False)
+    create_db(CORPUS_A, db_loose, "s", radii=(1, 2, 3), max_heavy_atoms=15, verbose=False)
     assert _frag_count(db_strict) <= _frag_count(db_loose)
 
 
 def test_create_frag_mode_default_matches_both_optimal(tmp_path):
     db_default = str(tmp_path / "default.db")
     db_explicit = str(tmp_path / "explicit.db")
-    create_db(db_default, CORPUS_RING, "s", radii=(2,), verbose=False)
-    create_db(db_explicit, CORPUS_RING, "s", radii=(2,), frag_mode="both_optimal", verbose=False)
+    create_db(CORPUS_RING, db_default, "s", radii=(2,), verbose=False)
+    create_db(CORPUS_RING, db_explicit, "s", radii=(2,), frag_mode="both_optimal", verbose=False)
     assert _provenance_counts(db_default) == _provenance_counts(db_explicit)
 
 
 def test_create_frag_mode_argument_forwarded(tmp_path):
     db = str(tmp_path / "ring.db")
-    create_db(db, CORPUS_RING, "s", radii=(2,), frag_mode="ring", verbose=False)
+    create_db(CORPUS_RING, db, "s", radii=(2,), frag_mode="ring", verbose=False)
     counts = _provenance_counts(db)
     assert counts.get(0, 0) == 0
     assert counts.get(1, 0) > 0
 
 
+def test_create_fragment_error_log_argument_forwarded(tmp_path):
+    db = tmp_path / "test.db"
+    create_db(CORPUS_A, db, "s", radii=(1,), fragment_error_log=True, verbose=False)
+    err = tmp_path / "test.errors"
+
+    assert err.exists()
+
+
+def test_create_processed_chunks_forwarded_for_file_input(tmp_path):
+    smi = tmp_path / "mols.smi"
+    smi.write_text("\n".join(CORPUS_A))
+    db = tmp_path / "test.db"
+    processed = tmp_path / "processed.txt"
+    create_db(
+        smi,
+        db,
+        "s",
+        radii=(1,),
+        processed_chunks=processed,
+        chunk_size=1,
+        flush_every=1,
+        verbose=False,
+    )
+
+    assert processed.exists()
+    assert processed.read_text().strip()
+
+
+def test_create_processed_chunks_ignored_for_iterable(tmp_path):
+    db = tmp_path / "test.db"
+    processed = tmp_path / "processed.txt"
+    processed.write_text("0\n")
+    create_db(
+        CORPUS_A,
+        db,
+        "s",
+        radii=(1,),
+        processed_chunks=processed,
+        chunk_size=1,
+        verbose=False,
+    )
+
+    assert _frag_count(db) > 0
+    assert processed.read_text() == "0\n"
+
+
+def test_create_parallel_arguments_forwarded(tmp_path):
+    db = tmp_path / "parallel.db"
+    create_db(
+        CORPUS_RING,
+        db,
+        "s",
+        radii=(1,),
+        parallel_shards=2,
+        ncpu=2,
+        merge_parallel=1,
+        fragment_error_log=True,
+        verbose=False,
+    )
+
+    assert _frag_count(db) > 0
+    assert (tmp_path / "parallel.errors").exists()
+
+
 def test_create_invalid_set_name_type(tmp_path):
     db = str(tmp_path / "test.db")
     with pytest.raises(TypeError):
-        create_db(db, CORPUS_A, 123, radii=(1, 2, 3), verbose=False)
+        create_db(CORPUS_A, db, 123, radii=(1, 2, 3), verbose=False)
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +242,8 @@ def test_create_invalid_set_name_type(tmp_path):
 def test_merge_combines_fragments(tmp_path):
     db_a = str(tmp_path / "a.db")
     db_b = str(tmp_path / "b.db")
-    create_db(db_a, CORPUS_A, "s", radii=(1, 2, 3), verbose=False)
-    create_db(db_b, CORPUS_B, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db_a, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_B, db_b, "s", radii=(1, 2, 3), verbose=False)
     n_a = _frag_count(db_a)
     n_b = _frag_count(db_b)
     merge_dbs(db_a, [db_b], verbose=False)
@@ -183,8 +255,8 @@ def test_merge_no_duplicates(tmp_path):
     # Same corpus split into two DBs — merged total <= sum (dedup on duplicates)
     db_a = str(tmp_path / "a.db")
     db_b = str(tmp_path / "b.db")
-    create_db(db_a, CORPUS_A, "s", radii=(1, 2, 3), verbose=False)
-    create_db(db_b, CORPUS_A, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db_a, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db_b, "s", radii=(1, 2, 3), verbose=False)
     n_a = _frag_count(db_a)
     n_b = _frag_count(db_b)
     merge_dbs(db_a, [db_b], verbose=False)
@@ -194,8 +266,8 @@ def test_merge_no_duplicates(tmp_path):
 def test_merge_index_rebuilt(tmp_path):
     db_a = str(tmp_path / "a.db")
     db_b = str(tmp_path / "b.db")
-    create_db(db_a, CORPUS_A, "s", radii=(1, 2, 3), verbose=False)
-    create_db(db_b, CORPUS_B, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db_a, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_B, db_b, "s", radii=(1, 2, 3), verbose=False)
     merge_dbs(db_a, [db_b], rebuild_index=True, verbose=False)
     assert "idx_radius3_lookup" in _indices(db_a)
 
@@ -203,8 +275,8 @@ def test_merge_index_rebuilt(tmp_path):
 def test_merge_rebuild_index_false(tmp_path):
     db_a = str(tmp_path / "a.db")
     db_b = str(tmp_path / "b.db")
-    create_db(db_a, CORPUS_A, "s", radii=(1, 2, 3), verbose=False)
-    create_db(db_b, CORPUS_B, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db_a, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_B, db_b, "s", radii=(1, 2, 3), verbose=False)
     merge_dbs(db_a, [db_b], rebuild_index=False, verbose=False)
     # Covering index was dropped before merge and not recreated
     assert "idx_radius3_lookup" not in _indices(db_a)
@@ -213,8 +285,8 @@ def test_merge_rebuild_index_false(tmp_path):
 def test_merge_history_timestamp_is_human_readable(tmp_path):
     db_a = str(tmp_path / "a.db")
     db_b = str(tmp_path / "b.db")
-    create_db(db_a, CORPUS_A, "s", radii=(1, 2, 3), verbose=False)
-    create_db(db_b, CORPUS_B, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db_a, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_B, db_b, "s", radii=(1, 2, 3), verbose=False)
     merge_dbs(db_a, [db_b], verbose=False)
 
     with sqlite3.connect(db_a) as conn:
@@ -239,7 +311,7 @@ def test_merge_history_timestamp_is_human_readable(tmp_path):
 @pytest.fixture
 def small_db(tmp_path):
     db = str(tmp_path / "test.db")
-    create_db(db, CORPUS_A + CORPUS_B, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A + CORPUS_B, db, "s", radii=(1, 2, 3), verbose=False)
     return db
 
 
@@ -281,7 +353,7 @@ def test_props_idempotent(small_db):
 
 def test_props_only_fills_null_rows(tmp_path):
     db = str(tmp_path / "test.db")
-    create_db(db, CORPUS_A, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_A, db, "s", radii=(1, 2, 3), verbose=False)
     add_fragment_props(db, ["mw"])
     # Manually overwrite one row with a sentinel value
     with sqlite3.connect(db) as c:
@@ -289,7 +361,7 @@ def test_props_only_fills_null_rows(tmp_path):
         c.execute("UPDATE frags SET mw = 999.0 WHERE core_smi_id = ?", (row_id,))
         c.commit()
     # Extend DB with new molecules (their mw will be NULL)
-    create_db(db, CORPUS_B, "s", radii=(1, 2, 3), verbose=False)
+    create_db(CORPUS_B, db, "s", radii=(1, 2, 3), verbose=False)
     add_fragment_props(db, ["mw"])
     # Sentinel must be preserved — re-run does not touch non-NULL rows
     with sqlite3.connect(db) as c:

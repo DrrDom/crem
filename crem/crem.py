@@ -227,6 +227,14 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
 
 def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, protected_ids=None, return_ids=True):
 
+    def _is_h_cut_component(component):
+        if component.GetNumAtoms() != 2 or component.GetNumBonds() != 1:
+            return False
+        atoms = list(component.GetAtoms())
+        return any(a.GetAtomicNum() == 1 for a in atoms) and any(
+            a.GetAtomicNum() == 0 and a.GetAtomMapNum() for a in atoms
+        )
+
     def _prepare_single_cut_contexts(frags, protected_ids):
         output = {}  # anchor_idx -> context_mol
         for core, chains in frags:
@@ -235,10 +243,12 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
             components = list(Chem.GetMolFrags(chains, asMols=True))
             if len(components) != 2:
                 continue
-            if Chem.MolToSmiles(components[0]) == '[H][*:1]':
+            if _is_h_cut_component(components[0]):
                 context = components[1]
-            else:
+            elif _is_h_cut_component(components[1]):
                 context = components[0]
+            else:
+                continue
 
             anchor_id = None
             valid = True
@@ -257,6 +267,7 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
 
     if protected_ids:
         return_ids = True
+    protected_ids = set(protected_ids) if protected_ids else set()
 
     if return_ids:
         for atom in mol.GetAtoms():
@@ -299,13 +310,15 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
         env, frag, old_to_new_map = get_canon_context_core(chains, fake_core, radius=radius, keep_stereo=keep_stereo,
                                                             return_att_map=True)
 
-        # transfer attachemnt point from the second chain to the first one to get a single Mol object
-        # with two attachment points suitable for molzip
-        # replace a hydrogen in the first chain with a dummy atom having the attachement map number from the second part
+        # Move the attachment point from the second chain into the first one.
+        # "Index" stores the original molecule atom id; fragment-local atom
+        # indices can differ after GetMolFrags().
         anchor_id = None
         att_map = None
         chains = __renumber_attachment_points(chains, old_to_new_map)
         chains = Chem.GetMolFrags(chains, asMols=True)
+        if len(chains) != 2:
+            raise RuntimeError("Expected two macrocycle context fragments after attachment renumbering")
         for a in chains[1].GetAtoms():
             if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
                 att_map = a.GetAtomMapNum()
@@ -314,12 +327,24 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
                         anchor_id = n.GetIntProp("Index")
                         break
                 break
-        a = chains[0].GetAtomWithIdx(anchor_id)
+        if anchor_id is None or att_map is None:
+            raise RuntimeError("Could not find mapped attachment point and original anchor id")
+        a = None
+        for atom in chains[0].GetAtoms():
+            if atom.HasProp("Index") and atom.GetIntProp("Index") == anchor_id:
+                a = atom
+                break
+        if a is None:
+            raise RuntimeError(f"Could not find original anchor atom {anchor_id} in macrocycle context")
+        replaced_hydrogen = False
         for n in a.GetNeighbors():
             if n.GetAtomicNum() == 1:
                 n.SetAtomicNum(0)
                 n.SetAtomMapNum(att_map)
+                replaced_hydrogen = True
                 break
+        if not replaced_hydrogen:
+            raise RuntimeError(f"Could not find replaceable hydrogen on original anchor atom {anchor_id}")
         context_smi = Chem.MolToSmiles(chains[0], isomericSmiles=True)
         output.add((env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist))
 

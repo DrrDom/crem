@@ -28,6 +28,10 @@ def _parent_marker_values(mol):
     ]
 
 
+def _assert_internal_index_removed(mol):
+    assert all(not atom.HasProp("__crem_index") for atom in mol.GetAtoms())
+
+
 # ---------------------------------------------------------------------------
 # mutate_mol
 # ---------------------------------------------------------------------------
@@ -106,6 +110,8 @@ def test_mutate_return_mol(db, mol_aniline, ncores):
     assert isinstance(res[0][1], Chem.Mol)
     assert any(atom.HasProp("__crem") for atom in res[0][1].GetAtoms())
     assert any(_parent_marker_values(item[1]) for item in res)
+    for item in res:
+        _assert_internal_index_removed(item[1])
 
 
 def test_mutate_return_rxn_and_freq(db, mol_aniline):
@@ -173,6 +179,8 @@ def test_mutate_partial_cycles_return_mol_preserves_parent_atom_props(db_rc):
                           replace_cycles="partial_all", return_mol=True))
     assert res
     assert any(_parent_marker_values(item[1]) for item in res)
+    for item in res:
+        _assert_internal_index_removed(item[1])
 
 
 def test_mutate_replace_cycles_partial_exo_is_subset_of_partial_all(db_rc):
@@ -275,6 +283,8 @@ def test_link_return_mol_preserves_parent_atom_props(db, mol_link1, mol_link2):
         any(value.startswith("right:") for value in _parent_marker_values(item[1]))
         for item in res
     )
+    for item in res:
+        _assert_internal_index_removed(item[1])
 
 
 def test_link_max_replacements_cap(db, mol_link1, mol_link2):
@@ -315,6 +325,8 @@ def test_macrocycle_return_mol_preserves_parent_atom_props(db, mol_macrocycle):
                           ring_closures=False))
     assert res
     assert any(_parent_marker_values(item[1]) for item in res)
+    for item in res:
+        _assert_internal_index_removed(item[1])
 
 
 def test_macrocycle_max_replacements_cap(db, mol_macrocycle):
@@ -445,6 +457,17 @@ def test_get_mols_from_replacements_consistent_with_mutate(db, mol_aniline):
     via_repl = set(get_mols_from_replacements(mol_aniline, 3, replacements))
     direct = set(mutate_mol(mol_aniline, db, radius=3, min_freq=0, max_size=8))
     assert via_repl == direct
+
+
+def test_get_mols_from_replacements_return_mol_removes_internal_index(db, mol_aniline):
+    _mark_parent_atoms(mol_aniline)
+    replacements = list(get_replacements(mol_aniline, db, radius=3, min_freq=0,
+                                         max_size=8, return_frag_smi_only=False))
+    res = list(get_mols_from_replacements(mol_aniline, 3, replacements, return_mol=True))
+    assert res
+    assert any(_parent_marker_values(item[1]) for item in res)
+    for item in res:
+        _assert_internal_index_removed(item[1])
 
 
 def test_get_replacements_max_replacements_cap(db, mol_aniline):

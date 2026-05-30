@@ -14,7 +14,7 @@ import sqlite3
 import random
 from itertools import product, combinations
 from crem.mol_context import patt_remove_map
-from crem.ring_fragments import _ensure_atom_indices, iter_partial_ring_fragments
+from crem.ring_fragments import ATOM_INDEX_PROP, _ensure_atom_indices, iter_partial_ring_fragments
 
 __cycle_pattern = re.compile("[a-zA-Z\]][1-9]+")
 Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
@@ -80,6 +80,12 @@ def __standardize_context_mol(context_mol, old_to_new_map):
     return context_smi, context_std
 
 
+def __clear_atom_prop(mol, prop):
+    for atom in mol.GetAtoms():
+        if atom.HasProp(prop):
+            atom.ClearProp(prop)
+
+
 def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_ids=None, symmetry_fixes=False,
                    min_core_atoms=None, max_core_atoms=None, include_cyclic_cores=False):
     """
@@ -100,7 +106,7 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
     Smiles of fragments with heavy atoms will contain only heavy atoms
     """
 
-    def get_atom_prop(molecule, prop="Index"):
+    def get_atom_prop(molecule, prop=ATOM_INDEX_PROP):
         res = []
         for a in molecule.GetAtoms():
             if a.GetAtomicNum():
@@ -120,7 +126,7 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
     # set original atom idx to keep them in fragmented mol
     if return_ids:
         for atom in mol.GetAtoms():
-            atom.SetIntProp("Index", atom.GetIdx())
+            atom.SetIntProp(ATOM_INDEX_PROP, atom.GetIdx())
 
     # heavy atoms
     frags = rdMMPA.FragmentMol(mol, pattern="[!#1]!@!=!#[!#1]", maxCuts=4, resultsAsMols=True, maxCutBonds=30)
@@ -185,8 +191,8 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
             for a in context.GetAtoms():
                 if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
                     for n in a.GetNeighbors():
-                        if n.GetAtomicNum() != 0 and n.HasProp("Index"):
-                            anchor_id = n.GetIntProp("Index")
+                        if n.GetAtomicNum() != 0 and n.HasProp(ATOM_INDEX_PROP):
+                            anchor_id = n.GetIntProp(ATOM_INDEX_PROP)
                             if protected_ids and anchor_id in protected_ids:   # TODO: why we need this?
                                 valid = False
                             break
@@ -199,9 +205,9 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
 
     if return_ids:
         for atom in mol1.GetAtoms():
-            atom.SetIntProp("Index", atom.GetIdx())
+            atom.SetIntProp(ATOM_INDEX_PROP, atom.GetIdx())
         for atom in mol2.GetAtoms():
-            atom.SetIntProp("Index", atom.GetIdx())
+            atom.SetIntProp(ATOM_INDEX_PROP, atom.GetIdx())
 
     frags_1 = rdMMPA.FragmentMol(mol1, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
     frags_2 = rdMMPA.FragmentMol(mol2, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
@@ -257,8 +263,8 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
             for a in context.GetAtoms():
                 if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
                     for n in a.GetNeighbors():
-                        if n.GetAtomicNum() != 0 and n.HasProp("Index"):
-                            anchor_id = n.GetIntProp("Index")
+                        if n.GetAtomicNum() != 0 and n.HasProp(ATOM_INDEX_PROP):
+                            anchor_id = n.GetIntProp(ATOM_INDEX_PROP)
                             if anchor_id in protected_ids:
                                 valid = False
                             break
@@ -273,7 +279,7 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
 
     if return_ids:
         for atom in mol.GetAtoms():
-            atom.SetIntProp("Index", atom.GetIdx())
+            atom.SetIntProp(ATOM_INDEX_PROP, atom.GetIdx())
 
     if ring_size is None:
         rs_min = rs_max = None
@@ -313,7 +319,7 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
                                                             return_att_map=True)
 
         # Move the attachment point from the second chain into the first one.
-        # "Index" stores the original molecule atom id; fragment-local atom
+        # "__crem_index" stores the original molecule atom id; fragment-local atom
         # indices can differ after GetMolFrags().
         anchor_id = None
         att_map = None
@@ -325,15 +331,15 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
             if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
                 att_map = a.GetAtomMapNum()
                 for n in a.GetNeighbors():
-                    if n.GetAtomicNum() != 0 and n.HasProp("Index"):
-                        anchor_id = n.GetIntProp("Index")
+                    if n.GetAtomicNum() != 0 and n.HasProp(ATOM_INDEX_PROP):
+                        anchor_id = n.GetIntProp(ATOM_INDEX_PROP)
                         break
                 break
         if anchor_id is None or att_map is None:
             raise RuntimeError("Could not find mapped attachment point and original anchor id")
         a = None
         for atom in chains[0].GetAtoms():
-            if atom.HasProp("Index") and atom.GetIntProp("Index") == anchor_id:
+            if atom.HasProp(ATOM_INDEX_PROP) and atom.GetIntProp(ATOM_INDEX_PROP) == anchor_id:
                 a = atom
                 break
         if a is None:
@@ -376,7 +382,7 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
 
     if return_ids:
         for atom in mol.GetAtoms():
-            atom.SetIntProp("Index", atom.GetIdx())
+            atom.SetIntProp(ATOM_INDEX_PROP, atom.GetIdx())
 
     if ring_size is None:
         rs_min = rs_max = None
@@ -410,13 +416,13 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
             continue  # not a pure 2-H cut (one of the cuts was on a heavy bond)
         context = mmpa_core
         # Identify the two anchor heavy atoms and their map numbers.
-        anchors = {}  # map_num -> Index property of anchor heavy atom
+        anchors = {}  # map_num -> __crem_index property of anchor heavy atom
         for a in context.GetAtoms():
             if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
                 map_num = a.GetAtomMapNum()
                 for n in a.GetNeighbors():
-                    if n.GetAtomicNum() != 0 and n.HasProp("Index"):
-                        anchors[map_num] = n.GetIntProp("Index")
+                    if n.GetAtomicNum() != 0 and n.HasProp(ATOM_INDEX_PROP):
+                        anchors[map_num] = n.GetIntProp(ATOM_INDEX_PROP)
                         break
         if len(anchors) != 2:
             continue
@@ -596,6 +602,7 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
 
     smi_mol = Chem.RemoveHs(p) if p.HasSubstructMatch(__explicit_h_query) else p
     smi = Chem.MolToSmiles(smi_mol, isomericSmiles=True)
+    __clear_atom_prop(p, ATOM_INDEX_PROP)
     yield smi, p, transformation_smi
 
 

@@ -3,7 +3,7 @@ from itertools import combinations
 from rdkit import Chem
 
 
-ATOM_INDEX_PROP = "Index"
+ATOM_INDEX_PROP = "__crem_index"
 RING_CUT_DUMMY_ISOTOPE = 1
 
 

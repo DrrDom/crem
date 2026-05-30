@@ -563,6 +563,10 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
 
     with rdBase.BlockLogs():
         repl_core_mol = Chem.MolFromSmiles(new_frag_smi)
+    # label new atoms in generated structure with bool prop
+    for atom in repl_core_mol.GetAtoms():
+        if atom.GetAtomicNum() != 0:
+            atom.SetBoolProp("__crem", True)
 
     transformation_smi = f"{old_frag_smi}>>{new_frag_smi}"
     try:

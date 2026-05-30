@@ -89,6 +89,7 @@ def test_mutate_return_mol(db, mol_aniline):
     assert res
     assert isinstance(res[0], list)
     assert isinstance(res[0][1], Chem.Mol)
+    assert any(atom.HasProp("__crem") for atom in res[0][1].GetAtoms())
 
 
 def test_mutate_return_rxn_and_freq(db, mol_aniline):

@@ -576,7 +576,9 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
             f"molzip RuntimeError: {exc}. "
             f"old fragment: {old_frag_smi}; "
             f"new fragment: {new_frag_smi}; "
-            f"context mol: {context_smi}\n"
+            f"context mol: {context_smi}; "
+            f"mol1: {Chem.MolToSmiles(mol1, isomericSmiles=True)}; "
+            f"mol2: {Chem.MolToSmiles(mol2, isomericSmiles=True) if isinstance(mol2, Chem.Mol) else 'None'}\n"
         )
         sys.stderr.flush()
         return

@@ -15,6 +15,19 @@ def _valid(smi):
     return Chem.MolFromSmiles(smi) is not None
 
 
+def _mark_parent_atoms(mol, prefix="parent"):
+    for atom in mol.GetAtoms():
+        atom.SetProp("parent_marker", f"{prefix}:{atom.GetIdx()}")
+
+
+def _parent_marker_values(mol):
+    return [
+        atom.GetProp("parent_marker")
+        for atom in mol.GetAtoms()
+        if atom.HasProp("parent_marker") and not atom.HasProp("__crem")
+    ]
+
+
 # ---------------------------------------------------------------------------
 # mutate_mol
 # ---------------------------------------------------------------------------
@@ -83,13 +96,16 @@ def test_mutate_return_rxn(db, mol_aniline):
     assert isinstance(res[0], list) and len(res[0]) == 2
 
 
-def test_mutate_return_mol(db, mol_aniline):
+@pytest.mark.parametrize("ncores", [1, 2])
+def test_mutate_return_mol(db, mol_aniline, ncores):
+    _mark_parent_atoms(mol_aniline)
     res = list(mutate_mol(mol_aniline, db, radius=3, min_freq=0,
-                          max_size=8, return_mol=True))
+                          max_size=8, return_mol=True, ncores=ncores))
     assert res
     assert isinstance(res[0], list)
     assert isinstance(res[0][1], Chem.Mol)
     assert any(atom.HasProp("__crem") for atom in res[0][1].GetAtoms())
+    assert any(_parent_marker_values(item[1]) for item in res)
 
 
 def test_mutate_return_rxn_and_freq(db, mol_aniline):
@@ -147,6 +163,16 @@ def test_mutate_replace_cycles_partial_all_adds_partial_cycle_products(db_rc):
     assert base.issubset(ring)
     assert ring - base
     assert all(_valid(s) for s in ring)
+
+
+def test_mutate_partial_cycles_return_mol_preserves_parent_atom_props(db_rc):
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
+    _mark_parent_atoms(mol)
+    res = list(mutate_mol(mol, db_rc, radius=1, min_freq=0,
+                          min_size=1, max_size=8, min_inc=-2, max_inc=4,
+                          replace_cycles="partial_all", return_mol=True))
+    assert res
+    assert any(_parent_marker_values(item[1]) for item in res)
 
 
 def test_mutate_replace_cycles_partial_exo_is_subset_of_partial_all(db_rc):
@@ -238,6 +264,19 @@ def test_link_no_duplicates(db, mol_link1, mol_link2):
     assert len(res) == len(set(res))
 
 
+def test_link_return_mol_preserves_parent_atom_props(db, mol_link1, mol_link2):
+    _mark_parent_atoms(mol_link1, "left")
+    _mark_parent_atoms(mol_link2, "right")
+    res = list(link_mols(mol_link1, mol_link2, db, radius=1, min_freq=0,
+                         min_atoms=1, max_atoms=5, return_mol=True))
+    assert res
+    assert any(
+        any(value.startswith("left:") for value in _parent_marker_values(item[1])) and
+        any(value.startswith("right:") for value in _parent_marker_values(item[1]))
+        for item in res
+    )
+
+
 def test_link_max_replacements_cap(db, mol_link1, mol_link2):
     res = list(link_mols(mol_link1, mol_link2, db, radius=1, min_freq=0,
                          min_atoms=1, max_atoms=5, max_replacements=2))
@@ -267,6 +306,15 @@ def test_macrocycle_no_duplicates(db, mol_macrocycle):
                           min_atoms=1, max_atoms=8,
                           ring_closures=False))
     assert len(res) == len(set(res))
+
+
+def test_macrocycle_return_mol_preserves_parent_atom_props(db, mol_macrocycle):
+    _mark_parent_atoms(mol_macrocycle)
+    res = list(make_cycle(mol_macrocycle, db, radius=1, min_freq=0,
+                          min_atoms=1, max_atoms=8, return_mol=True,
+                          ring_closures=False))
+    assert res
+    assert any(_parent_marker_values(item[1]) for item in res)
 
 
 def test_macrocycle_max_replacements_cap(db, mol_macrocycle):

@@ -73,9 +73,11 @@ def __renumber_attachment_points(mol, old_to_new_map):
     return m
 
 
-def __context_to_std_smi(context_mol, old_to_new_map):
+def __standardize_context_mol(context_mol, old_to_new_map):
+    # SMILES is only the dedup/query key; the Mol value carries atom props.
     context_std = __renumber_attachment_points(context_mol, old_to_new_map)
-    return Chem.MolToSmiles(context_std, isomericSmiles=True)
+    context_smi = Chem.MolToSmiles(context_std, isomericSmiles=True)
+    return context_smi, context_std
 
 
 def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_ids=None, symmetry_fixes=False,
@@ -111,9 +113,9 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
     protected_ids = set(protected_ids) if protected_ids else set()
 
     # due to the bug https://github.com/rdkit/rdkit/issues/3040
-    # outputs of rdMMPA.FragmentMol calls will contain duplicated fragments
-    # their are removed by using this set
-    output = set()
+    # outputs of rdMMPA.FragmentMol calls will contain duplicated fragments;
+    # SMILES keys remove duplicates while Mol values preserve atom properties.
+    output = {}
 
     # set original atom idx to keep them in fragmented mol
     if return_ids:
@@ -139,8 +141,8 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
                 return
         env, frag, old_to_new_map = get_canon_context_core(context_mol, core_mol, radius, keep_stereo,
                                                            return_att_map=True)
-        context_std = __context_to_std_smi(context_mol, old_to_new_map)
-        output.add((env, frag, core_ids, context_std, num_heavy_atoms))  # context_std should be SMILES, otherwise substantial slow down
+        context_smi, context_std = __standardize_context_mol(context_mol, old_to_new_map)
+        output[(env, frag, core_ids, context_smi, num_heavy_atoms)] = context_std
 
     for core, chains in frags:
         if core is None:  # single cut
@@ -153,11 +155,12 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
     if symmetry_fixes:
         extended_output = __extend_output_by_equivalent_atoms(mol, output)
         if extended_output:
-            output.update(extended_output)
+            context_by_smi = {key[3]: context_mol for key, context_mol in output.items()}
+            for item in extended_output:
+                output[item] = context_by_smi[item[3]]
 
     res = []
-    for env, frag, _, context_smi, num_heavy_atoms in output:
-        context_mol = Chem.MolFromSmiles(context_smi)
+    for (env, frag, _, context_smi, num_heavy_atoms), context_mol in output.items():
         res.append((env, frag, context_mol, num_heavy_atoms))
     return res
 
@@ -206,7 +209,7 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
     frags_1 = _prepare_single_cut_contexts(frags_1, protected_ids_1)
     frags_2 = _prepare_single_cut_contexts(frags_2, protected_ids_2)
     fake_core = '[*:1]C[*:2]'
-    output = set()
+    output = {}
 
     for ctx_1, ctx_2 in product(frags_1, frags_2):
         # keep historical convention: attachment from mol1 starts with map 2
@@ -215,12 +218,11 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
         chains = Chem.CombineMols(ctx_1, ctx_2)
         env, frag, old_to_new_map = get_canon_context_core(chains, fake_core, radius=radius, keep_stereo=keep_stereo,
                                                             return_att_map=True)
-        context_smi = __context_to_std_smi(chains, old_to_new_map)
-        output.add((env, '[H][*:1].[H][*:2]', context_smi, 0))
+        context_smi, context_std = __standardize_context_mol(chains, old_to_new_map)
+        output[(env, '[H][*:1].[H][*:2]', context_smi, 0)] = context_std
 
     res = []
-    for env, core, context_smi, num_heavy_atoms in output:
-        context_mol = Chem.MolFromSmiles(context_smi)
+    for (env, core, context_smi, num_heavy_atoms), context_mol in output.items():
         res.append((env, core, context_mol, num_heavy_atoms))
     return res
 
@@ -287,7 +289,7 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
     frags = rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
     contexts = _prepare_single_cut_contexts(frags, protected_ids)
     fake_core = '[*:1]C[*:2]'
-    output = set()
+    output = {}
 
     for (anchor_1, ctx_1), (anchor_2, ctx_2) in combinations(contexts, 2):
         if anchor_1 == anchor_2:
@@ -345,12 +347,12 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
                 break
         if not replaced_hydrogen:
             raise RuntimeError(f"Could not find replaceable hydrogen on original anchor atom {anchor_id}")
-        context_smi = Chem.MolToSmiles(chains[0], isomericSmiles=True)
-        output.add((env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist))
+        context_mol = Chem.Mol(chains[0])
+        context_smi = Chem.MolToSmiles(context_mol, isomericSmiles=True)
+        output[(env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist)] = context_mol
 
     res = []
-    for env, core, context_smi, num_heavy_atoms, frag_dist in output:
-        context_mol = Chem.MolFromSmiles(context_smi)
+    for (env, core, context_smi, num_heavy_atoms, frag_dist), context_mol in output.items():
         res.append((env, core, context_mol, num_heavy_atoms, frag_dist))
     return res
 
@@ -388,7 +390,7 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
     distance_matrix = Chem.GetDistanceMatrix(mol)
     fake_core = '[*:1]C[*:2]'
     seen_pairs = set()
-    output = set()
+    output = {}
 
     frags = rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=2,
                                resultsAsMols=True, maxCutBonds=100)
@@ -448,13 +450,11 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
 
         # Renumber the context Mol so its * map numbers match the
         # standardised env / DB-side core numbering.
-        std_context = __renumber_attachment_points(context, old_to_new_map)
-        context_smi = Chem.MolToSmiles(std_context, isomericSmiles=True)
-        output.add((env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist))
+        context_smi, std_context = __standardize_context_mol(context, old_to_new_map)
+        output[(env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist)] = std_context
 
     res = []
-    for env, core, context_smi, num_heavy_atoms, frag_dist in output:
-        context_mol = Chem.MolFromSmiles(context_smi)
+    for (env, core, context_smi, num_heavy_atoms, frag_dist), context_mol in output.items():
         res.append((env, core, context_mol, num_heavy_atoms, frag_dist))
     return res
 
@@ -473,7 +473,7 @@ def __fragment_mol_partial_cycles(mol, radius=3, keep_stereo=False, protected_id
     work_mol = _ensure_atom_indices(mol) if return_ids else Chem.Mol(mol)
     work_mol = Chem.RemoveHs(work_mol)
 
-    atom_specific_output = set()
+    atom_specific_output = {}
     iter_min_core_atoms = None if include_cyclic_cores else min_core_atoms
     iter_max_core_atoms = None if include_cyclic_cores else max_core_atoms
     for core_mol, context_mol, core_atom_ids in iter_partial_ring_fragments(
@@ -502,20 +502,18 @@ def __fragment_mol_partial_cycles(mol, radius=3, keep_stereo=False, protected_id
         )
         if env is None or not frag:
             continue
-        context_std = __context_to_std_smi(context_mol, old_to_new_map)
-        atom_specific_output.add((env, frag, core_atom_ids, context_std, num_heavy_atoms))
+        context_smi, context_std = __standardize_context_mol(context_mol, old_to_new_map)
+        atom_specific_output[(env, frag, core_atom_ids, context_smi, num_heavy_atoms)] = context_std
 
     if symmetry_fixes:
         output = atom_specific_output
     else:
-        output = {
-            (env, frag, tuple(), context_smi, num_heavy_atoms)
-            for env, frag, _, context_smi, num_heavy_atoms in atom_specific_output
-        }
+        output = {}
+        for (env, frag, _, context_smi, num_heavy_atoms), context_mol in atom_specific_output.items():
+            output[(env, frag, tuple(), context_smi, num_heavy_atoms)] = context_mol
 
     res = []
-    for env, frag, _, context_smi, num_heavy_atoms in output:
-        context_mol = Chem.MolFromSmiles(context_smi)
+    for (env, frag, _, context_smi, num_heavy_atoms), context_mol in output.items():
         res.append((env, frag, context_mol, num_heavy_atoms))
     return res
 

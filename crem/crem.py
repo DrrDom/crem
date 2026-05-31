@@ -23,6 +23,14 @@ __patt_remove_brackets = re.compile('\(\)')
 __molzip_params = rdmolops.MolzipParams()
 __molzip_params.label = rdmolops.MolzipLabel.AtomMapNumber
 __explicit_h_query = Chem.MolFromSmarts("[#1]")
+__atom_properties_to_backup = ("isotope",)
+__atom_property_backup_handlers = {
+    "isotope": (
+        lambda atom: atom.GetIsotope(),
+        lambda atom, value: atom.SetIsotope(value),
+        0,
+    ),
+}
 
 
 def __check_db_existence(fname):
@@ -84,6 +92,44 @@ def __clear_atom_prop(mol, prop):
     for atom in mol.GetAtoms():
         if atom.HasProp(prop):
             atom.ClearProp(prop)
+
+
+def __atom_backup_prop_name(name):
+    return f"__crem_{name}"
+
+
+def __backup_atom_properties(mol, names):
+    mol = Chem.Mol(mol)
+    names = tuple(names)
+    unsupported = set(names) - set(__atom_property_backup_handlers)
+    if unsupported:
+        raise ValueError(f"Unsupported atom property backup(s): {sorted(unsupported)}")
+    for atom in mol.GetAtoms():
+        for name in names:
+            backup_name = __atom_backup_prop_name(name)
+            if atom.HasProp(backup_name):
+                atom.ClearProp(backup_name)
+            getter, setter, default_value = __atom_property_backup_handlers[name]
+            value = getter(atom)
+            if value != default_value:
+                atom.SetIntProp(backup_name, value)
+                setter(atom, default_value)
+    return mol
+
+
+def __restore_atom_properties(mol):
+    for atom in mol.GetAtoms():
+        for name, (_, setter, _) in __atom_property_backup_handlers.items():
+            backup_name = __atom_backup_prop_name(name)
+            if atom.HasProp(backup_name):
+                setter(atom, atom.GetIntProp(backup_name))
+                atom.ClearProp(backup_name)
+
+
+def __prepare_context_mol_for_output(context_mol):
+    __restore_atom_properties(context_mol)
+    __clear_atom_prop(context_mol, ATOM_INDEX_PROP)
+    return context_mol
 
 
 def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_ids=None, symmetry_fixes=False,
@@ -600,9 +646,10 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
         sys.stderr.flush()
         return
 
+    __restore_atom_properties(p)
+    __clear_atom_prop(p, ATOM_INDEX_PROP)
     smi_mol = Chem.RemoveHs(p) if p.HasSubstructMatch(__explicit_h_query) else p
     smi = Chem.MolToSmiles(smi_mol, isomericSmiles=True)
-    __clear_atom_prop(p, ATOM_INDEX_PROP)
     yield smi, p, transformation_smi
 
 
@@ -1200,6 +1247,7 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
 
     __check_db_existence(db_name)
     products = {Chem.MolToSmiles(Chem.RemoveHs(mol))}
+    mol = __backup_atom_properties(mol, __atom_properties_to_backup)
 
     protected_ids = set(protected_ids) if protected_ids else set()
 
@@ -1484,8 +1532,8 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
     __check_db_existence(db_name)
     products = set()
 
-    mol1 = Chem.AddHs(mol1)
-    mol2 = Chem.AddHs(mol2)
+    mol1 = __backup_atom_properties(Chem.AddHs(mol1), __atom_properties_to_backup)
+    mol2 = __backup_atom_properties(Chem.AddHs(mol2), __atom_properties_to_backup)
 
     protected_ids_1 = __get_protected_ids(mol1, replace_ids_1, protected_ids_1)
     protected_ids_2 = __get_protected_ids(mol2, replace_ids_2, protected_ids_2)
@@ -1716,6 +1764,10 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
     else:
         protected_ids_2 = None
 
+    mol1 = __backup_atom_properties(mol1, __atom_properties_to_backup)
+    if isinstance(mol2, Chem.Mol):
+        mol2 = __backup_atom_properties(mol2, __atom_properties_to_backup)
+
     for res in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name, radius=radius, dist=dist,
                                   min_size=min_size, max_size=max_size, min_rel_size=min_rel_size,
                                   max_rel_size=max_rel_size, min_inc=min_inc, max_inc=max_inc,
@@ -1726,7 +1778,11 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                                   return_frag_smi_only=return_frag_smi_only,
                                   operation=("link" if isinstance(mol2, Chem.Mol) else "mutate"),
                                   seed=seed, **kwargs):
-        yield res
+        if return_frag_smi_only:
+            yield res
+        else:
+            src_core, repl_core, freq, context_mol = res
+            yield src_core, repl_core, freq, __prepare_context_mol_for_output(context_mol)
 
 
 def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn=False, return_rxn_freq=False,
@@ -1877,6 +1933,7 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
     mol = Chem.AddHs(mol)
     source_smi = Chem.MolToSmiles(Chem.RemoveHs(mol), isomericSmiles=True)
     protected_ids = __get_protected_ids(mol, replace_ids, protected_ids)
+    mol = __backup_atom_properties(mol, __atom_properties_to_backup)
 
     if ncores == 1:
 

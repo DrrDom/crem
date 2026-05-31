@@ -30,6 +30,7 @@ def _parent_marker_values(mol):
 
 def _assert_internal_index_removed(mol):
     assert all(not atom.HasProp("__crem_index") for atom in mol.GetAtoms())
+    assert all(not atom.HasProp("__crem_isotope") for atom in mol.GetAtoms())
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +111,26 @@ def test_mutate_return_mol(db, mol_aniline, ncores):
     assert isinstance(res[0][1], Chem.Mol)
     assert any(atom.HasProp("__crem") for atom in res[0][1].GetAtoms())
     assert any(_parent_marker_values(item[1]) for item in res)
+    for item in res:
+        _assert_internal_index_removed(item[1])
+
+
+@pytest.mark.parametrize("ncores", [1, 2])
+def test_mutate_return_mol_restores_parent_isotopes(db, mol_aniline, ncores):
+    mol = Chem.Mol(mol_aniline)
+    mol.GetAtomWithIdx(0).SetIsotope(13)
+    _mark_parent_atoms(mol)
+    res = list(mutate_mol(mol, db, radius=3, min_freq=0,
+                          max_size=8, replace_ids=[6],
+                          return_mol=True, ncores=ncores))
+    assert res
+    assert mol.GetAtomWithIdx(0).GetIsotope() == 13
+    assert all(not atom.HasProp("__crem_isotope") for atom in mol.GetAtoms())
+    assert any(
+        any(atom.GetIsotope() == 13 and atom.HasProp("parent_marker")
+            for atom in item[1].GetAtoms())
+        for item in res
+    )
     for item in res:
         _assert_internal_index_removed(item[1])
 
@@ -449,6 +470,22 @@ def test_get_replacements_tuple_mode(db, mol_aniline):
                                 max_size=8, return_frag_smi_only=False))
     assert res
     assert all(len(t) == 4 for t in res)
+
+
+def test_get_replacements_context_restores_parent_isotopes(db, mol_aniline):
+    mol = Chem.Mol(mol_aniline)
+    mol.GetAtomWithIdx(0).SetIsotope(13)
+    res = list(get_replacements(mol, db, radius=3, min_freq=0,
+                                max_size=8, replace_ids_1=[6],
+                                return_frag_smi_only=False))
+    assert res
+    context_mols = [item[3] for item in res]
+    assert any(
+        any(atom.GetIsotope() == 13 for atom in context_mol.GetAtoms())
+        for context_mol in context_mols
+    )
+    for context_mol in context_mols:
+        _assert_internal_index_removed(context_mol)
 
 
 def test_get_mols_from_replacements_consistent_with_mutate(db, mol_aniline):

@@ -1,6 +1,7 @@
 import pytest
 from rdkit import Chem
 
+import crem.crem as crem_module
 from crem.crem import (
     get_mols_from_replacements,
     get_replacements,
@@ -101,6 +102,50 @@ def test_mutate_return_rxn(db, mol_aniline):
     assert isinstance(res[0], list) and len(res[0]) == 2
 
 
+def test_mutate_h_replacement_clears_invalid_alkene_stereo_and_removes_h():
+    mol = Chem.MolFromSmiles(r"CC\C=C\[12CH3]")
+    replace_ids = []
+    for atom in mol.GetAtoms():
+        if atom.GetIsotope():
+            replace_ids.append(atom.GetIdx())
+            atom.SetIsotope(0)
+    protected_ids = set(range(mol.GetNumAtoms())).difference(replace_ids)
+
+    fragments = crem_module.__fragment_mol(
+        mol,
+        radius=3,
+        protected_ids=protected_ids,
+        min_core_atoms=1,
+        max_core_atoms=1,
+    )
+    assert len(fragments) == 1
+
+    _, old_core, context_mol, num_heavy_atoms = fragments[0]
+    assert old_core == "C[*:1]"
+    assert num_heavy_atoms == 1
+
+    products = list(
+        crem_module.__frag_replace(
+            mol,
+            None,
+            old_core,
+            "[H][*:1]",
+            3,
+            context_mol,
+        )
+    )
+    assert len(products) == 1
+    product_smi, product_mol, transformation = products[0]
+    assert product_smi == "C=CCC"
+    assert transformation == "C[*:1]>>[H][*:1]"
+    assert not product_mol.HasSubstructMatch(Chem.MolFromSmarts("[#1]"))
+    assert all(
+        bond.GetStereo() == Chem.BondStereo.STEREONONE
+        for bond in product_mol.GetBonds()
+        if bond.GetBondType() == Chem.BondType.DOUBLE
+    )
+
+
 @pytest.mark.parametrize("ncores", [1, 2])
 def test_mutate_return_mol(db, mol_aniline, ncores):
     _mark_parent_atoms(mol_aniline)
@@ -109,7 +154,10 @@ def test_mutate_return_mol(db, mol_aniline, ncores):
     assert res
     assert isinstance(res[0], list)
     assert isinstance(res[0][1], Chem.Mol)
-    assert any(atom.HasProp("__crem") for atom in res[0][1].GetAtoms())
+    assert any(
+        any(atom.HasProp("__crem") for atom in item[1].GetAtoms())
+        for item in res
+    )
     assert any(_parent_marker_values(item[1]) for item in res)
     for item in res:
         _assert_internal_index_removed(item[1])

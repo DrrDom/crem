@@ -23,6 +23,8 @@ __patt_remove_brackets = re.compile('\(\)')
 __molzip_params = rdmolops.MolzipParams()
 __molzip_params.label = rdmolops.MolzipLabel.AtomMapNumber
 __explicit_h_query = Chem.MolFromSmarts("[#1]")
+__remove_hs_params = Chem.RemoveHsParameters()
+__remove_hs_params.removeDefiningBondStereo = True
 __atom_properties_to_backup = ("isotope",)
 __atom_property_backup_handlers = {
     "isotope": (
@@ -648,8 +650,9 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
 
     __restore_atom_properties(p)
     __clear_atom_prop(p, ATOM_INDEX_PROP)
-    smi_mol = Chem.RemoveHs(p) if p.HasSubstructMatch(__explicit_h_query) else p
-    smi = Chem.MolToSmiles(smi_mol, isomericSmiles=True)
+    if p.HasSubstructMatch(__explicit_h_query):
+        p = Chem.RemoveHs(p, __remove_hs_params)
+    smi = Chem.MolToSmiles(p, isomericSmiles=True)
     yield smi, p, transformation_smi
 
 

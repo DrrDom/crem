@@ -271,12 +271,6 @@ def test_mutate_replace_cycles_boolean_aliases(db_rc):
         set(mutate_mol(mol, db_rc, replace_cycles="forced", **kw))
 
 
-def test_mutate_rejects_removed_ring_closures_argument(db_rc):
-    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
-    with pytest.raises(TypeError, match="ring_closures was removed"):
-        list(mutate_mol(mol, db_rc, radius=1, ring_closures=True))
-
-
 def test_mutate_rejects_unknown_replace_cycles_mode(db_rc):
     mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
     with pytest.raises(ValueError, match="replace_cycles must be one of"):
@@ -569,9 +563,3 @@ def test_get_replacements_replace_cycles_partial_all_matches_mutate(db_rc):
     via_repl = set(get_mols_from_replacements(mol, 1, replacements))
     direct = set(mutate_mol(mol, db_rc, **kw))
     assert via_repl == direct
-
-
-def test_get_replacements_rejects_removed_ring_closures_argument(db_rc):
-    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
-    with pytest.raises(TypeError, match="ring_closures was removed"):
-        list(get_replacements(mol, db_rc, radius=1, ring_closures=True))

@@ -62,43 +62,42 @@ def create_db(
     uses ``CREATE TABLE IF NOT EXISTS`` and incremental ``ALTER TABLE``, so
     any new set names or radii are added and existing data is preserved.
 
-    Args:
-        input: Path to a SMILES file (``str`` / ``Path``) **or** an iterable
-            of ``"SMILES [ID]"`` strings (one molecule per item).
-        output: Path to the output SQLite database.
-        set_name: A single set name (``str``), or a ``dict`` mapping each set
-            name to either ``None`` (all molecules) or a ``set`` of molecule
-            IDs that belong to that set.
-        radii: Fragment radii to build (default 1–5).
-        ncpu: Worker processes.
-        max_heavy_atoms: Maximum heavy atoms in a core fragment.
-        keep_stereo: Preserve stereocentres in env/core SMILES.
-        mode: Fragmentation mode — 0 all atoms, 1 heavy only, 2 H only.
-        chunk_size: Input lines per worker task.
-        flush_every: Chunks to accumulate before each DB flush.
-        shard_size: Max input structures per shard DB (``None`` = single DB).
-            Incompatible with ``parallel_shards > 1``.
-        parallel_shards: When > 1, run N shard builders concurrently, each
-            fragmenting a stride of the input. CPUs from ``ncpu`` are split
-            evenly across them. Shard DBs live in ``<output>.parts/`` and
-            are merged into ``output`` via a parallel binary-tree reduction.
-            Default 1 (single-process build).
-        frag_mode: Fragmentation source: ``'acyclic'``, ``'ring'``,
-            ``'both'``, ``'ring_optimal'``, or ``'both_optimal'``.
-            Default ``'both_optimal'`` matches ``cremdb_create``.
-        verbose: Print progress and statistics to stdout/stderr.
-        sep: Input delimiter (``None`` = whitespace).
-        processed_chunks: Path to a processed-chunks file for resumable
-            non-parallel builds from file input. Ignored when ``input`` is an
-            iterable. Also ignored for ``parallel_shards > 1``; parallel
-            builds manage per-shard processed-chunk files internally.
-        force_zstd: Force zstd input decompression regardless of file suffix.
-        log_every: Print a progress line every N chunks (``None`` = silent).
-        prefetch: In-flight task batches per worker.
-        timings: Print per-flush timing breakdown to stderr.
-        merge_parallel: Max concurrent pair-merges for ``parallel_shards > 1``.
-        fragment_error_log: Write defensive fragment validation issues to
-            ``<output>.errors``. If false, issues are written to stderr.
+    :param input: path to a SMILES file (``str`` / ``Path``) **or** an iterable
+        of ``"SMILES [ID]"`` strings (one molecule per item).
+    :param output: path to the output SQLite database.
+    :param set_name: a single set name (``str``), or a ``dict`` mapping each set
+        name to either ``None`` (all molecules) or a ``set`` of molecule IDs
+        that belong to that set.
+    :param radii: fragment radii to build (default 1–5).
+    :param ncpu: worker processes.
+    :param max_heavy_atoms: maximum heavy atoms in a core fragment.
+    :param keep_stereo: preserve stereocentres in env/core SMILES.
+    :param mode: fragmentation mode — 0 all atoms, 1 heavy only, 2 H only.
+    :param chunk_size: input lines per worker task.
+    :param flush_every: chunks to accumulate before each DB flush.
+    :param shard_size: max input structures per shard DB (``None`` = single DB).
+        Incompatible with ``parallel_shards > 1``.
+    :param parallel_shards: when > 1, run N shard builders concurrently, each
+        fragmenting a stride of the input. CPUs from ``ncpu`` are split evenly
+        across them. Shard DBs live in ``<output>.parts/`` and are merged into
+        ``output`` via a parallel binary-tree reduction. Default 1
+        (single-process build).
+    :param frag_mode: fragmentation source: ``'acyclic'``, ``'ring'``,
+        ``'both'``, ``'ring_optimal'``, or ``'both_optimal'``. Default
+        ``'both_optimal'`` matches ``cremdb_create``.
+    :param verbose: print progress and statistics to stdout/stderr.
+    :param sep: input delimiter (``None`` = whitespace).
+    :param processed_chunks: path to a processed-chunks file for resumable
+        non-parallel builds from file input. Ignored when ``input`` is an
+        iterable. Also ignored for ``parallel_shards > 1``; parallel builds
+        manage per-shard processed-chunk files internally.
+    :param force_zstd: force zstd input decompression regardless of file suffix.
+    :param log_every: print a progress line every N chunks (``None`` = silent).
+    :param prefetch: in-flight task batches per worker.
+    :param timings: print per-flush timing breakdown to stderr.
+    :param merge_parallel: max concurrent pair-merges for ``parallel_shards > 1``.
+    :param fragment_error_log: write defensive fragment validation issues to
+        ``<output>.errors``. If false, issues are written to stderr.
     """
     if parallel_shards < 1:
         raise ValueError("parallel_shards must be >= 1")
@@ -207,17 +206,16 @@ def merge_dbs(
     parallel: int = 1,
     verbose: bool = True,
 ) -> None:
-    """Merge source shard databases into *target*.
+    """Merge source shard databases into ``target``.
 
-    Args:
-        target: Path to the target (base) database. Must already exist.
-        sources: List of source shard database paths to merge in.
-        rebuild_index: Recreate covering indices on the target after merge.
-        parallel: When > 1, merge with binary-tree reduction using up to this
-            many concurrent pair-merges per round. The target is treated as
-            one of the contributors; the final survivor is moved back to
-            ``target``. Default 1 (serial).
-        verbose: Print per-shard progress.
+    :param target: path to the target (base) database. Must already exist.
+    :param sources: list of source shard database paths to merge in.
+    :param rebuild_index: recreate covering indices on the target after merge.
+    :param parallel: when > 1, merge with binary-tree reduction using up to this
+        many concurrent pair-merges per round. The target is treated as one of
+        the contributors; the final survivor is moved back to ``target``.
+        Default 1 (serial).
+    :param verbose: print per-shard progress.
     """
     if parallel < 1:
         raise ValueError("parallel must be >= 1")
@@ -249,28 +247,24 @@ def add_fragment_props(
     column) using RDKit descriptors.  Custom properties can target either
     ``'frags'`` (``core_smi``) or ``'frags_h'`` (H-replaced SMILES ``smi``).
 
-    Args:
-        db: Path to the fragment database.
-        properties: Built-in property names to compute
-            (``'mw'``, ``'logp'``, ``'rtb'``, ``'tpsa'``, ``'fcsp3'``).
-            Behaviour by value:
-
-            * **omitted** — defaults to all built-ins when *custom_props* is
-              not given, and to **no** built-ins when *custom_props* is given.
-              This makes ``add_fragment_props(db, custom_props={...})`` add
-              only the requested custom columns; the typical built-in case
-              ``add_fragment_props(db)`` is unchanged.
-            * ``None`` or ``'all'`` — explicitly compute all built-ins
-              (use this together with *custom_props* to add both at once).
-            * a list/tuple of names — compute that subset.
-            * ``[]`` — explicitly skip built-ins.
-        custom_props: Mapping of ``{column_name: func(smi) -> value}``.
-            Picklable functions (named functions, ``functools.partial``) use
-            *ncpu* workers; non-picklable ones (lambdas, closures) are
-            processed serially.
-        table: Target table for *custom_props* — ``'frags'`` or ``'frags_h'``.
-        ncpu: Workers for built-in and picklable custom properties.
-        verbose: Print progress to stderr.
+    :param db: path to the fragment database.
+    :param properties: built-in property names to compute (``'mw'``, ``'logp'``,
+        ``'rtb'``, ``'tpsa'``, ``'fcsp3'``). Accepted values: if **omitted**, all
+        built-ins are computed when ``custom_props`` is not given and **no**
+        built-ins when ``custom_props`` is given (so
+        ``add_fragment_props(db, custom_props={...})`` adds only the custom
+        columns, while the usual ``add_fragment_props(db)`` is unchanged);
+        ``None`` or ``'all'`` forces all built-ins (combine with ``custom_props``
+        to add both at once); a list/tuple computes that subset; and ``[]``
+        skips built-ins entirely.
+    :param custom_props: mapping of ``{column_name: func(smi) -> value}``.
+        Picklable functions (named functions, ``functools.partial``) use
+        ``ncpu`` workers; non-picklable ones (lambdas, closures) are processed
+        serially.
+    :param table: target table for ``custom_props`` — ``'frags'`` or
+        ``'frags_h'``.
+    :param ncpu: workers for built-in and picklable custom properties.
+    :param verbose: print progress to stderr.
     """
     if table not in _TABLE_COLS:
         raise ValueError(f"table must be one of {list(_TABLE_COLS)}, got {table!r}")

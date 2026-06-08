@@ -90,26 +90,10 @@ def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3
     :param return_smi: if True will return the list of SMILES instead of Mol objects. Default: False.
     :param ncpu: number of cores. None means all cpus.
 
-    :param kwargs: these arguments will be passed to grow_mol (for 'scaffold' mode) and mutate_mol ('analogs' mode)
-    functions.
-
-    arguments relevant to 'scaffold' mode
-    min_atoms: minimum number of atoms in the fragment which will replace H
-    max_atoms: maximum number of atoms in the fragment which will replace H
-
-    arguments relevant to 'analogs' mode
-    :min_size: minimum number of heavy atoms in a fragment to replace. If 0 - hydrogens will be replaced
-                     (if they are explicit). Default: 0.
-    :max_size: maximum number of heavy atoms in a fragment to replace. Default: 10.
-    :min_inc: minimum change of a number of heavy atoms in replacing fragments to a number of heavy atoms in
-                    replaced one. Negative value means that the replacing fragments would be smaller than the replaced
-                    one on a specified number of heavy atoms. Default: -2.
-    :max_inc: maximum change of a number of heavy atoms in replacing fragments to a number of heavy atoms in
-                    replaced one. Default: 2.
-    :replace_cycles: controls replacement of cyclic source fragments in analogs mode. Use ``"no"``/False for ordinary
-                    mutation, ``"forced"``/True to allow cyclic cores through size filters, ``"partial_all"`` for
-                    exhaustive partial-ring replacement, or ``"partial_exo"`` for faster exo-only partial-ring
-                    replacement. Default: ``"no"``.
+    :param kwargs: additional keyword arguments forwarded to the underlying generator -
+                   ``grow_mol`` in 'scaffold' mode (e.g. ``min_atoms``, ``max_atoms``) and
+                   ``mutate_mol`` in 'analogs' mode (e.g. ``min_size``, ``max_size``, ``min_inc``,
+                   ``max_inc``, ``replace_cycles``). See those functions for the meaning of each argument.
 
     '''
 

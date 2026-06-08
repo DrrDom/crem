@@ -1,13 +1,17 @@
 version: 2
 
-sphinx:
-  fail_on_warning: true
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.12"
 
-conda:
-  environment: conda_env.yml
+mkdocs:
+  configuration: mkdocs.yml
 
 python:
-  version: 3.6
   install:
-    - method: setuptools
+    # Install the package so mkdocstrings can import crem (rdkit, numpy, ...)
+    # to render the API reference.
+    - method: pip
       path: .
+    - requirements: docs/requirements.txt

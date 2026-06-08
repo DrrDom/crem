@@ -1,0 +1,176 @@
+/* ============================================================
+   CReM docs — Read the Docs theme customisations
+   Main dark colour: deep teal (keeps the CReM brand, goes dark
+   like the EasyDock palette). Accent: amber.
+   ============================================================ */
+
+:root {
+    --crem-teal:        #0f766e;  /* links / accent          */
+    --crem-teal-dark:   #0b5a54;  /* link hover              */
+    --crem-sidebar:     #0e3a37;  /* sidebar background      */
+    --crem-sidebar-top: #0a2826;  /* search / logo header    */
+    --crem-amber:       #f59e0b;  /* highlight accent        */
+}
+
+/* === Code blocks === */
+.rst-content pre,
+.rst-content code,
+.rst-content tt {
+    font-family: "JetBrains Mono", "Fira Code", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+.rst-content div.highlight pre {
+    border: 1px solid #ddd !important;
+    box-shadow: none !important;
+    background: #f8f8f8 !important;
+    padding: 0.45em 0.8em !important;
+    margin: 0 0 1em !important;
+    font-size: 0.92em;
+    line-height: 1.45;
+}
+
+.rst-content div.highlight pre code {
+    border: none;
+    padding: 0;
+    margin: 0;
+}
+
+.rst-content code.literal {
+    font-size: 0.9em;
+    padding: 0.1em 0.3em;
+    background: #f4f6f6;
+    border: 1px solid #e3e8e7;
+    color: #0b5a54;
+}
+
+/* === Sidebar (dark teal) === */
+.wy-nav-side {
+    background: var(--crem-sidebar);
+}
+
+.wy-side-nav-search {
+    background-color: var(--crem-sidebar-top);
+    border-bottom: 1px solid var(--crem-sidebar-top);
+    padding: 12px 10px;
+}
+
+.wy-side-nav-search > a,
+.wy-side-nav-search > a:hover,
+.wy-side-nav-search .wy-dropdown > a {
+    color: #ffffff;
+}
+
+/* Logo in the sidebar header. The explicit rules below override the theme's
+   generic ".wy-side-nav-search img" rule (which would otherwise force a 45x45
+   blue circle), so the full logo always shows on the dark-teal header. */
+.wy-side-nav-search > a img.logo,
+.wy-side-nav-search .wy-dropdown > a img.logo {
+    display: block;
+    width: auto;
+    max-width: 84%;
+    height: auto;
+    margin: 6px auto 10px;
+    padding: 0;
+    background: transparent;
+    border-radius: 0;
+}
+
+.wy-side-nav-search > div.version {
+    color: rgba(255, 255, 255, 0.75);
+}
+
+.wy-side-nav-search input[type="text"] {
+    border: 1px solid var(--crem-sidebar-top);
+    border-radius: 18px;
+    padding: 6px 14px;
+    box-shadow: none;
+}
+
+/* === Nav menu === */
+.wy-menu-vertical a {
+    color: #d7e3e1;
+}
+
+.wy-menu-vertical a:hover {
+    background-color: #12463f;
+    color: #ffffff;
+}
+
+.wy-menu-vertical p.caption {
+    color: #79c2b9;            /* section captions in teal */
+    font-weight: 700;
+}
+
+/* The expanded current section sits on a light panel on the dark sidebar. */
+.wy-menu-vertical li.current {
+    background-color: #e9f1f0;
+}
+
+/* Active section HEADER uses the same light background as its subsections
+   (just bold), so it reads clearly instead of dark-on-dark. */
+.wy-menu-vertical li.current > a,
+.wy-menu-vertical li.current a {
+    background-color: #e9f1f0;
+    color: #14504a;
+    border: none;
+}
+
+.wy-menu-vertical li.current > a {
+    font-weight: 700;
+}
+
+.wy-menu-vertical li.current li a {
+    font-weight: 400;
+}
+
+/* Hover within the open section. */
+.wy-menu-vertical li.current > a:hover,
+.wy-menu-vertical li.current a:hover {
+    background-color: #dcebe9;
+    color: #0b302d;
+}
+
+/* === Content links / accent (teal) === */
+.wy-nav-content a,
+.rst-content a {
+    color: var(--crem-teal);
+}
+
+.wy-nav-content a:hover,
+.rst-content a:hover {
+    color: var(--crem-teal-dark);
+}
+
+/* mobile top bar matches the sidebar header */
+.wy-nav-top {
+    background: var(--crem-sidebar-top);
+}
+
+.wy-nav-top a {
+    color: #ffffff;
+}
+
+/* === mkdocstrings API blocks: tidy headings === */
+.rst-content .doc-heading code,
+.rst-content h2 code,
+.rst-content h3 code {
+    background: transparent;
+    border: none;
+    color: inherit;
+    padding: 0;
+}
+
+.rst-content .doc-label {
+    border-radius: 3px;
+}
+
+/* Wrap long function signatures instead of overflowing horizontally.
+   The signature has a space after every comma, so this wraps cleanly at
+   parameter boundaries; lone overlong tokens break as a fallback. Scoped to
+   .doc-signature so ordinary code blocks keep their horizontal scroll. */
+.rst-content .doc-signature pre,
+.rst-content .doc-signature pre code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: normal;
+}

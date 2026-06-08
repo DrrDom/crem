@@ -51,7 +51,7 @@ pip uninstall crem
 
 ## Dependencies
 
-`crem` requires `rdkit>=2017.09`. To run the guacamol test `guacamol` should be installed.
+`crem` requires `rdkit>=2025.03.5`. To run the guacamol test `guacamol` should be installed.
 
 ## Generation of a fragment database
 

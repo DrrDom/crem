@@ -2,8 +2,8 @@ name: crem
 channels:
   - conda-forge
 dependencies:
-  - python>=3.6
-  - rdkit>=2017.09
+  - python>=3.8
+  - rdkit>=2025.03.5
   - numpy
   - joblib
   - tqdm

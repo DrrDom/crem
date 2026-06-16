@@ -36,10 +36,10 @@ structures.
 
 ## Links
 
-- 📖 Documentation: <https://crem.readthedocs.io/>
-- 🧪 Web app: <https://crem.imtm.cz/>
-- ⬇️ Precompiled ChEMBL databases: <http://www.qsar4u.com/pages/crem.php>
-- 📝 Changelog: [changelog](changelog)
+- Documentation: <https://crem.readthedocs.io/>
+- Web app: <https://crem.imtm.cz/>
+- Precompiled ChEMBL databases: <http://www.qsar4u.com/pages/crem.php>
+- Changelog: [changelog](changelog)
 
 ## Installation
 

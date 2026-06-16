@@ -5,7 +5,6 @@ site_url: https://crem.readthedocs.io/
 
 theme:
   name: readthedocs
-  custom_dir: overrides
   highlightjs: true
   logo: assets/crem-logo-white.svg
   navigation_depth: 3

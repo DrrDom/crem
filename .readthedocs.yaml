@@ -10,8 +10,6 @@ mkdocs:
 
 python:
   install:
-    # Install the package so mkdocstrings can import crem (rdkit, numpy, ...)
-    # to render the API reference.
+    - requirements: docs/requirements.txt
     - method: pip
       path: .
-    - requirements: docs/requirements.txt

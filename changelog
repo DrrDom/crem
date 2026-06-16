@@ -1,15 +1,26 @@
-1.0
+0.3
 
-- new v1 database schema: normalized envs/frags_h/frags tables with denormalized radiusN tables (core_num_atoms, dist2, is_ring_closure) and a covering index for fast lookups
-- cremdb_create.py: new script to build v1 fragment databases from SMILES files; --frag-mode {acyclic,ring,both} controls whether ring-closure arc fragments are extracted alongside acyclic-cut linkers
-- cremdb_merge.py: merge multiple fragment databases (shard support for parallel DB creation), preserves provenance (is_ring_closure) on merge
+- new v1 database schema: normalized envs/frags_h/frags tables with denormalized radiusN tables (core_num_atoms, dist2, is_ring_closure) and a covering index for fast lookups; multiple fragment sets can be stored in a single database
+- cremdb_create.py: new script to build v1 fragment databases from SMILES files in one step; --frag-mode {acyclic, ring, both, ring_optimal, both_optimal} (default both_optimal) controls whether ring-closure arc fragments are extracted alongside acyclic-cut fragments - the *_optimal modes keep only exo side cuts, a subset of the exhaustive ring/both cuts; accepts zstd-compressed input and configurable radii
+- cremdb_create.py: large-scale builds via --shard-size (sequential shards) or --parallel-shards (concurrent shard builders merged by a parallel binary-tree reduction); resumable runs with --processed-chunks
+- cremdb_convert.py: convert legacy (v0) databases to the v1 schema; the old freq column is imported as a named fragment set
+- cremdb_merge.py: merge multiple v1 databases (shard support for parallel DB creation), preserves provenance (is_ring_closure) and per-set counts on merge; idempotent and resumable
+- cremdb_add_prop.py: add molecular property columns (mw, logp, rtb, tpsa, fcsp3) and user-defined custom properties to a database for use as **kwargs fragment filters; only newly added rows are computed on re-runs
 - cremdb_get_set_names.py: list fragment set names stored in a database
-- multiple fragment sets: set_names argument in all generation functions to filter replacements by named subsets
-- rename make_macrocycle -> make_cycle; new ring_size argument (size of the new ring, in atoms) replaces the previous dist argument; new ring_closures argument selects between acyclic-cut linker fragments (default, today's macrocycle behaviour) and ring-cut arc fragments
-- mol_context: env canonicalization unified across disconnected and connected (multi-AP single-component) cases via Chem.CanonicalRankAtoms-based orbits
+- crem.db: programmatic database building/maintenance API (create_db, merge_dbs, add_fragment_props) mirroring the command-line tools
+- multiple fragment sets: set_names argument in all generation functions to filter replacements by named subsets (OR logic across the named sets)
+- rename make_macrocycle -> make_cycle; new ring_size argument (size of the new ring, in atoms) replaces the previous dist argument; new ring_closures argument selects between ring-cut arc fragments (default, ring_closures=True) and acyclic-cut linker fragments (ring_closures=False, the previous macrocycle behaviour)
+- mutate_mol: new replace_cycles argument to replace cyclic source fragments - "forced" replaces whole ring systems ignoring the size filters, "partial_all"/"partial_exo" replace partial ring arcs using exhaustive or exo-only side cuts (the partial modes require a ring-capable database)
+- add make_cycle2 convenience wrapper (picklable, for use with the multiprocessing module)
 - add get_mols_from_replacements function to generate structures from pre-fetched replacements
 - add seed argument to all generation functions (mutate_mol, grow_mol, link_mols, make_cycle, get_replacements) for reproducible output
+- add utils.filter_acyclic_attachment_points to keep only fragments whose attachment points sit on acyclic atoms (useful for make_cycle)
+- preserve atom properties of the parent molecule through structure transformations (backed up and restored; the original atom index is stored in the __crem_index property)
+- fix wrong stereo-bond annotation on alkenes and clear explicit hydrogens in generated products
+- mol_context: env canonicalization unified across disconnected and connected (multi-AP single-component) cases via Chem.CanonicalRankAtoms-based orbits
 - performance: heavy atom counts computed from existing mol objects, database metadata pre-loaded, bulk-insert optimisations in cremdb_create, indices rebuilt after bulk updates
+- require RDKit >= 2025.3.5 (older versions still work but may drop stereo configurations in generated structures)
+- modernized packaging: pyproject.toml with setuptools_scm versioning
 - add pytest test suite for database creation and structure generation
 
 0.2.16

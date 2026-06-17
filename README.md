@@ -1,9 +1,6 @@
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/crem-logo-white.png">
-    <img src="docs/assets/crem-logo.png" alt="CReM" width="300">
-  </picture>
-</div>
+<p align="left">
+  <img src="docs/assets/crem-logo.png" alt="CReM" width="300">
+</p>
 
 # CReM — chemically reasonable mutations
 

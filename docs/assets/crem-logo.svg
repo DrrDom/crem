@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 395.33588 100.50379"
+   role="img"
+   aria-labelledby="t d"
+   font-family="'Trebuchet MS', 'Segoe UI', Verdana, Arial, sans-serif"
+   version="1.1"
+   id="svg344"
+   sodipodi:docname="crem-logo.svg"
+   inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
+   width="395.33588"
+   height="100.50379"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <sodipodi:namedview
+     id="namedview346"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="0.834386"
+     inkscape:cx="345.16399"
+     inkscape:cy="77.302351"
+     inkscape:window-width="1398"
+     inkscape:window-height="831"
+     inkscape:window-x="42"
+     inkscape:window-y="32"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg344" />
+  <title
+     id="t">CReM</title>
+  <desc
+     id="d">CReM — chemically reasonable mutations. A benzene ring with a swappable fragment at an attachment point.</desc>
+  <defs
+     id="defs306">
+    <marker
+       id="crem-arr"
+       markerUnits="userSpaceOnUse"
+       markerWidth="14"
+       markerHeight="13"
+       refX="11.5"
+       refY="6.5"
+       orient="auto">
+      <path
+         d="M 1,1 13,6.5 1,12 Z"
+         fill="#f59e0b"
+         id="path303" />
+    </marker>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath9190">
+      <g
+         id="g9194">
+        <rect
+           x="105.38078"
+           y="92.324364"
+           width="1280"
+           height="720"
+           id="rect9192" />
+      </g>
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath9190-4">
+      <g
+         id="g9194-8">
+        <rect
+           x="105.38078"
+           y="92.324364"
+           width="1280"
+           height="720"
+           id="rect9192-1" />
+      </g>
+    </clipPath>
+  </defs>
+  <!-- ===== Icon: molecule + swappable fragment ===== -->
+  <path
+     d="M 44.04,4.3037956 83.88,27.303796 v 46 l -39.84,23 -39.84,-23 v -46 z"
+     stroke="#0f766e"
+     stroke-width="7"
+     id="path308"
+     style="fill:none;stroke-linecap:round;stroke-linejoin:round" />
+  <circle
+     cx="44.040001"
+     cy="50.303795"
+     r="27"
+     stroke="#14b8a6"
+     stroke-width="5"
+     id="circle310"
+     style="fill:none;stroke-linecap:round;stroke-linejoin:round" />
+  <circle
+     cx="44.040001"
+     cy="4.3037958"
+     r="4.1999998"
+     fill="#0f766e"
+     stroke="none"
+     id="circle312"
+     style="stroke-linecap:round;stroke-linejoin:round" />
+  <circle
+     cx="83.879997"
+     cy="73.303795"
+     r="4.1999998"
+     fill="#0f766e"
+     stroke="none"
+     id="circle314"
+     style="stroke-linecap:round;stroke-linejoin:round" />
+  <circle
+     cx="44.040001"
+     cy="96.303795"
+     r="4.1999998"
+     fill="#0f766e"
+     stroke="none"
+     id="circle316"
+     style="stroke-linecap:round;stroke-linejoin:round" />
+  <circle
+     cx="4.1999998"
+     cy="73.303795"
+     r="4.1999998"
+     fill="#0f766e"
+     stroke="none"
+     id="circle318"
+     style="stroke-linecap:round;stroke-linejoin:round" />
+  <circle
+     cx="4.1999998"
+     cy="27.303795"
+     r="4.1999998"
+     fill="#0f766e"
+     stroke="none"
+     id="circle320"
+     style="stroke-linecap:round;stroke-linejoin:round" />
+  <line
+     x1="83.879997"
+     y1="27.303795"
+     x2="110.04"
+     y2="12.303796"
+     stroke="#0f766e"
+     stroke-width="6"
+     id="line322"
+     style="fill:none;stroke-linecap:round;stroke-linejoin:round" />
+  <circle
+     cx="83.879997"
+     cy="27.303795"
+     r="6"
+     fill="#f59e0b"
+     stroke="none"
+     id="circle324"
+     style="stroke-linecap:round;stroke-linejoin:round" />
+  <circle
+     cx="110.04"
+     cy="12.303796"
+     r="7"
+     fill="#f59e0b"
+     stroke="none"
+     id="circle326"
+     style="stroke-linecap:round;stroke-linejoin:round" />
+  <!-- ===== Wordmark ===== -->
+  <text
+     x="159.00774"
+     y="81.89608"
+     font-size="92px"
+     font-weight="700"
+     letter-spacing="-2"
+     fill="#134e4a"
+     id="text340"><tspan
+       style="font-style:normal;font-variant:normal;font-weight:500;font-stretch:normal;font-family:'Ubuntu Sans';-inkscape-font-specification:'Ubuntu Sans Medium'"
+       id="tspan579">CR<tspan
+   style="fill:#f59e0b;fill-opacity:1"
+   id="tspan2512">e</tspan>M</tspan></text>
+  <!-- ===== Tagline ===== -->
+  <metadata
+     id="metadata3284">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:title>CReM</dc:title>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+  <path
+     d="m 393.38078,214.32436 h 8.333 v 2 h -8.333 z m 7,-3 8,4 -8,4 z"
+     fill="#4472c4"
+     id="path8643"
+     clip-path="url(#clipPath9190)"
+     transform="matrix(1.071058,0,0,1.2455907,-294.71179,-250.92298)"
+     style="fill:#f59e0b;fill-opacity:1" />
+  <path
+     d="m 393.38078,214.32436 h 8.333 v 2 h -8.333 z m 7,-3 8,4 -8,4 z"
+     fill="#4472c4"
+     id="path8643-2"
+     clip-path="url(#clipPath9190-4)"
+     transform="matrix(-1.0765401,0.00809682,-0.00930223,-1.2455557,566.49755,269.9389)"
+     style="fill:#f59e0b;fill-opacity:1" />
+</svg>

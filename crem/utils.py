@@ -90,24 +90,10 @@ def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3
     :param return_smi: if True will return the list of SMILES instead of Mol objects. Default: False.
     :param ncpu: number of cores. None means all cpus.
 
-    :param kwargs: these arguments will be passed to grow_mol (for 'scaffold' mode) and mutate_mol ('analogs' mode)
-    functions.
-
-    arguments relevant to 'scaffold' mode
-    min_atoms: minimum number of atoms in the fragment which will replace H
-    max_atoms: maximum number of atoms in the fragment which will replace H
-
-    arguments relevant to 'analogs' mode
-    :min_size: minimum number of heavy atoms in a fragment to replace. If 0 - hydrogens will be replaced
-                     (if they are explicit). Default: 0.
-    :max_size: maximum number of heavy atoms in a fragment to replace. Default: 10.
-    :min_inc: minimum change of a number of heavy atoms in replacing fragments to a number of heavy atoms in
-                    replaced one. Negative value means that the replacing fragments would be smaller than the replaced
-                    one on a specified number of heavy atoms. Default: -2.
-    :max_inc: maximum change of a number of heavy atoms in replacing fragments to a number of heavy atoms in
-                    replaced one. Default: 2.
-    :replace_cycles: looking for replacement of a fragment containing cycles irrespectively of the fragment size.
-                    Default: False.
+    :param kwargs: additional keyword arguments forwarded to the underlying generator -
+                   ``grow_mol`` in 'scaffold' mode (e.g. ``min_atoms``, ``max_atoms``) and
+                   ``mutate_mol`` in 'analogs' mode (e.g. ``min_size``, ``max_size``, ``min_inc``,
+                   ``max_inc``, ``replace_cycles``). See those functions for the meaning of each argument.
 
     '''
 
@@ -225,6 +211,47 @@ def filter_max_ring_size(row_ids, cur, radius, max_size=6):
         rings = w.AtomRings()
         if rings and max(len(atom_ids) for atom_ids in rings) > max_size:
             del d[smi]
+    ids = []
+    for v in d.values():
+        ids.extend(v)
+    return ids
+
+
+def filter_acyclic_attachment_points(row_ids, cur, radius):
+    """
+    Keep only fragments where each attachment point [*:n] is attached to an acyclic atom.
+
+    :param row_ids: the list of row ids of fragments to consider
+    :param cur: cursor to the fragment database
+    :param radius: context radius
+    :return: the list of row ids of selected fragments
+    """
+    d = defaultdict(list)
+    for rowid, core_smi, _, _ in _get_replacements(cur, radius, row_ids):
+        d[core_smi].append(rowid)
+
+    for smi in list(d.keys()):
+        mol = Chem.MolFromSmiles(smi)
+        if mol is None:
+            del d[smi]
+            continue
+
+        keep = True
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 0:
+                continue
+            # Attachment dummy atoms in CReM cores should have a single neighbor.
+            if not atom.GetNeighbors():
+                keep = False
+                break
+            neighbor = atom.GetNeighbors()[0]
+            if neighbor.IsInRing():
+                keep = False
+                break
+
+        if not keep:
+            del d[smi]
+
     ids = []
     for v in d.values():
         ids.extend(v)

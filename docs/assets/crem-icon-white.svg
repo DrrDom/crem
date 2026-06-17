@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="43 16 142.68771 100.50379"
+   role="img"
+   aria-labelledby="t"
+   version="1.1"
+   id="svg27"
+   sodipodi:docname="crem-icon-white.svg"
+   width="142.68771"
+   height="100.50379"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs31" />
+  <sodipodi:namedview
+     id="namedview29"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1" />
+  <title
+     id="t">CReM icon (light)</title>
+  <!-- molecule -->
+  <path
+     d="m 87.04,20.303796 39.84,23 v 46 L 87.04,112.3038 47.2,89.303796 v -46 z"
+     fill="none"
+     stroke="#ffffff"
+     stroke-width="7"
+     stroke-linecap="round"
+     stroke-linejoin="round"
+     id="path3" />
+  <circle
+     cx="87.040001"
+     cy="66.303795"
+     r="27"
+     fill="none"
+     stroke="#ffffff"
+     stroke-width="5"
+     opacity="0.85"
+     id="circle5" />
+  <circle
+     cx="87.040001"
+     cy="20.303795"
+     r="4.1999998"
+     fill="#ffffff"
+     id="circle7" />
+  <circle
+     cx="126.88"
+     cy="89.303795"
+     r="4.1999998"
+     fill="#ffffff"
+     id="circle9" />
+  <circle
+     cx="87.040001"
+     cy="112.30379"
+     r="4.1999998"
+     fill="#ffffff"
+     id="circle11" />
+  <circle
+     cx="47.200001"
+     cy="89.303795"
+     r="4.1999998"
+     fill="#ffffff"
+     id="circle13" />
+  <circle
+     cx="47.200001"
+     cy="43.303795"
+     r="4.1999998"
+     fill="#ffffff"
+     id="circle15" />
+  <line
+     x1="126.88"
+     y1="43.303795"
+     x2="153.03999"
+     y2="28.303795"
+     stroke="#ffffff"
+     stroke-width="6"
+     stroke-linecap="round"
+     id="line17" />
+  <circle
+     cx="126.88"
+     cy="43.303795"
+     r="6"
+     fill="#f59e0b"
+     id="circle19" />
+  <circle
+     cx="153.03999"
+     cy="28.303795"
+     r="7"
+     fill="#f59e0b"
+     id="circle21" />
+  <!-- exchange arrows -->
+  <path
+     d="m 169.62184,32.037445 h 8.92513 v 2.491182 h -8.92513 z m 7.49741,-3.736772 8.56846,4.982363 -8.56846,4.982363 z"
+     fill="#f59e0b"
+     id="path23"
+     style="stroke-width:1.15503" />
+  <path
+     d="m 184.01367,22.171101 -8.97081,0.06747 -0.0186,-2.491112 8.97081,-0.06747 z M 176.5058,25.964446 167.85627,21.046997 176.43138,16 Z"
+     fill="#f59e0b"
+     id="path25"
+     style="stroke-width:1.158" />
+</svg>

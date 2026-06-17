@@ -1,0 +1,4 @@
+mkdocs>=1.6
+mkdocstrings>=0.29
+mkdocstrings-python>=1.12
+pymdown-extensions>=10

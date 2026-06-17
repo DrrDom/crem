@@ -8,3 +8,7 @@ misc
 pbs
 reproducibility
 bash
+crem/_version.py
+
+# MkDocs build output
+/site/

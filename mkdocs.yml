@@ -1,0 +1,76 @@
+site_name: CReM
+site_description: Chemically reasonable mutations — fragment-based structure generation
+site_author: Pavel Polishchuk
+site_url: https://crem.readthedocs.io/
+
+theme:
+  name: readthedocs
+  highlightjs: true
+  logo: assets/crem-logo-white.svg
+  navigation_depth: 3
+  collapse_navigation: false
+  sticky_navigation: true
+  titles_only: false
+  prev_next_buttons_location: none
+
+extra_css:
+  - styles/extra.css
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: sphinx
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            members_order: source
+            separate_signature: true
+            show_signature_annotations: true
+            heading_level: 2
+
+markdown_extensions:
+  - admonition
+  - def_list
+  - attr_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Concepts: concepts.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Quick start: getting-started/quickstart.md
+  - Fragment databases:
+      - Database schema: fragment-databases/schema.md
+      - Build a database (v1): fragment-databases/build-v1.md
+      - Build a database (v0): fragment-databases/build-v0.md
+      - Convert v0 to v1: fragment-databases/convert.md
+      - Fragment sets: fragment-databases/fragment-sets.md
+      - Fragment properties: fragment-databases/properties.md
+  - Operations:
+      - Mutate, grow, link: operations/mutate-grow-link.md
+      - Make cycle: operations/make-cycle.md
+      - Advanced fragment selection: operations/advanced-selection.md
+      - Two-step replacements: operations/two-step-replacements.md
+      - Iterative enumeration: operations/enumeration.md
+      - Multiprocessing: operations/multiprocessing.md
+  - Reference:
+      - crem.crem: reference/crem.md
+      - crem.utils: reference/utils.md
+      - crem.db: reference/db.md
+      - Command-line tools: reference/cli.md
+  - About:
+      - Benchmarks: about/benchmarks.md
+      - Limitations: about/limitations.md
+      - Citation: about/citation.md

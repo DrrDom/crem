@@ -1,5 +1,5 @@
 <p align="left">
-  <img src="docs/assets/crem-logo.png" alt="CReM" width="300">
+  <img src="docs/assets/crem-logo.svg" alt="CReM" width="300">
 </p>
 
 # CReM — chemically reasonable mutations

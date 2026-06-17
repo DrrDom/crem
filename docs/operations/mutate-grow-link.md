@@ -129,6 +129,22 @@ The optional return values are appended in this order: SMILES, then `rxn`
 then the `Mol` (`return_mol`). With no optional returns, the generator yields
 plain SMILES strings.
 
+## Identifying inserted atoms
+
+When `return_mol=True`, every atom that came from the replacement fragment in the
+returned `Mol` carries a boolean property `__crem`. Other atoms do
+not have it, so you can find, highlight, or protect the newly added atoms:
+
+```python
+res = list(mutate_mol(m, db_name="fragments.db", max_size=1, return_mol=True))
+smi, mol = res[0]                                   # [smiles, mol]
+inserted = [a.GetIdx() for a in mol.GetAtoms() if a.HasProp("__crem")]
+```
+
+The flag lives on the `Mol` object only — it is not encoded in the output SMILES.
+The same applies to `grow_mol`, `link_mols`, `make_cycle`, and
+`get_mols_from_replacements`.
+
 ## Limiting and reproducing output
 
 - `max_replacements=N` returns at most `N` products, sampled uniformly at random

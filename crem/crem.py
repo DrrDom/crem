@@ -1215,6 +1215,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
+                       In the returned Mol, atoms inserted from the replacement fragment carry a boolean
+                       property ``__crem`` set to True (other atoms do not).
     :param ncores: number of cores. Default: 1.
     :param filter_func: a function which will filter selected fragments by additional rules
                         (in this way one may add arbitrary selection constrains). The function takes necessary first
@@ -1365,6 +1367,8 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
+                       In the returned Mol, atoms inserted from the replacement fragment carry a boolean
+                       property ``__crem`` set to True (other atoms do not).
     :param ncores: number of cores. Default: 1.
     :param filter_func: a function which will filter selected fragments by additional rules
                         (in this way one may add arbitrary selection constrains). The function takes necessary first
@@ -1473,6 +1477,8 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
+                       In the returned Mol, atoms inserted from the replacement fragment carry a boolean
+                       property ``__crem`` set to True (other atoms do not).
     :param ncores: number of cores. Default: 1.
     :param filter_func: a function which will filter selected fragments by additional rules
                         (in this way one may add arbitrary selection constrains). The function takes necessary first
@@ -1790,6 +1796,22 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
 
 def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn=False, return_rxn_freq=False,
                                return_mol=False):
+    """
+    Build product molecules from replacements previously obtained with
+    ``get_replacements(..., return_frag_smi_only=False)``.
+
+    :param mol1: the first RDKit Mol object (the same molecule passed to get_replacements).
+    :param radius: context radius; must match the value used in get_replacements.
+    :param replacements: iterable of (source_core_smi, replacement_core_smi, freq, context_mol) tuples.
+    :param mol2: the second RDKit Mol object for link operations, otherwise None.
+    :param return_rxn: whether to additionally return the rxn string of a transformation. Default: False.
+    :param return_rxn_freq: whether to additionally return the frequency of a transformation. Default: False.
+    :param return_mol: whether to additionally return the RDKit Mol object of a generated molecule. Default: False.
+                       In the returned Mol, atoms inserted from the replacement fragment carry a boolean
+                       property ``__crem`` set to True (other atoms do not).
+    :return: generator over new molecules - SMILES, optionally followed by the rxn string, frequency,
+             and/or the RDKit Mol object. Only entries with distinct SMILES are returned.
+    """
 
     if isinstance(mol2, Chem.Mol):
         products = set()
@@ -1870,6 +1892,8 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
     :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB. Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule. Default: False.
+                       In the returned Mol, atoms inserted from the replacement fragment carry a boolean
+                       property ``__crem`` set to True (other atoms do not).
     :param ncores: number of cores. Default: 1.
     :param filter_func: a function which will filter selected fragments by additional rules
                         (in this way one may add arbitrary selection constrains). The function takes necessary first

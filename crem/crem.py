@@ -591,8 +591,151 @@ def __fragment_mol_partial_cycles(mol, radius=3, keep_stereo=False, protected_id
 #     return False
 
 
+def __bfs_path(mol, start, end, allowed):
+    """Shortest path (list of atom ids) from start to end traversing only atoms in `allowed`
+    (a set that must include start and end). Returns None if no such path exists."""
+    if start == end:
+        return [start]
+    from collections import deque
+    prev = {start: None}
+    q = deque([start])
+    while q:
+        cur = q.popleft()
+        for nb in mol.GetAtomWithIdx(cur).GetNeighbors():
+            idx = nb.GetIdx()
+            if idx in allowed and idx not in prev:
+                prev[idx] = cur
+                if idx == end:
+                    path = [end]
+                    while prev[path[-1]] is not None:
+                        path.append(prev[path[-1]])
+                    return path[::-1]
+                q.append(idx)
+    return None
+
+
+def __identify_new_ring(p):
+    """Detect a 2-attachment-point intramolecular ring closure in a product `p` of
+    __frag_replace, using the ``__crem`` labels carried by inserted (replacement) atoms.
+
+    A ring closure is a transformation whose inserted bridge connects two atoms that are
+    already part of the same connected parent fragment (make_cycle and partial-ring mutate).
+    grow / single-cut mutate (one attachment) and link (two attachments across two separate
+    molecules) are not ring closures and return None.
+
+    Returns a dict {bridge, a1, a2, parent_arc, ring_atoms, ring_size} describing the smallest
+    newly formed ring, or None when `p` is not a simple two-point ring closure.
+    """
+    crem = set(a.GetIdx() for a in p.GetAtoms() if a.HasProp('__crem'))
+    if not crem:
+        return None
+    noncrem = set(a.GetIdx() for a in p.GetAtoms() if a.GetIdx() not in crem and a.GetAtomicNum() > 1)
+    # junction bonds connect an inserted (crem) heavy atom to a parent (non-crem) heavy atom;
+    # record both the parent-side anchor and the inserted-side neighbour
+    junctions = []
+    for b in p.GetBonds():
+        i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        ic, jc = i in crem, j in crem
+        if ic != jc:
+            anchor, cside = (j, i) if ic else (i, j)
+            if p.GetAtomWithIdx(anchor).GetAtomicNum() <= 1:
+                continue
+            junctions.append((anchor, cside))
+    if len(junctions) != 2 or junctions[0][0] == junctions[1][0]:
+        return None
+    (a1, b1), (a2, b2) = junctions
+    parent_arc = __bfs_path(p, a1, a2, noncrem)
+    if parent_arc is None:
+        return None  # anchors not connected through the parent (e.g. link) -> not a closure
+    # bridge core must traverse the inserted atoms, not shortcut through a parent bond
+    bridge_core = [b1] if b1 == b2 else __bfs_path(p, b1, b2, crem)
+    if bridge_core is None:
+        return None
+    ring_atoms = set(parent_arc) | set(bridge_core) | {a1, a2}
+    return {'bridge': set(bridge_core), 'crem': crem, 'a1': a1, 'a2': a2, 'parent_arc': parent_arc,
+            'ring_atoms': ring_atoms, 'ring_size': len(ring_atoms)}
+
+
+def __ring_topology_ok(p, ringinfo):
+    """Stage 0 geometry check (calibrated). Returns False only for proven-impossible small
+    ring closures across rigid aromatic systems; True (accept) otherwise.
+
+    Reject rules (anchors aromatic, new ring size 5-6):
+      * 6-membered aromatic ring, anchors meta or para -> reject new ring 5 or 6;
+      * thiophene, anchors = the two carbons flanking S -> reject new ring 6.
+    All other cases (5-membered over C/N/O, sp3, ortho/adjacent, caged 3-4, ring >= 7) pass.
+    """
+    ring_size = ringinfo['ring_size']
+    if not (5 <= ring_size <= 6):
+        return True
+    a1, a2 = ringinfo['a1'], ringinfo['a2']
+    if not (p.GetAtomWithIdx(a1).GetIsAromatic() and p.GetAtomWithIdx(a2).GetIsAromatic()):
+        return True
+    crem = ringinfo['crem']
+    for ring in p.GetRingInfo().AtomRings():
+        rset = set(ring)
+        if a1 not in rset or a2 not in rset or (rset & crem):
+            continue
+        if not all(p.GetAtomWithIdx(i).GetIsAromatic() for i in ring):
+            continue
+        if len(ring) == 6:
+            arc = __bfs_path(p, a1, a2, rset)
+            if arc is not None and (len(arc) - 1) in (2, 3):  # meta or para
+                return False
+        elif len(ring) == 5 and ring_size == 6:
+            sulfur = [i for i in ring if p.GetAtomWithIdx(i).GetAtomicNum() == 16]
+            if sulfur:
+                nbrs = set(n.GetIdx() for n in p.GetAtomWithIdx(sulfur[0]).GetNeighbors())
+                if a1 in nbrs and a2 in nbrs:  # both anchors flank the sulfur
+                    return False
+    return True
+
+
+def __ring_dg_ok(p, ringinfo, eps=0.15):
+    """Stage 1 geometry check (general distance-geometry reach test). Returns False only on a
+    proven bounds inconsistency; True (accept) otherwise. Scoped to the new ring plus fused
+    aromatic systems and one substituent shell so distal (possibly complex) parent rings cannot
+    introduce spurious rejections; bounds are inflated by `eps` to stay strictly sound."""
+    try:
+        from rdkit.Chem import rdDistGeom
+        from rdkit import DistanceGeometry
+    except Exception:
+        return True
+    scope = set(ringinfo['ring_atoms'])
+    rings = [set(r) for r in p.GetRingInfo().AtomRings()]
+    changed = True
+    while changed:  # absorb fused aromatic rings that rigidly fix the anchor geometry
+        changed = False
+        for rset in rings:
+            if (scope & rset) and not (rset <= scope) and all(p.GetAtomWithIdx(i).GetIsAromatic() for i in rset):
+                scope |= rset
+                changed = True
+    for idx in list(scope):  # one shell of heavy neighbours to pin boundary bond angles
+        for n in p.GetAtomWithIdx(idx).GetNeighbors():
+            if n.GetAtomicNum() > 1:
+                scope.add(n.GetIdx())
+    drop = sorted(set(range(p.GetNumAtoms())) - scope, reverse=True)
+    em = Chem.RWMol(p)
+    for idx in drop:
+        em.RemoveAtom(idx)
+    sub = em.GetMol()
+    try:
+        Chem.SanitizeMol(sub)
+        bm = rdDistGeom.GetMoleculeBoundsMatrix(sub)
+    except Exception:
+        return True
+    n = bm.shape[0]
+    for i in range(n):
+        for j in range(n):
+            if i < j:
+                bm[i][j] *= (1.0 + eps)
+            elif i > j:
+                bm[i][j] *= (1.0 - eps)
+    return bool(DistanceGeometry.DoTriangleSmoothing(bm))
+
+
 def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=None, frag_ids_1=None, frag_ids_2=None,
-                   intramol=False):
+                   discard_ring_geometry=True):
     """
     INPUT
         mol1:         mol for mutate, grow or link
@@ -601,6 +744,9 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
         new_frag_smi: SMILES of a replacement core (from DB)
         radius:       context radius considered
         context_mol:  RDKit Mol containing pre-built whole context part with mapped dummies
+        discard_ring_geometry: if True (default), silently discard ring-forming products whose
+                      newly created ring is geometrically impossible to embed in 3D
+                      (Stage 0 topology rules + Stage 1 distance-geometry reach test).
     OUTPUT
         generator returns canonical isomeric SMILES, RDKit Mol and rxn rule
     """
@@ -652,6 +798,18 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
     __clear_atom_prop(p, ATOM_INDEX_PROP)
     if p.HasSubstructMatch(__explicit_h_query):
         p = Chem.RemoveHs(p, __remove_hs_params)
+
+    if discard_ring_geometry:
+        # discard ring-forming products with an impossible-to-embed new ring; any error in the
+        # geometry analysis must never discard a structure (would be a false negative)
+        try:
+            ringinfo = __identify_new_ring(p)
+            if ringinfo is not None and (
+                    not __ring_topology_ok(p, ringinfo) or not __ring_dg_ok(p, ringinfo)):
+                return
+        except Exception:
+            pass
+
     smi = Chem.MolToSmiles(p, isomericSmiles=True)
     yield smi, p, transformation_smi
 
@@ -1080,20 +1238,15 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
 def __frag_replace_mp(items):
     # return smi, transformation, transformation_freq, mol
-    if len(items) >= 2 and isinstance(items[-1], bool):
-        freq = items[-2]
-        intramol = items[-1]
-        args = items[:-2]
-    else:
-        freq = items[-1]
-        intramol = False
-        args = items[:-1]
-    return [(*item, freq) for item in __frag_replace(*args, intramol=intramol)]
+    # data generators yield (mol1, mol2, old_frag, new_frag, radius, context_mol, freq,
+    # discard_ring_geometry); the last two items are unpacked here
+    *args, freq, discard_ring_geometry = items
+    return [(*item, freq) for item in __frag_replace(*args, discard_ring_geometry=discard_ring_geometry)]
 
 
 def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
                replace_cycles, protected_ids, min_freq, set_names, max_replacements, symmetry_fixes, filter_func=None,
-               sample_func=None, seed=None, **kwargs):
+               sample_func=None, seed=None, discard_ring_geometry=True, **kwargs):
     for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol, mol2=None, db_name=db_name,
                                                                     radius=radius, min_size=min_size,
                                                                     max_size=max_size, min_rel_size=min_rel_size,
@@ -1110,11 +1263,12 @@ def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_s
                                                                     return_frag_smi_only=False,
                                                                     operation="mutate",
                                                                     seed=seed, **kwargs):
-        yield mol, None, frag_sma, core_sma, radius, context_mol, freq
+        yield mol, None, frag_sma, core_sma, radius, context_mol, freq, discard_ring_geometry
 
 
 def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, protected_ids_1, protected_ids_2, min_freq,
-                    set_names, max_replacements, filter_func=None, sample_func=None, seed=None, **kwargs):
+                    set_names, max_replacements, filter_func=None, sample_func=None, seed=None,
+                    discard_ring_geometry=True, **kwargs):
     for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name,
                                                                      radius=radius, dist=dist,
                                                                      min_size=0, max_size=0,
@@ -1129,12 +1283,12 @@ def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, pro
                                                                      sample_func=sample_func,
                                                                      operation="link",
                                                                      return_frag_smi_only=False, seed=seed, **kwargs):
-        yield mol1, mol2, frag_sma, core_sma, radius, context_mol, freq
+        yield mol1, mol2, frag_sma, core_sma, radius, context_mol, freq, discard_ring_geometry
 
 
 def __get_data_cycle(mol, db_name, radius, ring_size, ring_closures, min_size, max_size, protected_ids,
                      min_freq, set_names, max_replacements, filter_func=None, sample_func=None,
-                     seed=None, **kwargs):
+                     seed=None, discard_ring_geometry=True, **kwargs):
     for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol, mol2=None, db_name=db_name,
                                                                     radius=radius,
                                                                     min_size=0, max_size=0,
@@ -1152,13 +1306,13 @@ def __get_data_cycle(mol, db_name, radius, ring_size, ring_closures, min_size, m
                                                                     ring_closures=ring_closures,
                                                                     ring_size=ring_size,
                                                                     seed=seed, **kwargs):
-        yield mol, None, frag_sma, core_sma, radius, context_mol, freq
+        yield mol, None, frag_sma, core_sma, radius, context_mol, freq, discard_ring_geometry
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
                max_replacements=None, replace_cycles="no", replace_ids=None, protected_ids=None,
                symmetry_fixes=False, min_freq=0, return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1,
-               filter_func=None, sample_func=None, set_names=None, seed=None, **kwargs):
+               filter_func=None, sample_func=None, set_names=None, seed=None, discard_ring_geometry=True, **kwargs):
     """
     Generator of new molecules by replacement of fragments in the supplied molecule with fragments from DB.
 
@@ -1233,6 +1387,12 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                         fragments. Other arguments can be custom and user-defined. The function should return
                         a list/set of selected row ids.
     :param seed: random seed for reproducible fragment selection when max_replacements is set. Default: None.
+    :param discard_ring_geometry: if True (default), silently discard ring-forming products (here, partial
+                     ring-arc replacements selected via replace_cycles) whose newly created ring cannot be
+                     embedded in 3D, e.g. a too-short bridge across the meta/para positions of a six-membered
+                     aromatic ring or across the sulfur of a thiophene. Set False to return all generated
+                     structures without this geometric filtering. Non ring-forming transformations are
+                     unaffected. Default: True.
     :param **kwargs: named arguments to additionally filter replacing fragments. For v0 DB use columns from radiusX,
                      for v1 DB use columns from frags or frags_h. Values are a single value or 2-item tuple with lower
                      and upper bound of the corresponding parameter of a fragment. This can be useful to annotate
@@ -1284,7 +1444,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                                         return_frag_smi_only=False,
                                                                         operation="mutate",
                                                                         seed=seed, **kwargs):
-            for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, context_mol):
+            for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, context_mol,
+                                              discard_ring_geometry=discard_ring_geometry):
                 if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
                     if smi not in products:
                         products.add(smi)
@@ -1308,7 +1469,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                               protected_ids, min_freq, set_names, max_replacements,
                                                               symmetry_fixes, filter_func=filter_func,
                                                               sample_func=sample_func,
-                                                              seed=seed, **kwargs),
+                                                              seed=seed,
+                                                              discard_ring_geometry=discard_ring_geometry, **kwargs),
                                 chunksize=100):
                 for smi, m, rxn, freq in items:
                     if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
@@ -1795,7 +1957,7 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
 
 
 def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn=False, return_rxn_freq=False,
-                               return_mol=False):
+                               return_mol=False, discard_ring_geometry=True):
     """
     Build product molecules from replacements previously obtained with
     ``get_replacements(..., return_frag_smi_only=False)``.
@@ -1809,6 +1971,10 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
     :param return_mol: whether to additionally return the RDKit Mol object of a generated molecule. Default: False.
                        In the returned Mol, atoms inserted from the replacement fragment carry a boolean
                        property ``__crem`` set to True (other atoms do not).
+    :param discard_ring_geometry: if True (default), silently discard ring-closure products whose newly created
+                     ring cannot be embedded in 3D (a too-short bridge across the meta/para positions of a
+                     six-membered aromatic ring or across the sulfur of a thiophene). Set False to keep all
+                     products without geometric filtering. Default: True.
     :return: generator over new molecules - SMILES, optionally followed by the rxn string, frequency,
              and/or the RDKit Mol object. Only entries with distinct SMILES are returned.
     """
@@ -1826,7 +1992,8 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
             raise ValueError('Each replacement tuple should have 4 items: '
                              '(source_core_smi, replacement_core_smi, freq, context_mol)\n')
 
-        for smi, m, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, context_mol):
+        for smi, m, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, context_mol,
+                                          discard_ring_geometry=discard_ring_geometry):
             if smi not in products:
                 products.add(smi)
                 res = [smi]
@@ -1846,7 +2013,7 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                min_atoms=1, max_atoms=10, max_replacements=None,
                replace_ids=None, protected_ids=None, symmetry_fixes=False, min_freq=0,
                return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
-               sample_func=None, set_names=None, seed=None, **kwargs):
+               sample_func=None, set_names=None, seed=None, discard_ring_geometry=True, **kwargs):
     """
     Generate new rings (macrocycles or smaller native cycles) by linking two
     atoms in the same molecule with a 2-attachment-point fragment from the DB.
@@ -1915,6 +2082,12 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                       are used. If a column name is not found, a ValueError is raised listing available set names.
                       Ignored for v0 databases. Default: None.
     :param seed: random seed for reproducible fragment selection when max_replacements is set. Default: None.
+    :param discard_ring_geometry: if True (default), silently discard ring-forming products (here, the new ring formed
+                     by make_cycle) whose newly created ring cannot be
+                     embedded in 3D, e.g. a too-short bridge across the meta/para positions of a six-membered
+                     aromatic ring or across the sulfur of a thiophene. Set False to return all generated
+                     structures without this geometric filtering. Non ring-forming transformations are
+                     unaffected. Default: True.
     :param **kwargs: named arguments to additionally filter replacing fragments. For v0 DB use columns from radiusX,
                      for v1 DB use columns from frags or frags_h. Values are a single value or 2-item tuple with lower
                      and upper bound of the corresponding parameter of a fragment.
@@ -1981,7 +2154,8 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                                                                         ring_closures=ring_closures,
                                                                         ring_size=ring_size,
                                                                         seed=seed, **kwargs):
-            for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, context_mol):
+            for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, context_mol,
+                                              discard_ring_geometry=discard_ring_geometry):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi != source_smi and smi not in products:
                         products.add(smi)
@@ -2007,6 +2181,7 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                                                                     max_replacements,
                                                                     filter_func=filter_func,
                                                                     sample_func=sample_func, seed=seed,
+                                                                    discard_ring_geometry=discard_ring_geometry,
                                                                     **kwargs),
                                 chunksize=100):
                 for smi, m, rxn, freq in items:

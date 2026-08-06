@@ -656,38 +656,58 @@ def __identify_new_ring(p):
             'ring_atoms': ring_atoms, 'ring_size': len(ring_atoms)}
 
 
+def __aromatic_arc(p, ring, ring_atoms):
+    """The contiguous run of `ring` (an aromatic ring given as an ordered tuple of atom ids)
+    that lies inside the new ring `ring_atoms`, as an ordered list of atom ids. Returns None
+    when the overlap is empty, covers the whole aromatic ring, or is broken into several runs
+    (the new ring then enters and leaves the aromatic system more than once and the simple
+    span argument below does not apply)."""
+    n = len(ring)
+    inside = set(i for i, idx in enumerate(ring) if idx in ring_atoms)
+    if not inside or len(inside) == n:
+        return None
+    start = next(i for i in inside if (i - 1) % n not in inside)
+    if any((start + k) % n not in inside for k in range(len(inside))):
+        return None  # overlap is not a single contiguous arc
+    return [ring[(start + k) % n] for k in range(len(inside))]
+
+
 def __ring_topology_ok(p, ringinfo):
     """Stage 0 geometry check (calibrated). Returns False only for proven-impossible small
     ring closures across rigid aromatic systems; True (accept) otherwise.
 
-    Reject rules (anchors aromatic, new ring size 5-6):
-      * 6-membered aromatic ring, anchors meta or para -> reject new ring 5 or 6;
-      * thiophene, anchors = the two carbons flanking S -> reject new ring 6.
-    All other cases (5-membered over C/N/O, sp3, ortho/adjacent, caged 3-4, ring >= 7) pass.
+    The test is keyed on the rigid arc *inside* the new ring rather than on the atoms the
+    inserted fragment happens to be bonded to. A ring is impossible whenever it contains a
+    contiguous arc of an aromatic ring whose two ends are held further apart than the rest of
+    the ring can span - which is a property of the arc, no matter whether the attachment
+    points are the arc ends themselves (make_cycle between two ring atoms) or lie one or more
+    bonds outside it (a closure starting on a side chain).
+
+    Reject rules (new ring size 5-6):
+      * arc of 3 (meta) or 4 (para) consecutive atoms of a six-membered aromatic ring;
+      * arc of 3 consecutive atoms of a five-membered aromatic ring whose middle atom is S
+        (thiophene spanned across the sulfur) -> new ring 6 only.
+    Everything else (ortho/adjacent arcs, five-membered arcs over C/N/O, sp3 spans, caged
+    rings 3-4, rings >= 7) passes.
     """
     ring_size = ringinfo['ring_size']
     if not (5 <= ring_size <= 6):
         return True
-    a1, a2 = ringinfo['a1'], ringinfo['a2']
-    if not (p.GetAtomWithIdx(a1).GetIsAromatic() and p.GetAtomWithIdx(a2).GetIsAromatic()):
-        return True
-    crem = ringinfo['crem']
+    ring_atoms = ringinfo['ring_atoms']
     for ring in p.GetRingInfo().AtomRings():
-        rset = set(ring)
-        if a1 not in rset or a2 not in rset or (rset & crem):
+        if len(ring) not in (5, 6):
             continue
         if not all(p.GetAtomWithIdx(i).GetIsAromatic() for i in ring):
             continue
+        arc = __aromatic_arc(p, ring, ring_atoms)
+        if arc is None:
+            continue
         if len(ring) == 6:
-            arc = __bfs_path(p, a1, a2, rset)
-            if arc is not None and (len(arc) - 1) in (2, 3):  # meta or para
+            if len(arc) in (3, 4):  # meta or para positions bridged by 1-3 atoms
                 return False
-        elif len(ring) == 5 and ring_size == 6:
-            sulfur = [i for i in ring if p.GetAtomWithIdx(i).GetAtomicNum() == 16]
-            if sulfur:
-                nbrs = set(n.GetIdx() for n in p.GetAtomWithIdx(sulfur[0]).GetNeighbors())
-                if a1 in nbrs and a2 in nbrs:  # both anchors flank the sulfur
-                    return False
+        elif ring_size == 6 and len(arc) == 3:
+            if p.GetAtomWithIdx(arc[1]).GetAtomicNum() == 16:  # span across a thiophene S
+                return False
     return True
 
 

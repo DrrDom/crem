@@ -25,6 +25,9 @@ __molzip_params.label = rdmolops.MolzipLabel.AtomMapNumber
 __explicit_h_query = Chem.MolFromSmarts("[#1]")
 __remove_hs_params = Chem.RemoveHsParameters()
 __remove_hs_params.removeDefiningBondStereo = True
+# canonical SMILES of an isolated aromatic ring system -> its fixed pairwise distances,
+# used by the ring-geometry filter (see __rigid_pair_distances)
+__rigid_geometry_cache = {}
 __atom_properties_to_backup = ("isotope",)
 __atom_property_backup_handlers = {
     "isotope": (
@@ -652,8 +655,10 @@ def __identify_new_ring(p):
     if bridge_core is None:
         return None
     ring_atoms = set(parent_arc) | set(bridge_core) | {a1, a2}
+    # the cycle in traversal order: along the parent from a1 to a2, then back through the bridge
+    ring_path = list(parent_arc) + list(reversed(bridge_core))
     return {'bridge': set(bridge_core), 'crem': crem, 'a1': a1, 'a2': a2, 'parent_arc': parent_arc,
-            'ring_atoms': ring_atoms, 'ring_size': len(ring_atoms)}
+            'ring_atoms': ring_atoms, 'ring_size': len(ring_atoms), 'ring_path': ring_path}
 
 
 def __aromatic_arc(p, ring, ring_atoms):
@@ -711,47 +716,171 @@ def __ring_topology_ok(p, ringinfo):
     return True
 
 
-def __ring_dg_ok(p, ringinfo, eps=0.15):
-    """Stage 1 geometry check (general distance-geometry reach test). Returns False only on a
-    proven bounds inconsistency; True (accept) otherwise. Scoped to the new ring plus fused
-    aromatic systems and one substituent shell so distal (possibly complex) parent rings cannot
-    introduce spurious rejections; bounds are inflated by `eps` to stay strictly sound."""
-    try:
-        from rdkit.Chem import rdDistGeom
-        from rdkit import DistanceGeometry
-    except Exception:
-        return True
-    scope = set(ringinfo['ring_atoms'])
-    rings = [set(r) for r in p.GetRingInfo().AtomRings()]
-    changed = True
-    while changed:  # absorb fused aromatic rings that rigidly fix the anchor geometry
-        changed = False
-        for rset in rings:
-            if (scope & rset) and not (rset <= scope) and all(p.GetAtomWithIdx(i).GetIsAromatic() for i in rset):
-                scope |= rset
-                changed = True
-    for idx in list(scope):  # one shell of heavy neighbours to pin boundary bond angles
-        for n in p.GetAtomWithIdx(idx).GetNeighbors():
-            if n.GetAtomicNum() > 1:
-                scope.add(n.GetIdx())
-    drop = sorted(set(range(p.GetNumAtoms())) - scope, reverse=True)
+def __aromatic_ring_systems(p, atoms=None):
+    """Maximal groups of aromatic ring atoms fused through shared atoms - one rigid planar unit
+    each. Rings joined only by a rotatable bond (biaryls) stay separate units, since their
+    mutual geometry is not fixed. Restricted to units touching `atoms` when given."""
+    units = []
+    for ring in p.GetRingInfo().AtomRings():
+        if not all(p.GetAtomWithIdx(i).GetIsAromatic() for i in ring):
+            continue
+        rset = set(ring)
+        overlapping = [u for u in units if u & rset]
+        units = [u for u in units if not (u & rset)]
+        units.append(rset.union(*overlapping) if overlapping else rset)
+    if atoms is not None:
+        units = [u for u in units if u & atoms]
+    return units
+
+
+def __rigid_pair_distances(p, unit):
+    """Interatomic distances (Angstrom) inside one rigid aromatic unit, taken from an embedded
+    copy of the *isolated* ring system, keyed by atom index in `p`. A fused aromatic system is
+    planar and rigid, so a single conformer fixes every distance in it - which is exactly the
+    information `GetMoleculeBoundsMatrix` lacks (it bounds distant pairs by van der Waals
+    contact only, which is why the plain triangle-smoothing test never fires).
+
+    Results are cached on the isolated system's canonical SMILES, so a scaffold recurring
+    across thousands of products is embedded once. Returns None when the system cannot be
+    extracted or embedded."""
+    idx = sorted(unit)
     em = Chem.RWMol(p)
-    for idx in drop:
-        em.RemoveAtom(idx)
+    for i in sorted(set(range(p.GetNumAtoms())) - unit, reverse=True):
+        em.RemoveAtom(i)
     sub = em.GetMol()
     try:
         Chem.SanitizeMol(sub)
-        bm = rdDistGeom.GetMoleculeBoundsMatrix(sub)
+        smi = Chem.MolToSmiles(sub)
+        ranks = list(Chem.CanonicalRankAtoms(sub))
     except Exception:
+        return None
+    if smi not in __rigid_geometry_cache:
+        __rigid_geometry_cache[smi] = __embed_rigid_system(sub, ranks)
+    by_rank = __rigid_geometry_cache[smi]
+    if by_rank is None:
+        return None
+    out = {}
+    for a in range(len(idx)):
+        for b in range(a + 1, len(idx)):
+            span = by_rank.get((min(ranks[a], ranks[b]), max(ranks[a], ranks[b])))
+            if span is not None:
+                out[(idx[a], idx[b])] = span
+    return out
+
+
+def __embed_rigid_system(sub, ranks):
+    """Embed an isolated aromatic ring system and return its pairwise heavy-atom distances
+    keyed by canonical rank pairs (so the result is reusable for any copy of the system).
+
+    A fused system is rigid, so one conformer gives every distance. A biaryl-style assembly has
+    one rotatable bond joining its two halves; there the torsion is scanned and the *minimum*
+    distance over the scan is kept, which is the sound lower bound. Assemblies with more than
+    one such bond are not analysed (returns None) rather than guessed at."""
+    try:
+        from rdkit.Chem import rdDistGeom, rdMolTransforms
+        params = rdDistGeom.ETKDGv3()
+        params.randomSeed = 42
+        params.maxIterations = 4  # give up quickly; a failure only skips the injection
+        m = Chem.Mol(sub)         # heavy atoms are enough and embed several times faster
+        if rdDistGeom.EmbedMolecule(m, params) != 0:
+            return None
+        conf = m.GetConformer()
+        hinges = [b for b in sub.GetBonds()
+                  if not b.IsInRing() and b.GetBondType() == Chem.BondType.SINGLE]
+        if len(hinges) > 1:
+            return None
+        torsion = None
+        if hinges:
+            b, c = hinges[0].GetBeginAtom(), hinges[0].GetEndAtom()
+            a = next((x.GetIdx() for x in b.GetNeighbors() if x.GetIdx() != c.GetIdx()), None)
+            d = next((x.GetIdx() for x in c.GetNeighbors() if x.GetIdx() != b.GetIdx()), None)
+            if a is None or d is None:
+                return None
+            torsion = (a, b.GetIdx(), c.GetIdx(), d)
+        n = sub.GetNumAtoms()
+        out = {}
+        for angle in (range(0, 360, 15) if torsion else (None,)):
+            if angle is not None:
+                rdMolTransforms.SetDihedralDeg(conf, *torsion, float(angle))
+            pos = [conf.GetAtomPosition(i) for i in range(n)]
+            for x in range(n):
+                for y in range(x + 1, n):
+                    key = (min(ranks[x], ranks[y]), max(ranks[x], ranks[y]))
+                    dist = pos[x].Distance(pos[y])
+                    lo, hi = out.get(key, (dist, dist))
+                    out[key] = (min(lo, dist), max(hi, dist))
+        if torsion:
+            # a hinged assembly is only a model of the real geometry: closing a strained ring
+            # over it splays the two halves further apart than the relaxed scan ever gets, so
+            # only the lower bound (the reach limit) may be trusted
+            out = {k: (lo, None) for k, (lo, _) in out.items()}
+        return out
+    except Exception:
+        return None
+
+
+def __rigid_groups(p, atoms):
+    """Rigid (or nearly rigid) aromatic groups touching `atoms`: each fused ring system, plus
+    every pair of fused systems joined by a single bond (a biaryl, rigid except for one
+    torsion)."""
+    units = __aromatic_ring_systems(p, atoms)
+    groups = list(units)
+    for a in range(len(units)):
+        for b in range(a + 1, len(units)):
+            joins = [bond for bond in p.GetBonds()
+                     if {bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()} & units[a]
+                     and {bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()} & units[b]]
+            if len(joins) == 1 and joins[0].GetBondType() == Chem.BondType.SINGLE:
+                groups.append(units[a] | units[b])
+    return groups
+
+
+def __ring_reach_ok(p, ringinfo, slack=0.10, max_reach=10.0):
+    """Stage 0b geometry check: can the rest of the new ring even reach across the rigid
+    aromatic stretch it contains? Returns False only when it provably cannot.
+
+    Stage 0's arc rules cover spans inside a single six- or five-membered ring, where the
+    obstruction is angular. The complementary failure is one of pure distance: a ring closing
+    over a *fused* system (naphthalene 2,6 is ~5 A apart) or over a biaryl (4,4' is ~8.6 A)
+    needs a bridge long enough to get there. The span is read off the real geometry of the
+    isolated ring system (see __rigid_pair_distances) and compared against the bridge stretched
+    perfectly straight - the sum of its maximum bond lengths, which no conformation can exceed.
+    Nothing here depends on bond angles, so strained-but-real rings cannot be rejected.
+    """
+    path = ringinfo.get('ring_path')
+    if not path or len(path) < 4:
         return True
-    n = bm.shape[0]
-    for i in range(n):
-        for j in range(n):
-            if i < j:
-                bm[i][j] *= (1.0 + eps)
-            elif i > j:
-                bm[i][j] *= (1.0 - eps)
-    return bool(DistanceGeometry.DoTriangleSmoothing(bm))
+    n = len(path)
+    pt = Chem.GetPeriodicTable()
+
+    def max_bond(x, y):
+        return (pt.GetRcovalent(p.GetAtomWithIdx(x).GetAtomicNum())
+                + pt.GetRcovalent(p.GetAtomWithIdx(y).GetAtomicNum()) + 0.10)
+
+    for group in __rigid_groups(p, set(path)):
+        inside = [k for k in range(n) if path[k] in group]
+        if len(inside) < 2 or len(inside) == n:
+            continue
+        starts = [k for k in inside if (k - 1) % n not in inside]
+        if len(starts) != 1:
+            continue  # the ring dips in and out of the system - no single span to measure
+        start = starts[0]
+        run = [(start + k) % n for k in range(len(inside))]
+        if any(k not in inside for k in run):
+            continue
+        a, b = path[run[0]], path[run[-1]]
+        # the rest of the cycle, stretched straight, is all the bridge can ever span
+        rest = [path[(run[-1] + k) % n] for k in range(n - len(run) + 1)] + [a]
+        reach = sum(max_bond(rest[k], rest[k + 1]) for k in range(len(rest) - 1))
+        if reach >= max_reach:
+            continue
+        dists = __rigid_pair_distances(p, group)
+        if not dists:
+            continue
+        span = dists.get((min(a, b), max(a, b)))
+        if span is not None and span[0] * (1.0 - slack) > reach:
+            return False
+    return True
 
 
 def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=None, frag_ids_1=None, frag_ids_2=None,
@@ -766,7 +895,7 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
         context_mol:  RDKit Mol containing pre-built whole context part with mapped dummies
         discard_ring_geometry: if True (default), silently discard ring-forming products whose
                       newly created ring is geometrically impossible to embed in 3D
-                      (Stage 0 topology rules + Stage 1 distance-geometry reach test).
+                      (aromatic arc rules plus the rigid-span reach test).
     OUTPUT
         generator returns canonical isomeric SMILES, RDKit Mol and rxn rule
     """
@@ -825,7 +954,7 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
         try:
             ringinfo = __identify_new_ring(p)
             if ringinfo is not None and (
-                    not __ring_topology_ok(p, ringinfo) or not __ring_dg_ok(p, ringinfo)):
+                    not __ring_topology_ok(p, ringinfo) or not __ring_reach_ok(p, ringinfo)):
                 return
         except Exception:
             pass

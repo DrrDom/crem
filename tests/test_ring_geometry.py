@@ -36,6 +36,11 @@ IMPOSSIBLE = [
     ("CC(=O)N([*:1])c1cccc([*:2])c1", "[*:1]CC[*:2]", "anilide N + meta ring C -> ring 6"),
     ("CC(=O)N([*:1])c1ccc([*:2])cc1", "[*:1]C[*:2]", "anilide N + para ring C -> ring 6"),
     ("OC([*:1])c1cccc([*:2])c1", "[*:1]C[*:2]", "benzylic C + meta ring C -> ring 5"),
+    # spans across a whole rigid system: too far for the bridge to reach, whatever its shape
+    ("[*:1]c1ccc2cc([*:2])ccc2c1", "[*:1]C[*:2]", "naphthalene 2,6 (~5 A) + 1 atom"),
+    ("[*:1]c1ccc2ccc([*:2])cc2c1", "[*:1]C[*:2]", "naphthalene 2,7 + 1 atom"),
+    ("[*:1]c1ccc(-c2ccc([*:2])cc2)cc1", "[*:1]C[*:2]", "biphenyl 4,4' (~7 A) + 1 atom"),
+    ("[*:1]c1ccc(-c2ccc([*:2])cc2)cc1", "[*:1]CC[*:2]", "biphenyl 4,4' + 2 atoms"),
 ]
 
 # (context, bridge, description) — embeddable; must never be discarded (no false negatives)
@@ -49,6 +54,9 @@ POSSIBLE = [
     ("CC(=O)N([*:1])c1ccccc1[*:2]", "[*:1]CC[*:2]", "anilide N + ortho ring C -> ring 5"),
     ("OC([*:1])c1ccccc1[*:2]", "[*:1]CC[*:2]", "benzylic C + ortho ring C -> ring 5"),
     ("[*:1]c1cccc2cccc([*:2])c12", "[*:1]CC[*:2]", "naphthalene peri -> acenaphthene"),
+    ("[*:1]c1ccc2cc([*:2])ccc2c1", "[*:1]CCCCCC[*:2]", "naphthalene 2,6 + 6 atoms"),
+    ("[*:1]c1ccccc1-c1ccccc1[*:2]", "[*:1]C[*:2]", "biphenyl 2,2' -> fluorene"),
+    ("[*:1]c1ccccc1-c1ccccc1[*:2]", "[*:1]CC[*:2]", "biphenyl 2,2' -> dihydrophenanthrene"),
 ]
 
 

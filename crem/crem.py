@@ -25,8 +25,8 @@ __molzip_params.label = rdmolops.MolzipLabel.AtomMapNumber
 __explicit_h_query = Chem.MolFromSmarts("[#1]")
 __remove_hs_params = Chem.RemoveHsParameters()
 __remove_hs_params.removeDefiningBondStereo = True
-# canonical SMILES of an isolated aromatic ring system -> its fixed pairwise distances,
-# used by the ring-geometry filter (see __rigid_pair_distances)
+# (canonical SMILES, canonical ranking) of an isolated aromatic ring system -> its fixed
+# pairwise distances, used by the ring-geometry filter (see __rigid_pair_distances)
 __rigid_geometry_cache = {}
 __atom_properties_to_backup = ("isotope",)
 __atom_property_backup_handlers = {
@@ -688,15 +688,21 @@ def __ring_topology_ok(p, ringinfo):
     points are the arc ends themselves (make_cycle between two ring atoms) or lie one or more
     bonds outside it (a closure starting on a side chain).
 
-    Reject rules (new ring size 5-6):
-      * arc of 3 (meta) or 4 (para) consecutive atoms of a six-membered aromatic ring;
-      * arc of 3 consecutive atoms of a five-membered aromatic ring whose middle atom is S
-        (thiophene spanned across the sulfur) -> new ring 6 only.
-    Everything else (ortho/adjacent arcs, five-membered arcs over C/N/O, sp3 spans, caged
-    rings 3-4, rings >= 7) passes.
+    Reject bands, each ending at the smallest bridge that closes in practice:
+      * arc of 3 atoms of a six-membered ring (meta positions) -> new ring 4-8; ring 9 is
+        [6]metacyclophane, which exists, and bare templates embed there;
+      * arc of 4 atoms of a six-membered ring (para positions) -> new ring 5-9; ring 10 is
+        [6]paracyclophane, isolable though strained;
+      * arc of 3 atoms of a five-membered aromatic ring (the 1,3-span across its middle atom)
+        -> new ring 4-8. This span is the exact analogue of benzene-meta: two divergent
+        exocyclic vectors. Bare furan, pyrrole and thiophene templates fail at every bridge
+        length up to ring 7 whatever the middle atom is; at ring 8 only the span across an O
+        closes, and it closes only with the ring bent by 33 deg, so the band covers it too.
+    Everything else passes: ortho/adjacent arcs (indane, acenaphthene, fluorene), sp3 spans,
+    and rings large enough to be genuine cyclophanes.
     """
     ring_size = ringinfo['ring_size']
-    if not (5 <= ring_size <= 6):
+    if not (4 <= ring_size <= 9):
         return True
     ring_atoms = ringinfo['ring_atoms']
     for ring in p.GetRingInfo().AtomRings():
@@ -708,11 +714,12 @@ def __ring_topology_ok(p, ringinfo):
         if arc is None:
             continue
         if len(ring) == 6:
-            if len(arc) in (3, 4):  # meta or para positions bridged by 1-3 atoms
+            if len(arc) == 3 and ring_size <= 8:       # meta positions bridged
                 return False
-        elif ring_size == 6 and len(arc) == 3:
-            if p.GetAtomWithIdx(arc[1]).GetAtomicNum() == 16:  # span across a thiophene S
+            if len(arc) == 4 and 5 <= ring_size <= 9:  # para positions bridged
                 return False
+        elif len(arc) == 3 and ring_size <= 8:  # 1,3-span across a five-membered ring
+            return False
     return True
 
 
@@ -740,9 +747,14 @@ def __rigid_pair_distances(p, unit):
     information `GetMoleculeBoundsMatrix` lacks (it bounds distant pairs by van der Waals
     contact only, which is why the plain triangle-smoothing test never fires).
 
-    Results are cached on the isolated system's canonical SMILES, so a scaffold recurring
-    across thousands of products is embedded once. Returns None when the system cannot be
-    extracted or embedded."""
+    Results are cached so a scaffold recurring across thousands of products is embedded once.
+    The key is the isolated system's canonical SMILES *together with its canonical ranking*:
+    symmetry-equivalent atoms of the bare system (the two ortho positions of a biphenyl ring,
+    say) are interchangeable in the stripped fragment but not in the product, and their rank
+    assignment can differ between two extractions of the same scaffold. Keying on the SMILES
+    alone would then read a cached distance under a mismatched labelling, making the verdict
+    depend on which products happened to be processed first. Returns None when the system
+    cannot be extracted or embedded."""
     idx = sorted(unit)
     em = Chem.RWMol(p)
     for i in sorted(set(range(p.GetNumAtoms())) - unit, reverse=True):
@@ -754,9 +766,10 @@ def __rigid_pair_distances(p, unit):
         ranks = list(Chem.CanonicalRankAtoms(sub))
     except Exception:
         return None
-    if smi not in __rigid_geometry_cache:
-        __rigid_geometry_cache[smi] = __embed_rigid_system(sub, ranks)
-    by_rank = __rigid_geometry_cache[smi]
+    key = (smi, tuple(ranks))
+    if key not in __rigid_geometry_cache:
+        __rigid_geometry_cache[key] = __embed_rigid_system(sub, ranks)
+    by_rank = __rigid_geometry_cache[key]
     if by_rank is None:
         return None
     out = {}

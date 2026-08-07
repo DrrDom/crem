@@ -30,6 +30,23 @@ IMPOSSIBLE = [
     ("[*:1]c1cccc([*:2])c1", "[*:1]CCC[*:2]", "benzene meta -> ring 6"),
     ("[*:1]c1cccc([*:2])c1", "[*:1]CC[*:2]", "benzene meta -> ring 5"),
     ("[*:1]c1ccc([*:2])s1", "[*:1]CCC[*:2]", "thiophene across S -> ring 6"),
+    # the reject bands run to the smallest bridge that is known to close: meta to ring 8
+    # ([6]metacyclophane is ring 9), para to ring 9 ([6]paracyclophane is ring 10)
+    ("[*:1]c1cccc([*:2])c1", "[*:1]CCCC[*:2]", "benzene meta -> ring 7"),
+    ("[*:1]c1cccc([*:2])c1", "[*:1]CCCCC[*:2]", "benzene meta -> ring 8"),
+    ("[*:1]c1ccc([*:2])cc1", "[*:1]CCC[*:2]", "benzene para -> ring 7"),
+    ("[*:1]c1ccc([*:2])cc1", "[*:1]CCCCC[*:2]", "benzene para -> ring 9"),
+    # a 1,3-span across the middle atom of a five-membered aromatic ring behaves like meta:
+    # bare templates close at no bridge length up to 7, whatever the middle atom is
+    ("[*:1]c1ccc([*:2])s1", "[*:1]CC[*:2]", "thiophene across S -> ring 5"),
+    ("[*:1]c1ccc([*:2])o1", "[*:1]CCC[*:2]", "furan across O -> ring 6"),
+    ("[*:1]c1ccc([*:2])[nH]1", "[*:1]CCCC[*:2]", "pyrrole across N -> ring 7"),
+    ("[*:1]c1cc([*:2])co1", "[*:1]CC[*:2]", "furan across C -> ring 5"),
+    ("[*:1]c1ccc([*:2])s1", "[*:1]CCCCC[*:2]", "thiophene across S -> ring 8"),
+    # both bands run down to ring 4 / up to ring 8; the one real class knowingly sacrificed is
+    # the span across a furan O at ring 8, which closes only with the ring bent by 33 deg
+    ("[*:1]c1cccc([*:2])c1", "[*:1]C[*:2]", "benzene meta -> ring 4"),
+    ("[*:1]c1ccc([*:2])o1", "[*:1]CCCCC[*:2]", "furan across O -> ring 8"),
     # the arc the new ring contains decides, not the atoms the bridge attaches to: these close
     # from a side-chain atom onto a ring atom, so neither anchor pair is meta/para itself
     ("CC(=O)N([*:1])c1cccc([*:2])c1", "[*:1]C[*:2]", "anilide N + meta ring C -> ring 5"),
@@ -48,8 +65,9 @@ POSSIBLE = [
     ("[*:1]c1cccc([*:2])c1", "[*:1]CCCCCC[*:2]", "benzene meta -> ring 9"),
     ("[*:1]c1ccccc1[*:2]", "[*:1]CCC[*:2]", "benzene ortho -> indane ring 5"),
     ("[*:1]c1ccccc1[*:2]", "[*:1]CC[*:2]", "benzene ortho -> benzocyclobutene ring 4"),
-    ("[*:1]c1ccc([*:2])o1", "[*:1]CCC[*:2]", "furan across O -> ring 6"),
-    ("[*:1]c1ccc([*:2])s1", "[*:1]CC[*:2]", "thiophene across S -> ring 5"),
+    ("[*:1]c1ccc([*:2])o1", "[*:1]CCCCCC[*:2]", "furan across O -> ring 9"),
+    ("[*:1]c1ccc([*:2])s1", "[*:1]CCCCCC[*:2]", "thiophene across S -> ring 9"),
+    ("[*:1]c1ccc([*:2])cc1", "[*:1]CCCCCCCC[*:2]", "benzene para -> ring 12"),
     ("CC(=O)N([*:1])c1ccccc1[*:2]", "[*:1]C[*:2]", "anilide N + ortho ring C -> ring 4"),
     ("CC(=O)N([*:1])c1ccccc1[*:2]", "[*:1]CC[*:2]", "anilide N + ortho ring C -> ring 5"),
     ("OC([*:1])c1ccccc1[*:2]", "[*:1]CC[*:2]", "benzylic C + ortho ring C -> ring 5"),

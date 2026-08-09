@@ -137,6 +137,18 @@ def __prepare_context_mol_for_output(context_mol):
     return context_mol
 
 
+def __has_ring(mol):
+    """Return True if `mol` contains at least one ring, without requiring
+    sanitization or ring perception.
+
+    The cyclomatic number (bonds - atoms + connected_components) is a purely 
+    topological ring count that needs neither sanitization nor ring perception; 
+    dummy attachment atoms are pendant and so do not change it.
+    """
+    num_components = len(Chem.GetMolFrags(mol))
+    return mol.GetNumBonds() - mol.GetNumAtoms() + num_components > 0
+
+
 def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_ids=None, symmetry_fixes=False,
                    min_core_atoms=None, max_core_atoms=None, include_cyclic_cores=False):
     """
@@ -194,7 +206,7 @@ def __fragment_mol(mol, radius=3, return_ids=True, keep_stereo=False, protected_
         num_heavy_atoms = core_mol.GetNumHeavyAtoms()
         if (min_core_atoms is not None and num_heavy_atoms < min_core_atoms) or \
                 (max_core_atoms is not None and num_heavy_atoms > max_core_atoms):
-            if not include_cyclic_cores or not core_mol.GetRingInfo().NumRings():
+            if not include_cyclic_cores or not __has_ring(core_mol):
                 return
         env, frag, old_to_new_map = get_canon_context_core(context_mol, core_mol, radius, keep_stereo,
                                                            return_att_map=True)
@@ -547,7 +559,7 @@ def __fragment_mol_partial_cycles(mol, radius=3, keep_stereo=False, protected_id
         num_heavy_atoms = core_mol.GetNumHeavyAtoms()
         if (min_core_atoms is not None and num_heavy_atoms < min_core_atoms) or \
                 (max_core_atoms is not None and num_heavy_atoms > max_core_atoms):
-            if not include_cyclic_cores or not core_mol.GetRingInfo().NumRings():
+            if not include_cyclic_cores or not __has_ring(core_mol):
                 continue
         env, frag, old_to_new_map = get_canon_context_core(
             context_mol,

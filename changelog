@@ -1,3 +1,7 @@
+0.3.1
+
+- fix forced replacement of rings in mutate_mol
+
 0.3
 
 - new v1 database schema: normalized envs/frags_h/frags tables with denormalized radiusN tables (core_num_atoms, dist2, is_ring_closure) and a covering index for fast lookups; multiple fragment sets can be stored in a single database

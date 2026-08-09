@@ -271,6 +271,21 @@ def test_mutate_replace_cycles_boolean_aliases(db_rc):
         set(mutate_mol(mol, db_rc, replace_cycles="forced", **kw))
 
 
+def test_mutate_replace_cycles_forced_keeps_oversized_ring_core(db_rc):
+    # Regression: forced mode must replace a cyclic source core even when it is
+    # larger than max_size. This is the only path that hits the
+    # include_cyclic_cores branch in __fragment_mol, which previously called
+    # GetRingInfo() on an unsanitized rdMMPA.FragmentMol core and raised
+    # "RingInfo not initialized".
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")  # cyclohexane ring (6 atoms) > max_size
+    kw = dict(radius=1, min_freq=0, min_size=1, max_size=2, min_inc=-4, max_inc=4)
+    no = set(mutate_mol(mol, db_rc, replace_cycles="no", **kw))
+    forced = set(mutate_mol(mol, db_rc, replace_cycles="forced", **kw))
+    assert no.issubset(forced)              # forced only ever adds products
+    assert forced - no                      # oversized ring core actually got replaced
+    assert all(_valid(s) for s in forced)
+
+
 def test_mutate_rejects_unknown_replace_cycles_mode(db_rc):
     mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
     with pytest.raises(ValueError, match="replace_cycles must be one of"):

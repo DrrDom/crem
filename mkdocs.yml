@@ -53,12 +53,12 @@ nav:
       - Quick start: getting-started/quickstart.md
   - Fragment databases:
       - Database schema: fragment-databases/schema.md
-      - v1 schema (will be deprecated): fragment-databases/schema-v1.md
       - Build a database (v2): fragment-databases/build-v2.md
       - Build a database (v0): fragment-databases/build-v0.md
       - Convert a v0 database: fragment-databases/convert.md
       - Fragment sets: fragment-databases/fragment-sets.md
       - Fragment properties: fragment-databases/properties.md
+      - v1 schema (will be deprecated): fragment-databases/schema-v1.md
   - Operations:
       - Mutate, grow, link: operations/mutate-grow-link.md
       - Make cycle: operations/make-cycle.md

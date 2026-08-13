@@ -4,6 +4,7 @@ import os
 import sys
 import re
 import math
+import warnings
 from collections import defaultdict
 from rdkit import Chem, rdBase
 from rdkit.Chem import rdmolops
@@ -1065,6 +1066,19 @@ def _load_schema_meta(db_cur, radius):
     """
     user_version = db_cur.execute("PRAGMA user_version").fetchone()[0]
     meta = {'user_version': user_version}
+    if user_version == 1:
+        # FutureWarning rather than DeprecationWarning: the latter is suppressed by Python's
+        # default filters when raised from a library module rather than __main__, and the
+        # stack depth from here to user code varies by entry point, so stacklevel cannot be
+        # relied on to surface it.
+        warnings.warn(
+            "This database uses the v1 schema, which will be deprecated: cremdb_create now "
+            "only writes v2 and support for reading v1 may be dropped in a future release, "
+            "leaving v0 and v2. Note there is no v1 -> v2 converter - the current upgrade "
+            "is a rebuild from the source SMILES with cremdb_create. By request we may "
+            "develop v1 -> v2 converter, however, this is non-trivial.",
+            FutureWarning,
+        )
     # Fragment convention implied by the schema version. `label_all_ring_cuts` must be
     # handed to every ring fragmenter so the env/core strings it emits match the ones
     # stored in this database; `provenance_in_env` says whether ring provenance is already

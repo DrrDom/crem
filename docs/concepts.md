@@ -126,21 +126,25 @@ The separate, integer **`mode`** option (`0` all atoms, `1` heavy atoms only,
 acyclic fragmenter. `min_size=0` / `grow_mol` need hydrogen-cut rows, which mode
 `0` produces.
 
-## Database format: v1 and v0
+## Database format: v2, v1 and v0
 
-CReM reads two database formats:
+CReM reads three database formats:
 
-- **v1** — the current, deduplicated schema (`PRAGMA user_version = 1`) built by
-  [`cremdb_create`](fragment-databases/build-v1.md). It stores fragment sets,
-  ring-closure provenance, and shared environment/fragment tables.
+- **v2** — the current, deduplicated schema (`PRAGMA user_version = 2`) built by
+  [`cremdb_create`](fragment-databases/build-v2.md). It stores fragment sets and
+  shared environment/fragment tables, and marks ring-cut attachment points with an
+  isotope label so ring provenance lives in the fragment SMILES.
+- **v1** — the deprecated predecessor of v2, which recorded ring provenance in an
+  `is_ring_closure` column instead. Still readable, but it raises a `FutureWarning`
+  and there is no converter to v2 — the upgrade is a rebuild from SMILES.
 - **v0** — the legacy single-table-per-radius layout produced by the
   [pipeline](fragment-databases/build-v0.md)
   (`fragmentation` → `frag_to_env` → `env_to_db`).
 
-Both formats work with every generation function. The
+All three formats work with every generation function. The
 [schema page](fragment-databases/schema.md) describes them, and
-[Convert v0 to v1](fragment-databases/convert.md) shows how to upgrade.
+[Convert a v0 database](fragment-databases/convert.md) shows how to upgrade a v0 one.
 
 The only place the format is visible at generation time is property filtering
 via `**kwargs`: those filters read columns from `radiusN` in a v0 database and
-from `frags` / `frags_h` in a v1 database.
+from `frags` / `frags_h` in v1 and v2.

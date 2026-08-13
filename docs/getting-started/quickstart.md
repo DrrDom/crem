@@ -1,7 +1,7 @@
 # Quick start
 
 This page assumes you already have a fragment database. You can
-[build one](../fragment-databases/build-v1.md) or download a precompiled ChEMBL
+[build one](../fragment-databases/build-v2.md) or download a precompiled ChEMBL
 database from <http://www.qsar4u.com/pages/crem.php>. All examples use a file
 named `fragments.db`.
 

@@ -2,7 +2,7 @@
 
 Programmatic database building — the Python equivalents of `cremdb_create`,
 `cremdb_merge`, and `cremdb_add_prop`. See
-[Build a database (v1)](../fragment-databases/build-v1.md) and
+[Build a database (v2)](../fragment-databases/build-v2.md) and
 [Fragment properties](../fragment-databases/properties.md) for guides.
 
 ::: crem.db

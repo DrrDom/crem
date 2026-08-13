@@ -6,11 +6,11 @@ Installing CReM adds the following console commands to your `PATH`.
 
 | Command | Purpose | Guide |
 |---|---|---|
-| `cremdb_create` | Build a v1 database from SMILES (recommended) | [Build (v1)](../fragment-databases/build-v1.md) |
-| `cremdb_convert` | Convert a v0 database to v1 | [Convert](../fragment-databases/convert.md) |
+| `cremdb_create` | Build a v2 database from SMILES (recommended) | [Build (v2)](../fragment-databases/build-v2.md) |
+| `cremdb_convert` | Convert a v0 database to v2 (or v1) | [Convert](../fragment-databases/convert.md) |
 | `cremdb_add_prop` | Add property columns to a database | [Properties](../fragment-databases/properties.md) |
 | `cremdb_get_set_names` | List the fragment sets in a database | [Fragment sets](../fragment-databases/fragment-sets.md) |
-| `cremdb_merge` | Merge shard databases into one | [Build (v1)](../fragment-databases/build-v1.md#merge-shards-manually-with-cremdb_merge) |
+| `cremdb_merge` | Merge shard databases into one | [Build (v2)](../fragment-databases/build-v2.md#merge-shards-manually-with-cremdb_merge) |
 | `fragmentation` | v0 pipeline — fragment molecules | [Build (v0)](../fragment-databases/build-v0.md) |
 | `frag_to_env` | v0 pipeline — standardize context/core | [Build (v0)](../fragment-databases/build-v0.md) |
 | `env_to_db` | v0 pipeline — import into a v0 database | [Build (v0)](../fragment-databases/build-v0.md) |

@@ -1,6 +1,6 @@
 # Fragment sets
 
-A v1 database can hold several **fragment sets** in one file. Each set is a
+A v1 or v2 database can hold several **fragment sets** in one file. Each set is a
 separate frequency column on every `radiusN` table, so the same deduplicated
 `envs` and `frags` tables are shared while each set records how often a fragment
 occurs *within that set*.
@@ -9,8 +9,8 @@ This lets one database describe, for example, how common a fragment is in
 ChEMBL versus in a focused in-house library, and lets you switch between those
 views at generation time.
 
-!!! note "v1 only"
-    Fragment sets are a v1 feature. v0 databases have a single `freq` column and
+!!! note "Not available in v0"
+    Fragment sets need the v1/v2 schema. v0 databases have a single `freq` column and
     ignore the `set_names` argument.
 
 ## Build with a single set

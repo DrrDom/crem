@@ -1,6 +1,6 @@
-# Build a database (v1)
+# Build a database (v2)
 
-`cremdb_create` builds a v1 fragment database directly from a SMILES file in one
+`cremdb_create` builds a v2 fragment database directly from a SMILES file in one
 step. It is the recommended way to create new databases. The same functionality
 is available programmatically through [`crem.db.create_db`](#python-api).
 
@@ -100,7 +100,7 @@ cremdb_create -i big_input.smi -o fragments.db -s chembl \
 
 ### Merge shards manually with `cremdb_merge`
 
-Shards or individual v1 databases can also be merged by hand — for example 
+Shards or individual databases of the same schema version can also be merged by hand — for example 
 to combine the per-shard databases from `--shard-size`, or to merge shards built 
 on different machines. `cremdb_merge` merges source databases into an existing 
 target; it is idempotent and resumable, so already-absorbed sources are skipped.

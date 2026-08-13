@@ -31,7 +31,7 @@ The `ring_closures` argument selects which database rows are queried:
 **Strict.** Only ring-closure (arc-cut) fragments are queried — rows with
 `is_ring_closure = 1`. Useful for closing native, typically aliphatic rings.
 Requires a database built so that ring-closure rows exist:
-[`cremdb_create --frag-mode`](../fragment-databases/build-v1.md) with `ring`,
+[`cremdb_create --frag-mode`](../fragment-databases/build-v2.md) with `ring`,
 `both`, `ring_optimal`, or `both_optimal`. If the database has no such rows, the
 call raises a clear error.
 

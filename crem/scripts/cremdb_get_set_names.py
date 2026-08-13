@@ -14,6 +14,9 @@ def get_set_names(db_path):
     ]
     tables.sort(key=lambda t: int(re.search(r'\d+', t).group()))
 
+    # Deliberately duplicated from crem.crem._RESERVED_RADIUS_COLUMNS rather than imported:
+    # this script is stdlib-only and runs a single PRAGMA, so importing crem.crem would add
+    # the whole RDKit import to its startup for no benefit. Keep the two in sync by hand.
     reserved = {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2', 'is_ring_closure'}
     result = {}
 

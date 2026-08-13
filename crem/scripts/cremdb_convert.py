@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Script to convert existing CReM databases to the new deduplicated format.
+Script to convert a v0 CReM database to the deduplicated format (v1 or v2).
 
-Old format (per radius table):
+Old format (v0, per radius table):
     CREATE TABLE radiusN(env TEXT, core_smi TEXT, core_sma TEXT, dist2 INTEGER, ...)
 
 New format:
@@ -14,6 +14,14 @@ New format:
                       core_smi_h_id INTEGER NOT NULL)
     CREATE TABLE frags_h(core_smi_h_id INTEGER PRIMARY KEY AUTOINCREMENT,
                         smi TEXT NOT NULL UNIQUE)
+
+Only v0 sources are supported. There is deliberately no v1 -> v2 path: upgrading a v1
+database would mean relabelling its ring-arc fragments, which requires re-standardising
+the stored env strings, and a truncated env is not a valid molecule (the radius cut
+severs aromatic rings and leaves aromatic atoms outside any ring). Re-standardising one
+therefore either raises a kekulization error - 27% of two-attachment ring-closure rows at
+radius 3 - or silently rewrites the aromaticity into a different environment. Build v2
+from the source SMILES with cremdb_create instead.
 
 Usage:
     python convert_crem_db.py old_database.db new_database.db [--radii 1 2 3] [--set-name NAME]
@@ -29,7 +37,8 @@ import re
 from tqdm import tqdm
 from rdkit import Chem, RDLogger
 from crem.mol_context import combine_core_env_to_rxn_smarts
-from crem.scripts.cremdb_create import create_indices, _replace_attachment_points_with_h
+from crem.scripts.cremdb_create import (DB_SCHEMA_VERSION, create_indices,
+                                        _replace_attachment_points_with_h)
 
 
 def replace_attachment_points_with_h(smiles: str) -> str:
@@ -55,6 +64,29 @@ def _validate_set_name(set_name: str) -> str:
     return set_name
 
 
+def _require_v0_source(old_db_path: str) -> None:
+    """Reject anything but a v0 source, with an explanation rather than a schema error.
+
+    A v1 (or v2) source would need its ring-arc fragments relabelled, and that cannot be
+    done from what the database stores: the AP numbering derives from the env, and a
+    truncated env string is not a re-standardisable molecule. It round-trips perfectly as
+    text (verified on 40 000 envs) but records aromatic atoms whose ring was cut away, so
+    feeding it back through the canonicalisation raises AtomKekulizeException for ~24-27%
+    of two-attachment ring-closure rows at radius 3-5, and silently rewrites aromaticity
+    for a further fraction.
+    """
+    with sqlite3.connect(f'file:{old_db_path}?mode=ro', uri=True) as con:
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+    if version != 0:
+        raise ValueError(
+            f"{old_db_path} is a v{version} database; this script converts v0 sources "
+            f"only. There is no v1 -> v2 upgrade path, because relabelling ring arcs "
+            f"requires re-standardising the stored env strings and a radius-truncated "
+            f"env is not a valid molecule. Build a v2 database from the source SMILES "
+            f"with cremdb_create instead."
+        )
+
+
 def _get_freq_column_type(old_conn: sqlite3.Connection, radius: int) -> str:
     table_name = f"radius{radius}"
     table_check = old_conn.execute(
@@ -75,6 +107,7 @@ def create_new_schema(
     old_conn: sqlite3.Connection,
     radii: List[int],
     set_name: str = "undefined",
+    target_version: int = DB_SCHEMA_VERSION,
 ):
     """
     Create the new database schema.
@@ -84,10 +117,12 @@ def create_new_schema(
         old_conn: SQLite connection to old database
         radii: List of radius values to create tables for
         set_name: Optional column name to add to radius tables
+        target_version: schema version to write (1 or 2). v2 has no is_ring_closure
+            column on the radius tables and a narrower UNIQUE key.
     """
     cur = new_conn.cursor()
 
-    cur.execute("PRAGMA user_version = 1;")
+    cur.execute(f"PRAGMA user_version = {int(target_version)};")
 
     # Create envs table
     cur.execute("""
@@ -124,8 +159,11 @@ def create_new_schema(
             "core_smi_id INTEGER NOT NULL",
             "core_num_atoms INTEGER NOT NULL",
             "dist2 INTEGER NOT NULL",
-            "is_ring_closure INTEGER NOT NULL DEFAULT 0",
         ]
+        unique_cols = "env_id, core_smi_id"
+        if target_version == 1:
+            column_defs.append("is_ring_closure INTEGER NOT NULL DEFAULT 0")
+            unique_cols += ", is_ring_closure"
         if set_name:
             freq_type = _get_freq_column_type(old_conn, radius)
             column_defs.append(f"{set_name} {freq_type} DEFAULT 0")
@@ -134,7 +172,7 @@ def create_new_schema(
                 {", ".join(column_defs)},
                 FOREIGN KEY (env_id) REFERENCES envs(env_id),
                 FOREIGN KEY (core_smi_id) REFERENCES frags(core_smi_id),
-                UNIQUE (env_id, core_smi_id, is_ring_closure)
+                UNIQUE ({unique_cols})
             )
         """)
 
@@ -161,9 +199,15 @@ def convert_database(
     batch_size: int = 10000,
     set_name: str = "undefined",
     verbose: bool = True,
+    target_version: int = DB_SCHEMA_VERSION,
 ):
     """
-    Convert old database format to new deduplicated format.
+    Convert a v0 database to the deduplicated schema (v1 or v2).
+
+    A v0 database has no is_ring_closure column and predates ring-bond fragmentation
+    entirely, so every row it holds is an acyclic cut. Both v1 and v2 therefore need no
+    relabelling here - the conversion is purely structural, and the resulting v2 database
+    legitimately contains no ring-closure fragments.
 
     Args:
         old_db_path: Path to existing database
@@ -172,10 +216,12 @@ def convert_database(
         batch_size: Number of rows to process in each batch
         set_name: column name to add to radius tables and fill from freq column from old db
         verbose: Print progress information
+        target_version: schema version to write (1 or 2)
     """
 
     RDLogger.DisableLog('rdApp.warning')
     set_name = _validate_set_name(set_name)
+    _require_v0_source(old_db_path)
 
     if verbose:
         print(f"Converting database from {old_db_path} to {new_db_path}")
@@ -190,7 +236,8 @@ def convert_database(
 
     try:
         # Create new schema
-        create_new_schema(new_conn, old_conn, radii, set_name)
+        create_new_schema(new_conn, old_conn, radii, set_name,
+                          target_version=target_version)
 
         # Dictionaries to map unique values to IDs
         env_to_id: Dict[str, int] = {}
@@ -496,6 +543,12 @@ Example usage:
                        help='Number of rows to process per batch (default: 10000)')
     parser.add_argument('--set-name', default="undefined",
                         help='Name of the new column to create in radius tables and populate from the freq column of old_db (default: undefined')
+    parser.add_argument('--target-version', type=int,
+                       choices=tuple(range(1, DB_SCHEMA_VERSION + 1)),
+                       default=DB_SCHEMA_VERSION,
+                       help=f'Schema version to write. Default {DB_SCHEMA_VERSION} (the current version): '
+                            'every ring-cut attachment point is isotope-labelled and the '
+                            'radius tables carry no is_ring_closure column.')
     parser.add_argument('--verify', action='store_true',
                        help='Verify conversion after completion')
     parser.add_argument('--quiet', action='store_true',
@@ -524,7 +577,8 @@ Example usage:
                          radii=radii,
                          batch_size=args.batch_size,
                          set_name=args.set_name,
-                         verbose=verbose)
+                         verbose=verbose,
+                         target_version=args.target_version)
 
         # Verify if requested
         if args.verify:

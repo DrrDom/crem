@@ -14,11 +14,25 @@ import sqlite3
 import random
 from itertools import product, combinations
 from crem.mol_context import patt_remove_map
-from crem.ring_fragments import ATOM_INDEX_PROP, _ensure_atom_indices, iter_partial_ring_fragments
+from crem.ring_fragments import (ATOM_INDEX_PROP, RING_CUT_DUMMY_ISOTOPE, _ensure_atom_indices,
+                                 iter_partial_ring_fragments)
 
-__cycle_pattern = re.compile("[a-zA-Z\]][1-9]+")
 Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
-__patt_remove_brackets = re.compile('\(\)')
+__patt_remove_brackets = re.compile(r'\(\)')
+
+# Ring-cut attachment point are labeled with isotope labels to separate the from acyclic cuts.
+# During DB creation isotope lebels of soutce structures are srtipped. During structure
+# generation isotope labels in parent structures are transferred through intermediate storate
+# to output structures. In all cases it is expeected that only ring-arc attachment points will
+# have isotope labels.
+__RING_CUT_DUMMY_PATT = f'[{RING_CUT_DUMMY_ISOTOPE}*'
+
+#: Columns of radius{N} that are schema metadata rather than per-set occurrence counts.
+#: `is_ring_closure` is absent from v2 tables; naming it here is harmless because set
+#: discovery is a set difference.
+_RESERVED_RADIUS_COLUMNS = frozenset(
+    {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2', 'is_ring_closure'}
+)
 
 __molzip_params = rdmolops.MolzipParams()
 __molzip_params.label = rdmolops.MolzipLabel.AtomMapNumber
@@ -296,7 +310,14 @@ def __fragment_mol_link(mol1, mol2, radius=3, keep_stereo=False, protected_ids_1
     return res
 
 
-def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, protected_ids=None, return_ids=True):
+def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, protected_ids=None,
+                              return_ids=True, label_variants=(False,)):
+    """Anchor-pair fragmentation via two independent single H cuts (broad make_cycle).
+
+    Unlike __fragment_mol_ring_closure the two contexts stay separate, so the env is
+    disconnected. `label_variants` has the same meaning as there; the default is the plain
+    (v1) form because this fragmenter exists to reach acyclic-cut rows.
+    """
 
     def _is_h_cut_component(component):
         if component.GetNumAtoms() != 2 or component.GetNumBonds() != 1:
@@ -376,49 +397,66 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
             frag_dist = None
 
         # keep convention consistent with linker generation
-        ctx_1 = __renumber_attachment_points(ctx_1, {1: 2})
-        chains = Chem.CombineMols(ctx_1, ctx_2)
-        env, frag, old_to_new_map = get_canon_context_core(chains, fake_core, radius=radius, keep_stereo=keep_stereo,
-                                                            return_att_map=True)
+        ctx_1_renumbered = __renumber_attachment_points(ctx_1, {1: 2})
 
-        # Move the attachment point from the second chain into the first one.
-        # "__crem_index" stores the original molecule atom id; fragment-local atom
-        # indices can differ after GetMolFrags().
-        anchor_id = None
-        att_map = None
-        chains = __renumber_attachment_points(chains, old_to_new_map)
-        chains = Chem.GetMolFrags(chains, asMols=True)
-        if len(chains) != 2:
-            raise RuntimeError("Expected two macrocycle context fragments after attachment renumbering")
-        for a in chains[1].GetAtoms():
-            if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
-                att_map = a.GetAtomMapNum()
-                for n in a.GetNeighbors():
-                    if n.GetAtomicNum() != 0 and n.HasProp(ATOM_INDEX_PROP):
-                        anchor_id = n.GetIntProp(ATOM_INDEX_PROP)
-                        break
-                break
-        if anchor_id is None or att_map is None:
-            raise RuntimeError("Could not find mapped attachment point and original anchor id")
-        a = None
-        for atom in chains[0].GetAtoms():
-            if atom.HasProp(ATOM_INDEX_PROP) and atom.GetIntProp(ATOM_INDEX_PROP) == anchor_id:
-                a = atom
-                break
-        if a is None:
-            raise RuntimeError(f"Could not find original anchor atom {anchor_id} in macrocycle context")
-        replaced_hydrogen = False
-        for n in a.GetNeighbors():
-            if n.GetAtomicNum() == 1:
-                n.SetAtomicNum(0)
-                n.SetAtomMapNum(att_map)
-                replaced_hydrogen = True
-                break
-        if not replaced_hydrogen:
-            raise RuntimeError(f"Could not find replaceable hydrogen on original anchor atom {anchor_id}")
-        context_mol = Chem.Mol(chains[0])
-        context_smi = Chem.MolToSmiles(context_mol, isomericSmiles=True)
-        output[(env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist)] = context_mol
+        for labelled in label_variants:
+            # See __fragment_mol_ring_closure: the anchors are the prospective
+            # ring-closure ends, so on a v2 database they must carry the ring-cut label.
+            # Rebuilding chains per variant is required, not an accident: it is what keeps
+            # the label out of the plain variant. MMPA-created dummies always arrive with
+            # isotope 0, so only the labelled variant needs to touch them.
+            chains = Chem.CombineMols(ctx_1_renumbered, ctx_2)
+            if labelled:
+                for a in chains.GetAtoms():
+                    if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
+                        a.SetIsotope(RING_CUT_DUMMY_ISOTOPE)
+            env, frag, old_to_new_map = get_canon_context_core(chains, fake_core, radius=radius,
+                                                              keep_stereo=keep_stereo,
+                                                              return_att_map=True,
+                                                              preserve_dummy_isotopes=True)
+
+            # Move the attachment point from the second chain into the first one.
+            # "__crem_index" stores the original molecule atom id; fragment-local atom
+            # indices can differ after GetMolFrags().
+            anchor_id = None
+            att_map = None
+            chains = __renumber_attachment_points(chains, old_to_new_map)
+            chains = Chem.GetMolFrags(chains, asMols=True)
+            if len(chains) != 2:
+                raise RuntimeError("Expected two macrocycle context fragments after attachment renumbering")
+            for a in chains[1].GetAtoms():
+                if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
+                    att_map = a.GetAtomMapNum()
+                    for n in a.GetNeighbors():
+                        if n.GetAtomicNum() != 0 and n.HasProp(ATOM_INDEX_PROP):
+                            anchor_id = n.GetIntProp(ATOM_INDEX_PROP)
+                            break
+                    break
+            if anchor_id is None or att_map is None:
+                raise RuntimeError("Could not find mapped attachment point and original anchor id")
+            a = None
+            for atom in chains[0].GetAtoms():
+                if atom.HasProp(ATOM_INDEX_PROP) and atom.GetIntProp(ATOM_INDEX_PROP) == anchor_id:
+                    a = atom
+                    break
+            if a is None:
+                raise RuntimeError(f"Could not find original anchor atom {anchor_id} in macrocycle context")
+            replaced_hydrogen = False
+            for n in a.GetNeighbors():
+                if n.GetAtomicNum() == 1:
+                    n.SetAtomicNum(0)
+                    n.SetAtomMapNum(att_map)
+                    # This dummy is a hydrogen converted in place, so unlike the
+                    # MMPA-created ones above it can arrive with an isotope of its own -
+                    # an explicit [2H] becomes [2*:n] unless it is overwritten here.
+                    n.SetIsotope(RING_CUT_DUMMY_ISOTOPE if labelled else 0)
+                    replaced_hydrogen = True
+                    break
+            if not replaced_hydrogen:
+                raise RuntimeError(f"Could not find replaceable hydrogen on original anchor atom {anchor_id}")
+            context_mol = Chem.Mol(chains[0])
+            context_smi = Chem.MolToSmiles(context_mol, isomericSmiles=True)
+            output[(env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist)] = context_mol
 
     res = []
     for (env, core, context_smi, num_heavy_atoms, frag_dist), context_mol in output.items():
@@ -427,7 +465,7 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
 
 
 def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False, protected_ids=None,
-                                 return_ids=True):
+                                 return_ids=True, label_variants=(True,)):
     """Anchor-pair fragmentation for `make_cycle(ring_closures=True)`.
 
     Cuts pairs of H bonds in one MMPA call (maxCuts=2) so the resulting
@@ -438,6 +476,16 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
     window using d_in = topological distance between the two anchor heavy
     atoms in the input molecule. Pairs whose feasible dist2 window is empty
     (target ring smaller than the in-mol path) are dropped.
+
+    The two anchors are the prospective ring-closure points, so on a v2 database they
+    must carry the ring-cut isotope label that v2 stores on every ring cut. That is what
+    `label_variants` selects, per env variant to emit from the single MMPA pass:
+
+    * ``(True,)``  - labelled envs only; matches v2 ring-arc rows (strict make_cycle).
+    * ``(False,)`` - plain envs only; the v1 convention, where provenance instead comes
+      from the ``is_ring_closure`` predicate.
+    * ``(True, False)`` - both, for broad ``make_cycle(ring_closures=False)`` on v2, where
+      "either provenance" has to be expressed as a union over the two env forms.
 
     Returns 5-tuples: (env, '[H][*:1].[H][*:2]', context_mol, 0, dist2_filter).
     """
@@ -510,17 +558,30 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
         else:
             frag_dist = None
 
-        env, frag, old_to_new_map = get_canon_context_core(
-            context, fake_core, radius=radius, keep_stereo=keep_stereo,
-            return_att_map=True,
-        )
-        if env is None or not frag:
-            continue
+        for labelled in label_variants:
+            # The anchors are the prospective ring-closure ends. Labelling them makes the
+            # env match v2's ring-arc rows; leaving them plain makes it match v1's (where
+            # provenance comes from the is_ring_closure predicate instead).
+            # The per-variant copy is required, not an accident: it is what keeps the label
+            # out of the plain variant. Every dummy here was created by MMPA and so arrives
+            # with isotope 0, which is why only the labelled variant touches them.
+            variant = Chem.Mol(context)
+            if labelled:
+                for a in variant.GetAtoms():
+                    if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
+                        a.SetIsotope(RING_CUT_DUMMY_ISOTOPE)
 
-        # Renumber the context Mol so its * map numbers match the
-        # standardised env / DB-side core numbering.
-        context_smi, std_context = __standardize_context_mol(context, old_to_new_map)
-        output[(env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist)] = std_context
+            env, frag, old_to_new_map = get_canon_context_core(
+                variant, fake_core, radius=radius, keep_stereo=keep_stereo,
+                return_att_map=True, preserve_dummy_isotopes=True,
+            )
+            if env is None or not frag:
+                continue
+
+            # Renumber the context Mol so its * map numbers match the
+            # standardised env / DB-side core numbering.
+            context_smi, std_context = __standardize_context_mol(variant, old_to_new_map)
+            output[(env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist)] = std_context
 
     res = []
     for (env, core, context_smi, num_heavy_atoms, frag_dist), context_mol in output.items():
@@ -530,12 +591,16 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
 
 def __fragment_mol_partial_cycles(mol, radius=3, keep_stereo=False, protected_ids=None, symmetry_fixes=False,
                                   return_ids=True, min_core_atoms=None, max_core_atoms=None,
-                                  include_cyclic_cores=False, side_cut_mode="all"):
+                                  include_cyclic_cores=False, side_cut_mode="all",
+                                  label_all_ring_cuts=True):
     """Fragment partial cycles for mutate_mol(..., replace_cycles='partial_*').
 
     The source core is one connected ring arc made by two non-aromatic single
     ring-bond cuts plus 0-2 acyclic side cuts. Explicit hydrogens are stripped
     before enumeration so they do not create distinct ring-replacement contexts.
+
+    `label_all_ring_cuts` must follow the schema version of the DB being queried
+    (True for v2, False for v1); see crem.ring_fragments.iter_partial_ring_fragments.
     """
     protected_ids = set(protected_ids) if protected_ids else set()
 
@@ -547,6 +612,7 @@ def __fragment_mol_partial_cycles(mol, radius=3, keep_stereo=False, protected_id
     iter_max_core_atoms = None if include_cyclic_cores else max_core_atoms
     for core_mol, context_mol, core_atom_ids in iter_partial_ring_fragments(
         work_mol,
+        label_all_ring_cuts=label_all_ring_cuts,
         max_acyclic_cuts=2,
         min_core_atoms=iter_min_core_atoms,
         max_core_atoms=iter_max_core_atoms,
@@ -999,7 +1065,15 @@ def _load_schema_meta(db_cur, radius):
     """
     user_version = db_cur.execute("PRAGMA user_version").fetchone()[0]
     meta = {'user_version': user_version}
-    if user_version == 1:
+    # Fragment convention implied by the schema version. `label_all_ring_cuts` must be
+    # handed to every ring fragmenter so the env/core strings it emits match the ones
+    # stored in this database; `provenance_in_env` says whether ring provenance is already
+    # encoded in the env string (v2) or still needs the is_ring_closure predicate (v0/v1).
+    # Both are derived here, from one place, because setting them independently produces
+    # silently empty results rather than an error.
+    meta['label_all_ring_cuts'] = user_version >= 2
+    meta['provenance_in_env'] = user_version >= 2
+    if user_version in (1, 2):
         meta['frags_columns'] = {
             row[1] for row in db_cur.execute("PRAGMA table_info(frags)").fetchall()
         }
@@ -1010,6 +1084,96 @@ def _load_schema_meta(db_cur, radius):
             row[1] for row in db_cur.execute(f"PRAGMA table_info(radius{radius})").fetchall()
         }
     return meta
+
+
+def _resolve_set_columns(schema_meta, set_names, radius):
+    """Resolve `set_names` to the radius{N} count columns it selects.
+
+    Shared by the row-id filter and the fragment fetch so that the frequency a query
+    filters on and the frequency it reports are derived from the same column list; keeping
+    two copies of this normalisation is what let them drift apart in the first place.
+
+    Returns `(set_names_list, is_full_set)`, where `is_full_set` says whether the selection
+    covers every set column the table has. The filter needs that distinction - it drops the
+    frequency predicate entirely for a full selection at min_freq <= 0, and requires
+    membership (count >= 1) for a strict subset - and it is answered here rather than by the
+    caller so that it stays correct after the deduplication below.
+    """
+    radius_columns = schema_meta['radius_columns']
+    available = sorted(radius_columns - _RESERVED_RADIUS_COLUMNS)
+    if not available:
+        # Every supported build path creates at least one set column, so this means the
+        # database is malformed rather than merely unusual. Raising here also replaces the
+        # dangling "AND" that an empty predicate list used to produce downstream.
+        raise ValueError(
+            f"radius{radius} has no per-set count columns, so fragment frequencies cannot "
+            f"be evaluated. The database appears malformed - rebuild it with cremdb_create."
+        )
+
+    # Normalize set_names: None → all available set columns. Duplicates are dropped while
+    # preserving order; a repeated name would otherwise emit the column twice in the SQL and
+    # make the full-set test below fail on an otherwise complete selection.
+    if set_names is None:
+        set_names_list = list(available)
+    elif isinstance(set_names, str):
+        set_names_list = [set_names]
+    else:
+        set_names_list = list(dict.fromkeys(set_names))
+
+    # Validate against the set columns rather than every column: schema columns such as
+    # dist2 or core_num_atoms are in radius_columns but are not per-set counts, and
+    # accepting one would build a silently meaningless filter and frequency.
+    missing = [sn for sn in set_names_list if sn not in available]
+    if missing:
+        raise ValueError(f"Column(s) {missing} not found in radius{radius}. "
+                         f"Available set names: {available}")
+    return set_names_list, set(set_names_list) == set(available)
+
+
+def __get_count_sql_expr(set_names_list):
+    """SQL expression for a row's frequency: the largest count among the selected sets.
+
+    Maximum rather than sum, because the filter accepts a row when *any* selected set
+    clears the threshold (`col_a >= t OR col_b >= t`), and `MAX(...) >= t` is exactly that
+    disjunction — so the reported number is the same quantity the row was selected on.
+
+    Note the single-column case must not use MAX(): with one argument SQLite parses it as
+    the aggregate, which would collapse the whole result set to one row.
+    """
+    if len(set_names_list) == 1:
+        return f"r.{set_names_list[0]}"
+    return f"MAX({', '.join(f'r.{sn}' for sn in set_names_list)})"
+
+
+def __load_convention(db_name, radius):
+    """Read only the schema-implied fragment convention, without holding a connection.
+
+    `__gen_replacements` must know the convention *before* it fragments the input, and
+    fragmentation happens outside the main query connection.
+    """
+    __check_db_existence(db_name)
+    with sqlite3.connect(f'file:{db_name}?mode=ro', uri=True) as con:
+        return _load_schema_meta(con.cursor(), radius)
+
+
+def __check_env_provenance(env, is_ring_closure, radius):
+    """Guard against a fragmenter/schema convention desync on a v2 database.
+
+    On v2 the env string carries the provenance, so a query whose env disagrees with the
+    requested provenance would silently return either nothing or rows of the wrong kind.
+    Raising here converts that into an explicit failure. `is_ring_closure=None` means
+    "either provenance" and is always acceptable - broad make_cycle queries both variants.
+    """
+    if is_ring_closure is None:
+        return
+    labelled = __RING_CUT_DUMMY_PATT in env
+    if bool(is_ring_closure) != labelled:
+        raise RuntimeError(
+            f"fragment convention mismatch on a v2 database (radius{radius}): "
+            f"is_ring_closure={is_ring_closure} but env {'carries' if labelled else 'lacks'} "
+            f"ring-cut isotope labels: {env!r}. The fragmenter must be called with "
+            f"label_all_ring_cuts taken from _load_schema_meta()."
+        )
 
 
 def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, set_names=None,
@@ -1040,7 +1204,7 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
             elif isinstance(v, (int, float, complex)) and not isinstance(v, bool):
                 sql += f" AND {k} = {v}"
 
-    elif user_version == 1:
+    elif user_version in (1, 2):
         def _sql_value(value):
             if isinstance(value, str):
                 return "'" + value.replace("'", "''") + "'"
@@ -1056,22 +1220,7 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
         # Discover available set columns in the radius table.
         # core_num_atoms and dist2 are denormalized into radius{N} alongside
         # env_id / core_smi_id and must be excluded when listing set columns.
-        radius_columns = schema_meta['radius_columns']
-        reserved = {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2', 'is_ring_closure'}
-        available = sorted(radius_columns - reserved)
-
-        # Normalize set_names: None → all available set columns
-        if set_names is None:
-            set_names_list = available
-        elif isinstance(set_names, str):
-            set_names_list = [set_names]
-        else:
-            set_names_list = list(set_names)
-
-        # Validate requested names
-        missing = [sn for sn in set_names_list if sn not in radius_columns]
-        if missing:
-            raise ValueError(f"Column(s) {missing} not found in radius{radius}. Available set names: {available}")
+        set_names_list, is_full_set = _resolve_set_columns(schema_meta, set_names, radius)
 
         # Build the frequency / membership filter.
         #
@@ -1094,7 +1243,6 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
         #     correct semantics; recovering the covering optimization for
         #     this case would require per-set partial indices.
         mf = min_freq if min_freq is not None else 0
-        is_full_set = set(set_names_list) == set(available)
         if is_full_set and mf <= 0:
             freq_clause = None
         else:
@@ -1148,7 +1296,14 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
         # Filter by fragment provenance. is_ring_closure=1 restricts to
         # ring-cut rows; 0 restricts to acyclic-cut rows; None disables the
         # filter, which is used by broad cycle generation.
-        if is_ring_closure is not None:
+        #
+        # v2 needs no predicate at all: every ring cut carries isotope 1, so the env
+        # string itself is provenance-specific (a labelled env can only have come from
+        # a ring cut, a plain one only from an acyclic cut). The caller still passes the
+        # intent, and it is checked against the env below rather than pushed into SQL.
+        if schema_meta['provenance_in_env']:
+            __check_env_provenance(env, is_ring_closure, radius)
+        elif is_ring_closure is not None:
             radius_columns = schema_meta['radius_columns']
             if 'is_ring_closure' not in radius_columns:
                 if is_ring_closure:
@@ -1172,12 +1327,22 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
             else:
                 sql += f" AND {column} = {_sql_value(v)}"
     else:
-        raise NotImplementedError('Not implemented for database version other than 0 and 1')
+        raise NotImplementedError('Not implemented for database version other than 0, 1 and 2')
     db_cur.execute(sql)
     return set(i[0] for i in db_cur.fetchall())
 
 
-def _get_replacements(db_cur, radius, row_ids, schema_meta=None):
+def _get_replacements(db_cur, radius, row_ids, schema_meta=None, set_names=None):
+    """Fetch (rowid, core_smi, core_sma, freq) for the given radius{N} row ids.
+
+    `freq` is the occurrence count reported to users via `return_rxn_freq`. On v0 it is the
+    stored `freq` column. On v1/v2 the single column was replaced by one count column per
+    set, and the reported value is the largest count among the sets named by `set_names`
+    (all of them when it is None) — see `__get_count_sql_expr` for why maximum and not sum.
+
+    `set_names` must be the same value passed to `__get_replacements_rowids`, so that the
+    reported frequency is the quantity the row was selected on.
+    """
     if schema_meta is None:
         schema_meta = _load_schema_meta(db_cur, radius)
     user_version = schema_meta['user_version']
@@ -1185,18 +1350,23 @@ def _get_replacements(db_cur, radius, row_ids, schema_meta=None):
         sql = f"""SELECT rowid, core_smi, core_sma, freq
                       FROM radius{radius}
                       WHERE rowid IN ({','.join(map(str, row_ids))})"""
-    elif user_version == 1:
-        # Note: freq was removed from DB, therefore 0 is returned (maybe None is better)
-        sql = f"""SELECT r.rowid, f.core_smi
+    elif user_version in (1, 2):
+        # v2 differs from v1 only by the absence of is_ring_closure, which is not selected
+        # here, so the same statement serves both. The set columns live on radius{N}, which
+        # is already the driving table, so reporting the count costs no extra join.
+        set_names_list, _is_full_set = _resolve_set_columns(schema_meta, set_names, radius)
+        sql = f"""SELECT r.rowid, f.core_smi, {__get_count_sql_expr(set_names_list)}
                   FROM radius{radius} r
                   JOIN frags f ON r.core_smi_id = f.core_smi_id
                   WHERE r.rowid IN ({','.join(map(str, row_ids))})"""
     else:
-        raise NotImplementedError('Not implemented for database version other than 0 and 1')
+        raise NotImplementedError('Not implemented for database version other than 0, 1 and 2')
     db_cur.execute(sql)
-    if user_version == 1:
-        # Keep tuple shape identical to user_version 0 for compatibility.
-        return [(row_id, core_smi, core_smi, 0) for row_id, core_smi in db_cur.fetchall()]
+    if user_version in (1, 2):
+        # Keep tuple shape identical to user_version 0 for compatibility: v1/v2 store no
+        # SMARTS for the core, so core_smi stands in for core_sma.
+        return [(row_id, core_smi, core_smi, freq)
+                for row_id, core_smi, freq in db_cur.fetchall()]
     return db_cur.fetchall()
 
 
@@ -1242,6 +1412,17 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 
     replace_cycle_mode = _normalize_replace_cycles(replace_cycles)
 
+    # The fragment convention is a property of the database schema version, so it has to be
+    # known *before* the input is fragmented - the env/core strings emitted here must match
+    # the ones the DB stores, and a mismatch yields silently empty results. The metadata is
+    # read once here and reused for the queries below instead of being re-read inside the
+    # connection.
+    schema_meta = __load_convention(db_name, radius)
+    label_all_ring_cuts = schema_meta['label_all_ring_cuts']
+    # v0/v1 keep the historical link behaviour of not constraining provenance at all; on v2
+    # the env already encodes it, so state the intent explicitly and let the guard check it.
+    link_is_ring_closure = 0 if schema_meta['provenance_in_env'] else None
+
     # fragmentation output f should be a tuple of
     # (env: str,
     #  core: str,
@@ -1282,6 +1463,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                     max_core_atoms=upper_core_atoms,
                     include_cyclic_cores=False,
                     side_cut_mode=side_cut_mode,
+                    label_all_ring_cuts=label_all_ring_cuts,
                 )
             )
     elif operation == "cycle":
@@ -1289,7 +1471,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
             raise ValueError("cycle operation expects a single molecule")
         mol = mol1
         if ring_closures:
-            # Strict cycle mode: arc-cut fragmenter only.
+            # Strict cycle mode: arc-cut fragmenter only, in the DB's own convention.
             f = [
                 (*frag, 1)
                 for frag in __fragment_mol_ring_closure(
@@ -1297,12 +1479,16 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                     radius=radius,
                     ring_size=ring_size,
                     protected_ids=protected_ids_1,
+                    label_variants=(label_all_ring_cuts,),
                 )
             ]
         else:
             # Broad cycle mode: union of both fragmenters so the DB can return
             # both arc-cut (connected-env) and acyclic-cut (disconnected-env)
-            # rows. The SQL-side is_ring_closure filter is disabled.
+            # rows. On v0/v1 the SQL-side is_ring_closure filter is disabled; on v2
+            # provenance lives in the env, so "either provenance" becomes a union over
+            # the labelled and plain env variants of each fragmenter.
+            broad_variants = (True, False) if label_all_ring_cuts else (False,)
             f = [
                 (*frag, None)
                 for frag in __fragment_mol_macrocycle(
@@ -1310,6 +1496,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                     radius=radius,
                     ring_size=ring_size,
                     protected_ids=protected_ids_1,
+                    label_variants=broad_variants,
                 )
             ]
             f.extend(
@@ -1319,6 +1506,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                     radius=radius,
                     ring_size=ring_size,
                     protected_ids=protected_ids_1,
+                    label_variants=broad_variants,
                 )
             )
     elif operation == "link":
@@ -1326,7 +1514,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
             raise ValueError("link operation expects two molecules")
         f = __fragment_mol_link(mol1=mol1, mol2=mol2, radius=radius, protected_ids_1=protected_ids_1,
                                 protected_ids_2=protected_ids_2)
-        f = [(*frag, None, None) for frag in f]
+        f = [(*frag, None, link_is_ring_closure) for frag in f]
         mol = Chem.CombineMols(mol1, mol2)
 
     if not f:
@@ -1343,9 +1531,6 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
         con.execute("PRAGMA cache_size = -262144")     # 256 MiB page cache
         con.execute("PRAGMA temp_store = MEMORY")
         cur = con.cursor()
-
-        # Read PRAGMAs once and reuse for every per-fragment query below.
-        schema_meta = _load_schema_meta(cur, radius)
 
         replacements = dict()  # to store unused row_id: (source_core_smi, context_mol)
         returned_values = 0
@@ -1372,7 +1557,8 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                 row_ids = set(filter_func(row_ids, cur, radius))
 
             if max_replacements is None:
-                res = _get_replacements(cur, radius, row_ids, schema_meta=schema_meta)
+                res = _get_replacements(cur, radius, row_ids, schema_meta=schema_meta,
+                                        set_names=set_names)
             else:
                 n = min(len(row_ids), preliminary_return)
                 if sample_func is not None:
@@ -1381,7 +1567,8 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                     selected_row_ids = rng.sample(sorted(row_ids), n)
                 row_ids.difference_update(selected_row_ids)
                 replacements.update({i: (core, context_mol) for i in row_ids})
-                res = _get_replacements(cur, radius, selected_row_ids, schema_meta=schema_meta)
+                res = _get_replacements(cur, radius, selected_row_ids, schema_meta=schema_meta,
+                                        set_names=set_names)
 
             for row_id, core_smi, _, freq in res:
                 if core_smi != core:
@@ -1400,7 +1587,8 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                 selected_row_ids = sample_func(list(replacements.keys()), cur, radius, n)
             else:
                 selected_row_ids = rng.sample(sorted(replacements.keys()), n)
-            res = _get_replacements(cur, radius, selected_row_ids, schema_meta=schema_meta)
+            res = _get_replacements(cur, radius, selected_row_ids, schema_meta=schema_meta,
+                                    set_names=set_names)
             for row_id, core_smi, _, freq in res:
                 src_core, src_context = replacements[row_id]
                 if core_smi != src_core:
@@ -1541,7 +1729,11 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                       are used. If a column name is not found, a ValueError is raised listing available set names.
                       Ignored for v0 databases. Default: None.
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
-    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
+    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB,
+                            that is the number of occurrences of the replacement fragment. On a database
+                            with several sets this is the maximum count across the sets selected by
+                            `set_names` (all of them by default), which matches the `min_freq` filter -
+                            a fragment is selected when any one set reaches the threshold. Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
                        In the returned Mol, atoms inserted from the replacement fragment carry a boolean
                        property ``__crem`` set to True (other atoms do not).
@@ -1575,7 +1767,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
     :return: generator over new molecules. If no additional return arguments were called this would be a generator over
              SMILES of new molecules. If any of additional return values were asked the function will return a list
              of list where the first item is SMILES, then rxn string of a transformation (optional), frequency of
-             fragment occurrence in the DB (optional), RDKit Mol object (optional).
+             fragment occurrence in the DB (optional; maximum count across the selected sets), RDKit Mol
+             object (optional).
              Only entries with distinct SMILES will be returned.
 
     Note: supply RDKit Mol object with explicit hydrogens if H replacement is required
@@ -1701,7 +1894,11 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                       are used. If a column name is not found, a ValueError is raised listing available set names.
                       Ignored for v0 databases. Default: None.
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
-    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
+    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB,
+                            that is the number of occurrences of the replacement fragment. On a database
+                            with several sets this is the maximum count across the sets selected by
+                            `set_names` (all of them by default), which matches the `min_freq` filter -
+                            a fragment is selected when any one set reaches the threshold. Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
                        In the returned Mol, atoms inserted from the replacement fragment carry a boolean
                        property ``__crem`` set to True (other atoms do not).
@@ -1729,7 +1926,8 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
     :return: generator over new molecules. If no additional return arguments were called this would be a generator over
              SMILES of new molecules. If any of additional return values were asked the function will return a list
              of list where the first item is SMILES, then rxn string of a transformation (optional), frequency of
-             fragment occurrence in the DB (optional), RDKit Mol object (optional).
+             fragment occurrence in the DB (optional; maximum count across the selected sets), RDKit Mol
+             object (optional).
              Only entries with distinct SMILES will be returned.
 
     """
@@ -1811,7 +2009,11 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                       are used. If a column name is not found, a ValueError is raised listing available set names.
                       Ignored for v0 databases. Default: None.
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
-    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB.  Default: False.
+    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB,
+                            that is the number of occurrences of the replacement fragment. On a database
+                            with several sets this is the maximum count across the sets selected by
+                            `set_names` (all of them by default), which matches the `min_freq` filter -
+                            a fragment is selected when any one set reaches the threshold. Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule.  Default: False.
                        In the returned Mol, atoms inserted from the replacement fragment carry a boolean
                        property ``__crem`` set to True (other atoms do not).
@@ -1839,7 +2041,8 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
     :return: generator over new molecules. If no additional return arguments were called this would be a generator over
              SMILES of new molecules. If any of additional return values were asked the function will return a list
              of list where the first item is SMILES, then rxn string of a transformation (optional), frequency of
-             fragment occurrence in the DB (optional), RDKit Mol object (optional).
+             fragment occurrence in the DB (optional; maximum count across the selected sets), RDKit Mol
+             object (optional).
              Only entries with distinct SMILES will be returned.
 
     """
@@ -2085,7 +2288,9 @@ def get_replacements(mol1, db_name, radius, mol2=None, dist=None, min_size=0, ma
                         a list/set of selected row ids.
     :param return_frag_smi_only: control whether to return only SMILES of fragments selected from a database or return
                                  a tuple `(source_core_smi, replacement_core_smi, freq, context_mol)` which can be
-                                 further passed to `get_mols_from_replacements`.
+                                 further passed to `get_mols_from_replacements`. `freq` is the number of occurrences
+                                 of the replacement fragment in the DB - the maximum count across the sets selected
+                                 by `set_names`.
     :param seed: random seed for reproducible fragment selection when max_replacements is set. Default: None.
     :param **kwargs: named arguments to additionally filter replacing fragments. For v0 DB use columns from radiusX,
                      for v1 DB use columns from frags or frags_h. Values are a single value or 2-item tuple with lower
@@ -2141,7 +2346,9 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
     :param replacements: iterable of (source_core_smi, replacement_core_smi, freq, context_mol) tuples.
     :param mol2: the second RDKit Mol object for link operations, otherwise None.
     :param return_rxn: whether to additionally return the rxn string of a transformation. Default: False.
-    :param return_rxn_freq: whether to additionally return the frequency of a transformation. Default: False.
+    :param return_rxn_freq: whether to additionally return the frequency of a transformation, taken from the
+                            supplied replacements tuples (maximum count across sets, see `get_replacements`).
+                            Default: False.
     :param return_mol: whether to additionally return the RDKit Mol object of a generated molecule. Default: False.
                        In the returned Mol, atoms inserted from the replacement fragment carry a boolean
                        property ``__crem`` set to True (other atoms do not).
@@ -2231,7 +2438,11 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
     :param symmetry_fixes: accepted for API compatibility with mutate/grow functions but not used here.
     :param min_freq: minimum occurrence of fragments in DB for replacement. Default: 0.
     :param return_rxn: whether to additionally return rxn of a transformation. Default: False.
-    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB. Default: False.
+    :param return_rxn_freq: whether to additionally return the frequency of a transformation in the DB,
+                            that is the number of occurrences of the replacement fragment. On a database
+                            with several sets this is the maximum count across the sets selected by
+                            `set_names` (all of them by default), which matches the `min_freq` filter -
+                            a fragment is selected when any one set reaches the threshold. Default: False.
     :param return_mol: whether to additionally return RDKit Mol object of a generated molecule. Default: False.
                        In the returned Mol, atoms inserted from the replacement fragment carry a boolean
                        property ``__crem`` set to True (other atoms do not).
@@ -2267,7 +2478,8 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                      and upper bound of the corresponding parameter of a fragment.
     :return: generator over new molecules. If no additional return arguments were requested this is a generator over
              SMILES of new molecules. If additional return values were requested, the function yields a list where
-             the first item is SMILES, then rxn string (optional), frequency (optional), RDKit Mol object (optional).
+             the first item is SMILES, then rxn string (optional), frequency (optional; maximum count
+             across the selected sets), RDKit Mol object (optional).
              Only entries with distinct SMILES will be returned.
     """
 

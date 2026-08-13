@@ -36,6 +36,12 @@ from crem.ring_fragments import iter_partial_ring_fragments
 _SQLITE_BATCH = 32000
 _FRAG_MODES = ("acyclic", "ring", "both", "ring_optimal", "both_optimal")
 
+# Schema version stamped into PRAGMA user_version. v2 labels every ring-cut attachment
+# point with isotope 1 and therefore carries no is_ring_closure column.
+# cremdb_create only ever writes the current version - older databases stay readable by
+# crem.py and are upgraded with cremdb_convert.
+DB_SCHEMA_VERSION = 2
+
 # Magic value written into PRAGMA application_id at the end of a stride-mode
 # shard build. The parallel-shards orchestrator reads this to decide which
 # children to skip on resume.
@@ -174,20 +180,26 @@ def create_indices(conn: sqlite3.Connection, radii: List[int], verbose: bool = T
     Notes:
         Redundant indices are NOT created — the UNIQUE constraints on
         envs(env), frags(core_smi), frags_h(smi) and
-        radius{N}(env_id, core_smi_id, is_ring_closure) already produce
-        autoindices. One explicit covering index per radius table is added:
-        (env_id, is_ring_closure, core_num_atoms, dist2). This serves the
-        hot query path: every call filters by env_id and provenance, and most
-        also by size/dist.
+        radius{N}(env_id, core_smi_id) already produce autoindices. One explicit
+        covering index per radius table is added: (env_id, core_num_atoms, dist2).
+        This serves the hot query path: every call filters by env_id and most also
+        by size/dist. Provenance is not in the index on v2 because the env string
+        already encodes it; on a v1 database the column is still indexed, since
+        there the query does filter on it.
     """
     cur = conn.cursor()
+
+    # Called by cremdb_merge on pre-existing databases too, so honour their version
+    # rather than assuming the current one.
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    provenance_col = "" if version >= 2 else "is_ring_closure, "
 
     indices = []
     for radius in radii:
         indices.append((
             f"idx_radius{radius}_lookup",
             f"CREATE INDEX IF NOT EXISTS idx_radius{radius}_lookup "
-            f"ON radius{radius}(env_id, is_ring_closure, core_num_atoms, dist2)",
+            f"ON radius{radius}(env_id, {provenance_col}core_num_atoms, dist2)",
         ))
 
     for idx_name, sql in tqdm(indices, desc="Creating indices", disable=not verbose):
@@ -506,6 +518,7 @@ def _fragment_mol_ring(mol, smi_id, min_heavy_atoms=None, max_heavy_atoms=None, 
     outlines = set()
     for core_mol, context_mol, _ in iter_partial_ring_fragments(
         mol,
+        label_all_ring_cuts=True,   # v2 convention: cremdb_create only writes v2
         max_acyclic_cuts=2,
         min_core_atoms=min_heavy_atoms,
         max_core_atoms=max_heavy_atoms,
@@ -600,7 +613,13 @@ def _count_heavy_atoms(smi):
     return mm.GetNumHeavyAtoms() if mm else float('inf')
 
 
-def _env_core_from_fragment(core, context, radius, keep_stereo, preserve_dummy_isotopes=False):
+def _env_core_from_fragment(core, context, radius, keep_stereo):
+    """Standardise one (core, context) pair into (env, core_smi, num_heavy_atoms) rows.
+
+    Ring-cut isotope labels are always preserved: they are what distinguishes a ring-arc
+    fragment from an acyclic one in v2, and preserving them is a no-op for fragments that
+    carry none, so no flag is needed here.
+    """
     output = []
 
     if not core:  # this part will never be invoked in the current implementation because output of fragmwentation was reshaped
@@ -615,7 +634,6 @@ def _env_core_from_fragment(core, context, radius, keep_stereo, preserve_dummy_i
                     c,
                     radius,
                     keep_stereo,
-                    preserve_dummy_isotopes=preserve_dummy_isotopes,
                 )
                 if env and cores:
                     output.append((env, cores[0], num_heavy_atoms))  # only one item in cores
@@ -626,7 +644,6 @@ def _env_core_from_fragment(core, context, radius, keep_stereo, preserve_dummy_i
             core,
             radius,
             keep_stereo,
-            preserve_dummy_isotopes=preserve_dummy_isotopes,
         )
         if env and cores:
             for core_smi in cores:
@@ -704,10 +721,9 @@ def _process_chunk(task):
                     context,
                     radius,
                     _KEEP_STEREO,
-                    preserve_dummy_isotopes=bool(is_ring_closure),
                 ):
                     for set_name in member_sets:
-                        counts[set_name][radius][(env, core_smi, is_ring_closure)] += 1
+                        counts[set_name][radius][(env, core_smi)] += 1
                     envs.add(env)
                     if core_smi not in core_info:
                         dist2 = _core_dist2(core_smi)
@@ -736,7 +752,7 @@ def _read_chunk_ids(path):
 
 def _ensure_schema(conn, radii, set_names):
     conn.execute("PRAGMA page_size = 16384")     # larger pages for better B-tree packing (new DBs only)
-    conn.execute("PRAGMA user_version = 1")
+    conn.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
     conn.execute("PRAGMA foreign_keys = ON")
     # Bulk-load journaling: OFF/OFF is materially faster than WAL/NORMAL when
     # there is a single writer and recovery is acceptable (a crash mid-build
@@ -783,10 +799,9 @@ def _ensure_schema(conn, radii, set_names):
                 core_smi_id INTEGER NOT NULL,
                 core_num_atoms INTEGER NOT NULL,
                 dist2 INTEGER NOT NULL,
-                is_ring_closure INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (env_id) REFERENCES envs(env_id),
                 FOREIGN KEY (core_smi_id) REFERENCES frags(core_smi_id),
-                UNIQUE (env_id, core_smi_id, is_ring_closure)
+                UNIQUE (env_id, core_smi_id)
             )
         """)
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info(radius{radius})")}
@@ -933,9 +948,9 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii, timings=None):
     # core_num_atoms and dist2 are denormalized into radius{N} so the hot
     # query path can filter directly on the radius table without joining
     # frags. They are written on first INSERT and not touched on conflict.
-    # The (env, core, is_ring_closure) triple is the conflict key — the same
-    # (env, core) pair can carry both an acyclic-cut row (is_ring_closure=0)
-    # and a ring-cut row (is_ring_closure=1) with independent per-set counts.
+    # The (env, core) pair is the conflict key. Under v2 it is also provenance-specific:
+    # a ring-cut env/core carries isotope 1, so it cannot collide with the acyclic string
+    # for the same skeleton.
     t0 = time.perf_counter()
     for set_name in set_names:
         per_set = counts.get(set_name, {})
@@ -944,7 +959,7 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii, timings=None):
             if not mapping:
                 continue
             rows = []
-            for (env, core_smi, is_ring_closure), cnt in mapping.items():
+            for (env, core_smi), cnt in mapping.items():
                 env_id = env_ids.get(env)
                 core_smi_id = core_smi_ids.get(core_smi)
                 if env_id is None or core_smi_id is None:
@@ -953,20 +968,17 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii, timings=None):
                 if core_entry is None:
                     continue
                 core_num_atoms, dist2, _ = core_entry
-                rows.append((env_id, core_smi_id, core_num_atoms, dist2,
-                             is_ring_closure, cnt))
-            # Sort only by (env_id, core_smi_id, is_ring_closure) — the
-            # conflict key — to drive sequential B-tree writes; the trailing
-            # columns are irrelevant for write order and full-tuple comparison
-            # would cost noticeably more per call.
-            rows.sort(key=itemgetter(0, 1, 4))
+                rows.append((env_id, core_smi_id, core_num_atoms, dist2, cnt))
+            # Sort only by (env_id, core_smi_id) — the conflict key — to drive
+            # sequential B-tree writes; the trailing columns are irrelevant for write
+            # order and full-tuple comparison would cost noticeably more per call.
+            rows.sort(key=itemgetter(0, 1))
             if rows:
                 conn.executemany(
                     f"INSERT INTO radius{radius} "
-                    f"(env_id, core_smi_id, core_num_atoms, dist2, "
-                    f"is_ring_closure, {set_name}) "
-                    f"VALUES (?, ?, ?, ?, ?, ?) "
-                    f"ON CONFLICT(env_id, core_smi_id, is_ring_closure) "
+                    f"(env_id, core_smi_id, core_num_atoms, dist2, {set_name}) "
+                    f"VALUES (?, ?, ?, ?, ?) "
+                    f"ON CONFLICT(env_id, core_smi_id) "
                     f"DO UPDATE SET {set_name} = {set_name} + excluded.{set_name}",
                     rows,
                 )

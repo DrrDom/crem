@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 
 from crem.db import add_fragment_props, create_db, merge_dbs
+from crem.scripts.cremdb_create import DB_SCHEMA_VERSION
 
 CORPUS_A = [
     "CCO mol1", "c1ccccc1 mol2", "CCCO mol3",
@@ -49,9 +50,17 @@ def _null_count(db, table, col):
 
 
 def _provenance_counts(db, radius=2):
+    """Rows per provenance, keyed 0 (acyclic cut) / 1 (ring cut).
+
+    On v2 there is no is_ring_closure column: every ring-cut attachment point carries
+    isotope 1, so the label in core_smi *is* the provenance.
+    """
     with sqlite3.connect(db) as c:
         return dict(c.execute(
-            f"SELECT is_ring_closure, count(*) FROM radius{radius} GROUP BY is_ring_closure"
+            f"SELECT CASE WHEN f.core_smi LIKE '%[1*%' THEN 1 ELSE 0 END AS is_ring_closure, "
+            f"       count(*) "
+            f"FROM radius{radius} r JOIN frags f ON r.core_smi_id = f.core_smi_id "
+            f"GROUP BY is_ring_closure"
         ).fetchall())
 
 
@@ -94,7 +103,7 @@ def test_create_valid_schema(tmp_path):
     create_db(CORPUS_A, db, "chembl", radii=(1, 2, 3), verbose=False)
     with sqlite3.connect(db) as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 1
+    assert ver == DB_SCHEMA_VERSION
     assert {"envs", "frags_h", "frags", "radius1", "radius2", "radius3"}.issubset(_tables(db))
     assert "idx_radius3_lookup" in _indices(db)
 

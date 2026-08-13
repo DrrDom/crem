@@ -142,12 +142,14 @@ def run(
 
         version = conn.execute("PRAGMA user_version").fetchone()[0]
 
-        if version == 1:
+        # v2 differs from v1 only in the radius tables (no is_ring_closure column) and in
+        # the fragment convention; properties live on frags in both, so one arm serves both.
+        if version in (1, 2):
             all_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if 'frags' not in all_tables:
-                raise RuntimeError("Detected new schema (user_version=1) but frags table is missing")
+                raise RuntimeError(f"Detected new schema (user_version={version}) but frags table is missing")
             if verbose:
-                sys.stderr.write("Schema version 1: adding properties to frags table\n")
+                sys.stderr.write(f"Schema version {version}: adding properties to frags table\n")
             _add_columns(conn, 'frags', selected_props)
             _process_table(
                 conn, pool, 'frags', 'core_smi_id', 'core_smi', selected_props,

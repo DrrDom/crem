@@ -215,11 +215,13 @@ def test_mutate_replace_cycles_no_queries_acyclic_rows_only(db_rc):
     mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
 
     def assert_acyclic(row_ids, cur, radius):
+        # On v2 provenance is the isotope-1 label on the core, not a column.
         if row_ids:
             bad = cur.execute(
-                f"SELECT count(*) FROM radius{radius} "
-                f"WHERE rowid IN ({','.join(map(str, row_ids))}) "
-                f"AND is_ring_closure != 0"
+                f"SELECT count(*) FROM radius{radius} r "
+                f"JOIN frags f ON r.core_smi_id = f.core_smi_id "
+                f"WHERE r.rowid IN ({','.join(map(str, row_ids))}) "
+                f"AND f.core_smi LIKE '%[1*%'"
             ).fetchone()[0]
             assert bad == 0
         return row_ids
@@ -481,22 +483,16 @@ def test_ring_closure_close_anchors_connected_env(db_rc):
 
 
 def test_ring_closure_legacy_db_raises(db_acyclic):
-    # db_acyclic was built with --frag-mode acyclic, so it has no ring rows.
-    # ring_closures=True should still WORK against it (just yield zero
-    # results) because the column exists and just has no rows. To exercise
-    # the legacy-DB error path, we simulate a pre-feature DB by dropping
-    # the column from a fresh copy.
+    # The legacy-DB error path belongs to the v1 reader: a v1 database predating
+    # ring-closure support has no is_ring_closure column, so ring_closures=True cannot be
+    # satisfied and must raise rather than silently return nothing. db_acyclic is built by
+    # the current code and is therefore v2 (where the column is absent by design and
+    # provenance lives in the env), so stamp the copy back to v1 to exercise that path.
     import shutil, sqlite3, tempfile
     legacy_db = tempfile.mkstemp(suffix=".db")[1]
     shutil.copyfile(db_acyclic, legacy_db)
     with sqlite3.connect(legacy_db) as c:
-        # Drop is_ring_closure column from radius1 (test only that radius).
-        cols = [r[1] for r in c.execute("PRAGMA table_info(radius1)")]
-        keep = [c2 for c2 in cols if c2 != "is_ring_closure"]
-        c.execute(f"CREATE TABLE radius1_new ({','.join(keep)})")
-        c.execute(f"INSERT INTO radius1_new SELECT {','.join(keep)} FROM radius1")
-        c.execute("DROP TABLE radius1")
-        c.execute("ALTER TABLE radius1_new RENAME TO radius1")
+        c.execute("PRAGMA user_version = 1")
 
     m = Chem.MolFromSmiles("CCCC")
     with pytest.raises(ValueError, match="is_ring_closure"):

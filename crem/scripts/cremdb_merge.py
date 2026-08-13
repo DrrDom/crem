@@ -36,6 +36,27 @@ def _get_radii(conn: sqlite3.Connection) -> List[int]:
     return sorted(radii)
 
 
+def _schema_version(conn: sqlite3.Connection, schema: str = "main") -> int:
+    return conn.execute(f"PRAGMA {schema}.user_version").fetchone()[0]
+
+
+def _assert_same_version(target_version: int, source_path: str, source_version: int) -> None:
+    """Refuse to merge databases built with different fragment conventions.
+
+    The merge joins on env / core_smi text, so a v1 shard and a v2 target would combine
+    without error and produce a database in which some ring-arc fragments carry the
+    isotope-1 ring-cut label and some do not. Nothing downstream can detect that: queries
+    would silently reach only part of the arc space.
+    """
+    if source_version != target_version:
+        raise ValueError(
+            f"schema version mismatch: target is v{target_version} but "
+            f"{source_path} is v{source_version}. Databases built with different "
+            f"fragment conventions must not be merged - convert them to a common "
+            f"version first with cremdb_convert."
+        )
+
+
 def merge_into(
     target_conn: sqlite3.Connection,
     source_paths: List[str],
@@ -53,6 +74,7 @@ def merge_into(
         verbose: Print per-shard progress to stderr.
     """
     radii = _get_radii(target_conn)
+    target_version = _schema_version(target_conn)
 
     # Drop radius query indices on target to avoid per-row index maintenance.
     # The UNIQUE autoindex (sqlite_autoindex_radiusN_1) is kept — it drives
@@ -93,6 +115,8 @@ def merge_into(
 
         target_conn.execute("ATTACH DATABASE ? AS src", (source_path,))
         try:
+            _assert_same_version(target_version, source_path,
+                                 _schema_version(target_conn, "src"))
             target_conn.execute("PRAGMA foreign_keys = OFF")
             target_conn.execute("BEGIN")
 
@@ -138,12 +162,12 @@ def merge_into(
             )
 
             # 4. Merge each radius table using integer translation maps (no text JOINs).
-            # Metadata columns (env_id, core_smi_id, core_num_atoms, dist2,
-            # is_ring_closure) are handled explicitly; everything else is a
-            # per-set count column to be summed on conflict.
-            metadata_cols = {
-                "env_id", "core_smi_id", "core_num_atoms", "dist2", "is_ring_closure",
-            }
+            # Metadata columns are handled explicitly; everything else is a per-set count
+            # column to be summed on conflict. The definition is shared with the query
+            # layer so the two cannot disagree about what counts as a set column.
+            # Imported lazily to keep this script's module import free of RDKit, as the
+            # create_indices import below already does.
+            from crem.crem import _RESERVED_RADIUS_COLUMNS as metadata_cols
             for radius in radii:
                 src_cols = {
                     row[1]
@@ -169,28 +193,34 @@ def merge_into(
                             f"ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0"
                         )
 
-                # Older v1 shards may lack is_ring_closure; default to 0 for them.
-                src_has_ring = "is_ring_closure" in src_cols
-                ring_select = "r.is_ring_closure" if src_has_ring else "0"
-
                 col_list = ", ".join(src_set_cols)
                 src_vals = ", ".join(f"r.{c}" for c in src_set_cols)
                 conflict_upd = ", ".join(
                     f"{c} = {c} + excluded.{c}" for c in src_set_cols
                 )
 
+                if target_version >= 2:
+                    # v2 has no is_ring_closure column: provenance is encoded in the env
+                    # and core strings, so (env_id, core_smi_id) is the conflict key.
+                    key_cols = "env_id, core_smi_id, core_num_atoms, dist2"
+                    key_vals = "em.dst_id, fm.dst_id, r.core_num_atoms, r.dist2"
+                    conflict_key = "env_id, core_smi_id"
+                else:
+                    # Older v1 shards may lack is_ring_closure; default to 0 for them.
+                    ring_select = "r.is_ring_closure" if "is_ring_closure" in src_cols else "0"
+                    key_cols = "env_id, core_smi_id, core_num_atoms, dist2, is_ring_closure"
+                    key_vals = (f"em.dst_id, fm.dst_id, r.core_num_atoms, r.dist2, "
+                                f"{ring_select}")
+                    conflict_key = "env_id, core_smi_id, is_ring_closure"
+
                 target_conn.execute(f"""
-                    INSERT INTO main.radius{radius}(
-                        env_id, core_smi_id, core_num_atoms, dist2,
-                        is_ring_closure, {col_list}
-                    )
-                    SELECT em.dst_id, fm.dst_id, r.core_num_atoms, r.dist2,
-                           {ring_select}, {src_vals}
+                    INSERT INTO main.radius{radius}({key_cols}, {col_list})
+                    SELECT {key_vals}, {src_vals}
                     FROM src.radius{radius} r
                     JOIN temp._env_map em  ON r.env_id      = em.src_id
                     JOIN temp._frag_map fm ON r.core_smi_id = fm.src_id
                     ORDER BY em.dst_id, fm.dst_id
-                    ON CONFLICT(env_id, core_smi_id, is_ring_closure)
+                    ON CONFLICT({conflict_key})
                     DO UPDATE SET {conflict_upd}
                 """)
 

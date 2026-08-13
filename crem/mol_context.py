@@ -313,7 +313,7 @@ def __standardize_smiles_with_att_points(mol, keep_stereo=False, preserve_dummy_
 
 
 def get_std_context_core_permutations(context, core, radius, keep_stereo, return_att_map=False,
-                                      preserve_dummy_isotopes=False):
+                                      preserve_dummy_isotopes=True):
     """
     INPUT:
         context - Mol or SMILES containing full chain(s) of a context with labeled attachment point(s),
@@ -321,7 +321,14 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
         core    - Mol or SMILES of a core fragment with labeled attachment point(s)
         keep_stereo - boolean to keep stereo information in output
         radius  - integer (0, 1, 2, etc), number of bonds to cut context
-        preserve_dummy_isotopes - keep isotope labels on dummy atoms when keep_stereo is False
+        preserve_dummy_isotopes - keep isotope labels on dummy atoms when keep_stereo is False.
+                  Ring-cut attachment points carry isotope 1 (see crem.ring_fragments), so
+                  stripping them merges ring-arc fragments into the acyclic string space.
+                  Defaults to True because that is the non-lossy behaviour; pass False only
+                  to deliberately obtain the unlabelled variant of an env/core (used by broad
+                  make_cycle, which must match both provenances). Has no effect when the input
+                  carries no dummy isotopes, and is ignored entirely when keep_stereo is True
+                  (isotopes are preserved in that case regardless).
     OUTPUT:
         SMILES of a context environment of a specified radius,
         list of SMILES of a core fragment with possible permutations of attachment point numbers
@@ -449,9 +456,10 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
 
 
 def get_canon_context_core(context, core, radius, keep_stereo=False, return_att_map=False,
-                           preserve_dummy_isotopes=False):
+                           preserve_dummy_isotopes=True):
     # context and core are Mols or SMILES
     # returns SMILES by default
+    # preserve_dummy_isotopes defaults to True - see get_std_context_core_permutations
     res = get_std_context_core_permutations(
         context,
         core,

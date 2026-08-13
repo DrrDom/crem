@@ -4,6 +4,7 @@ from datetime import datetime
 from rdkit import Chem
 
 from crem.scripts.cremdb_create import (
+    DB_SCHEMA_VERSION,
     _FRAGMENT_ISSUE_COLUMNS,
     _FragmentIssueWriter,
     _fragment_error_log_path,
@@ -13,10 +14,15 @@ from crem.scripts.cremdb_create import (
     _normalize_input_mol,
 )
 
+# On v2 there is no is_ring_closure column: every ring-cut attachment point carries
+# isotope 1, so the label in core_smi is the provenance.
+_IS_RING_CUT = "f.core_smi LIKE '%[1*%'"
+_IS_ACYCLIC_CUT = "f.core_smi NOT LIKE '%[1*%'"
+
 
 def test_user_version(db):
     with sqlite3.connect(db) as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert c.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
 
 
 def test_required_tables(db):
@@ -69,7 +75,8 @@ def test_radius3_core_num_atoms_matches_smiles(db):
 def test_radius3_columns(db):
     with sqlite3.connect(db) as c:
         cols = {r[1] for r in c.execute("PRAGMA table_info(radius3)")}
-    assert {"env_id", "core_smi_id", "core_num_atoms", "dist2", "is_ring_closure", "test"} == cols
+    # v2 drops is_ring_closure: provenance is carried by the env/core strings.
+    assert {"env_id", "core_smi_id", "core_num_atoms", "dist2", "test"} == cols
 
 
 def test_frags_no_denormalized_columns(db):
@@ -140,47 +147,56 @@ def test_core_smi_ids_consistent(db):
 
 def test_default_frag_mode_includes_acyclic_rows(db):
     # CORPUS contains aromatic-only rings + acyclic chains. Ring-bond cuts
-    # require single ring bonds, so for this corpus is_ring_closure=1 rows
-    # may be empty — but is_ring_closure=0 rows must be the bulk.
+    # require single ring bonds, so for this corpus ring-cut rows may be empty —
+    # but acyclic-cut rows must be the bulk.
     with sqlite3.connect(db) as c:
-        n0 = c.execute("SELECT count(*) FROM radius3 WHERE is_ring_closure=0").fetchone()[0]
+        n0 = c.execute(
+            f"SELECT count(*) FROM radius3 r JOIN frags f ON r.core_smi_id = f.core_smi_id "
+            f"WHERE {_IS_ACYCLIC_CUT}"
+        ).fetchone()[0]
     assert n0 > 0
 
 
 def test_rc_db_has_both_provenances(db_rc):
     # The ring_closures.smi corpus has saturated rings (cyclohexane, etc.),
-    # so --frag-mode both must populate is_ring_closure=1 rows alongside
-    # the existing acyclic-cut rows.
+    # so --frag-mode both must populate ring-cut rows alongside acyclic-cut ones.
     with sqlite3.connect(db_rc) as c:
-        n0 = c.execute("SELECT count(*) FROM radius2 WHERE is_ring_closure=0").fetchone()[0]
-        n1 = c.execute("SELECT count(*) FROM radius2 WHERE is_ring_closure=1").fetchone()[0]
+        join = "FROM radius2 r JOIN frags f ON r.core_smi_id = f.core_smi_id"
+        n0 = c.execute(f"SELECT count(*) {join} WHERE {_IS_ACYCLIC_CUT}").fetchone()[0]
+        n1 = c.execute(f"SELECT count(*) {join} WHERE {_IS_RING_CUT}").fetchone()[0]
     assert n0 > 0
     assert n1 > 0
 
 
 def test_acyclic_only_db_has_no_ring_rows(db_acyclic):
     with sqlite3.connect(db_acyclic) as c:
-        n1 = c.execute("SELECT count(*) FROM radius2 WHERE is_ring_closure=1").fetchone()[0]
+        n1 = c.execute(
+            f"SELECT count(*) FROM radius2 r JOIN frags f ON r.core_smi_id = f.core_smi_id "
+            f"WHERE {_IS_RING_CUT}"
+        ).fetchone()[0]
     assert n1 == 0
 
 
-def test_unique_constraint_includes_provenance(db_rc):
-    # Same (env, core) can carry both provenance rows independently — verify
-    # the UNIQUE constraint allows that by checking we have at least one
-    # (env_id, core_smi_id) pair appearing with both is_ring_closure values.
+def test_unique_key_is_env_core_only(db_rc):
+    # v2 narrowed the UNIQUE key to (env_id, core_smi_id). That is only sound because a
+    # ring-cut env/core carries isotope 1 and therefore cannot collide with the acyclic
+    # string for the same skeleton. Assert the key actually holds, and that both
+    # provenances are still present as separate rows.
     with sqlite3.connect(db_rc) as c:
-        n_shared = c.execute("""
+        duplicated = c.execute("""
             SELECT count(*) FROM (
                 SELECT env_id, core_smi_id
                 FROM radius2
                 GROUP BY env_id, core_smi_id
-                HAVING COUNT(DISTINCT is_ring_closure) = 2
+                HAVING count(*) > 1
             )
         """).fetchone()[0]
-    # At least zero is fine; for our corpus we expect some overlap to exist.
-    # The hard guarantee is that the schema permits it (no UNIQUE violation
-    # on the build); the count assertion is informational.
-    assert n_shared >= 0
+        join = "FROM radius2 r JOIN frags f ON r.core_smi_id = f.core_smi_id"
+        n_ring = c.execute(f"SELECT count(*) {join} WHERE {_IS_RING_CUT}").fetchone()[0]
+        n_acyclic = c.execute(f"SELECT count(*) {join} WHERE {_IS_ACYCLIC_CUT}").fetchone()[0]
+    assert duplicated == 0
+    assert n_ring > 0
+    assert n_acyclic > 0
 
 
 def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
@@ -195,7 +211,7 @@ def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
                 max(r.dist2)
             FROM radius2 r
             JOIN frags f ON r.core_smi_id = f.core_smi_id
-            WHERE r.is_ring_closure = 1
+            WHERE f.core_smi LIKE '%[1*%'
             GROUP BY nstars
         """).fetchall()
         by_stars = {nstars: (count, min_dist, max_dist)
@@ -204,7 +220,7 @@ def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
             SELECT count(*)
             FROM radius2 r
             JOIN frags f ON r.core_smi_id = f.core_smi_id
-            WHERE r.is_ring_closure = 1
+            WHERE f.core_smi LIKE '%[1*%'
               AND r.dist2 != 0
               AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) > 2
         """).fetchone()[0]
@@ -212,7 +228,7 @@ def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
             SELECT count(*)
             FROM radius2 r
             JOIN frags f ON r.core_smi_id = f.core_smi_id
-            WHERE r.is_ring_closure = 1
+            WHERE f.core_smi LIKE '%[1*%'
               AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) > 2
               AND instr(f.core_smi, '[1*') > 0
         """).fetchone()[0]
@@ -221,7 +237,7 @@ def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
             FROM radius2 r
             JOIN frags f ON r.core_smi_id = f.core_smi_id
             JOIN envs e ON r.env_id = e.env_id
-            WHERE r.is_ring_closure = 1
+            WHERE f.core_smi LIKE '%[1*%'
               AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) > 2
               AND instr(e.env, '[1*') > 0
         """).fetchone()[0]
@@ -229,7 +245,7 @@ def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
             SELECT count(*)
             FROM radius2 r
             JOIN frags f ON r.core_smi_id = f.core_smi_id
-            WHERE r.is_ring_closure = 1
+            WHERE f.core_smi LIKE '%[1*%'
               AND length(f.core_smi) - length(replace(f.core_smi, '*', '')) = 2
               AND instr(f.core_smi, '[1*') > 0
         """).fetchone()[0]
@@ -241,7 +257,8 @@ def test_ring_rows_include_partial_cycle_attachment_counts(db_rc):
     assert nonzero_dist_partial == 0
     assert labeled_partial > 0
     assert labeled_env_partial > 0
-    assert labeled_two_point == 0
+    # The v2 change: two-attachment ring arcs are labelled too (this was 0 under v1).
+    assert labeled_two_point > 0
 
 
 def test_fragment_issue_records_detect_defensive_checks():

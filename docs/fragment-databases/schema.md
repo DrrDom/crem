@@ -5,7 +5,7 @@ A CReM fragment database is a single SQLite file. CReM reads three formats:
 - **v2** — the current, deduplicated schema written by
   [`cremdb_create`](build-v2.md). Identified by `PRAGMA user_version = 2`.
 - **v1** — the deprecated predecessor of v2. Structurally identical apart from how
-  ring provenance is recorded (see [below](#v1-schema-deprecated)). Still readable, but
+  ring provenance is recorded (see [the v1 page](schema-v1.md)). Still readable, but
   it raises a `FutureWarning` and support may be dropped in a future release.
 - **v0** — the legacy single-table-per-radius layout written by the
   [pipeline](build-v0.md). Identified by `PRAGMA user_version = 0` (the default).
@@ -19,7 +19,7 @@ Every generation function works with all three formats. v0 databases can be
     done from what a v1 database stores. The upgrade is a rebuild from the source SMILES
     with [`cremdb_create`](build-v2.md). v1 databases keep working in the meantime; only
     two-attachment ring-arc replacement and strict `make_cycle` are limited on them
-    (see [below](#v1-schema-deprecated)).
+    (see [the v1 page](schema-v1.md)).
 
 To check a database's format:
 
@@ -100,6 +100,12 @@ context at this radius. Columns:
 | `core_num_atoms` | heavy-atom count of the core (denormalized here so size filters need no join) |
 | `dist2` | topological distance between the two attachment points for 2-attachment cores; `0` otherwise |
 | *set columns* | one per [fragment set](fragment-sets.md); the value is the occurrence count in that set |
+
+### `radius0` — the no-context table
+
+An optional `radius0` table has the same columns but its `env_id` points at an
+attachment-point class (`R2A1`, `R0A2`, …) instead of a context SMILES, because no context
+survives at radius 0. It is built only on request; see [Radius 0](radius0.md).
 
 ### Ring provenance is in the SMILES, not a column
 

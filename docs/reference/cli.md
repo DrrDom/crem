@@ -10,6 +10,7 @@ Installing CReM adds the following console commands to your `PATH`.
 | `cremdb_convert` | Convert a v0 database to v2 (or v1) | [Convert](../fragment-databases/convert.md) |
 | `cremdb_add_prop` | Add property columns to a database | [Properties](../fragment-databases/properties.md) |
 | `cremdb_get_set_names` | List the fragment sets in a database | [Fragment sets](../fragment-databases/fragment-sets.md) |
+| `cremdb_radius0` | Derive a radius0 table from an existing v2 database | [Radius 0](../fragment-databases/radius0.md) |
 | `cremdb_merge` | Merge shard databases into one | [Build (v2)](../fragment-databases/build-v2.md#merge-shards-manually-with-cremdb_merge) |
 | `fragmentation` | v0 pipeline — fragment molecules | [Build (v0)](../fragment-databases/build-v0.md) |
 | `frag_to_env` | v0 pipeline — standardize context/core | [Build (v0)](../fragment-databases/build-v0.md) |

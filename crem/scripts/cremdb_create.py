@@ -29,7 +29,7 @@ from rdkit import Chem, RDLogger
 from rdkit.Chem import rdMMPA
 from tqdm import tqdm
 
-from crem.mol_context import get_std_context_core_permutations
+from crem.mol_context import RADIUS0_ENV_CLASSES, get_radius0_rows, get_std_context_core_permutations
 from crem.ring_fragments import iter_partial_ring_fragments
 
 
@@ -716,6 +716,12 @@ def _process_chunk(task):
                 is_ring_closure,
             ))
             for radius in _RADII:
+                if radius == 0:
+                    # Radius 0 is counted once per fragmentation event, outside this loop.
+                    # Going through _env_core_from_fragment would count it once per env
+                    # symmetry orbit instead, and the orbit size depends on the radius, so
+                    # the result would not be an occurrence count at all.
+                    continue
                 for env, core_smi, core_num_atoms in _env_core_from_fragment(
                     core,
                     context,
@@ -730,6 +736,25 @@ def _process_chunk(task):
                         core_smi_h = _replace_attachment_points_with_h(core_smi)
                         core_info[core_smi] = (core_num_atoms, dist2, core_smi_h)
                     stats["pairs"] += 1
+
+            if 0 in _RADII:
+                # One increment per (core, context) event, shared across every stored
+                # orientation of the fragment, so the count is a true occurrence count.
+                env0, cores0 = get_radius0_rows(core, _KEEP_STEREO)
+                if env0:
+                    envs.add(env0)
+                    for core_smi in cores0:
+                        for set_name in member_sets:
+                            counts[set_name][0][(env0, core_smi)] += 1
+                        if core_smi not in core_info:
+                            # Orientations that no radius >= 1 row references still need a
+                            # frags entry; populating core_info here is what inserts them.
+                            core_info[core_smi] = (
+                                _count_heavy_atoms(core_smi),
+                                _core_dist2(core_smi),
+                                _replace_attachment_points_with_h(core_smi),
+                            )
+                        stats["pairs"] += 1
 
     stats["fragment_issues"] = len(fragment_issues)
     return chunk_id, envs, core_info, counts, stats, fragment_issues

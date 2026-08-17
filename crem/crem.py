@@ -9,7 +9,7 @@ from collections import defaultdict
 from rdkit import Chem, rdBase
 from rdkit.Chem import rdmolops
 from rdkit.Chem import rdMMPA
-from crem.mol_context import get_canon_context_core
+from crem.mol_context import RADIUS0_ENV_CLASSES, get_canon_context_core
 from multiprocessing import Pool, cpu_count
 import sqlite3
 import random
@@ -379,7 +379,8 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
 
     frags = rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=1, resultsAsMols=True, maxCutBonds=100)
     contexts = _prepare_single_cut_contexts(frags, protected_ids)
-    fake_core = '[*:1]C[*:2]'
+    # see __fragment_mol_ring_closure: the stand-in core must match the context's classes
+    fake_cores = {True: '[1*:1]C[1*:2]', False: '[*:1]C[*:2]'}
     output = {}
 
     for (anchor_1, ctx_1), (anchor_2, ctx_2) in combinations(contexts, 2):
@@ -411,7 +412,8 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
                 for a in chains.GetAtoms():
                     if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
                         a.SetIsotope(RING_CUT_DUMMY_ISOTOPE)
-            env, frag, old_to_new_map = get_canon_context_core(chains, fake_core, radius=radius,
+            env, frag, old_to_new_map = get_canon_context_core(chains, fake_cores[labelled],
+                                                              radius=radius,
                                                               keep_stereo=keep_stereo,
                                                               return_att_map=True,
                                                               preserve_dummy_isotopes=True)
@@ -506,7 +508,11 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
         rs_min, rs_max = ring_size
 
     distance_matrix = Chem.GetDistanceMatrix(mol)
-    fake_core = '[*:1]C[*:2]'
+    # `fake_core` stands in for the real core ('[H][*:1].[H][*:2]') during standardisation.
+    # Its attachment points must carry the same class labels as the context: at radius 0 the
+    # env is derived from the core, so an unlabelled fake core would report a ring closure
+    # as an acyclic class.
+    fake_cores = {True: '[1*:1]C[1*:2]', False: '[*:1]C[*:2]'}
     seen_pairs = set()
     output = {}
 
@@ -573,7 +579,7 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
                         a.SetIsotope(RING_CUT_DUMMY_ISOTOPE)
 
             env, frag, old_to_new_map = get_canon_context_core(
-                variant, fake_core, radius=radius, keep_stereo=keep_stereo,
+                variant, fake_cores[labelled], radius=radius, keep_stereo=keep_stereo,
                 return_att_map=True, preserve_dummy_isotopes=True,
             )
             if env is None or not frag:
@@ -1180,12 +1186,17 @@ def __check_env_provenance(env, is_ring_closure, radius):
     """
     if is_ring_closure is None:
         return
-    labelled = __RING_CUT_DUMMY_PATT in env
+    if env in RADIUS0_ENV_CLASSES:
+        # A radius-0 env is the attachment-point class rather than SMILES: the ring cuts
+        # are stated by the leading R<x> count, not by an isotope inside the string.
+        labelled = not env.startswith('R0')
+    else:
+        labelled = __RING_CUT_DUMMY_PATT in env
     if bool(is_ring_closure) != labelled:
         raise RuntimeError(
             f"fragment convention mismatch on a v2 database (radius{radius}): "
             f"is_ring_closure={is_ring_closure} but env {'carries' if labelled else 'lacks'} "
-            f"ring-cut isotope labels: {env!r}. The fragmenter must be called with "
+            f"ring-cut attachment points: {env!r}. The fragmenter must be called with "
             f"label_all_ring_cuts taken from _load_schema_meta()."
         )
 

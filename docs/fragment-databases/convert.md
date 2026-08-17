@@ -2,7 +2,7 @@
 
 `cremdb_convert` migrates a legacy [v0 database](schema.md#v0-schema-legacy) to
 the deduplicated [v2 schema](schema.md#v2-schema-current) (or to
-[v1](schema.md#v1-schema-deprecated) with `--target-version 1`). The old `freq`
+[v1](schema-v1.md) with `--target-version 1`). The old `freq`
 column becomes a named [fragment set](fragment-sets.md) in the new database.
 
 !!! warning "v0 sources only"

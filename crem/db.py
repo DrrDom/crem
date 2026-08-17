@@ -56,7 +56,7 @@ def create_db(
     merge_parallel: Optional[int] = None,
     fragment_error_log: bool = False,
 ) -> None:
-    """Create or extend a v1 CReM fragment database.
+    """Create or extend a v2 CReM fragment database.
 
     Calling on an existing database is safe and additive: ``_ensure_schema``
     uses ``CREATE TABLE IF NOT EXISTS`` and incremental ``ALTER TABLE``, so

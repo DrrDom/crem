@@ -40,7 +40,7 @@ cremdb_create -i input.smi -o fragments.db -s chembl \
 
 | Option | Default | Description |
 |---|---|---|
-| `-r`, `--radii` | `1 2 3 4 5` | Context radii to build |
+| `-r`, `--radii` | `1 2 3 4 5` | Context radii to build. Include `0` for the no-context [radius 0](radius0.md) table |
 | `-c`, `--ncpu` | `1` | Worker processes (capped at available CPUs) |
 | `--max-heavy-atoms` | `15` | Maximum heavy atoms in a core fragment |
 | `--mode` | `0` | Acyclic cut mode: `0` all atoms, `1` heavy only, `2` H only |

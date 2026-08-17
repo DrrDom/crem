@@ -41,6 +41,10 @@ replacements); a smaller radius means a looser match (more, but less
 context-aware replacements). The radius used at generation time must exist as a
 `radiusN` table in the database.
 
+`radius=0` is the limiting case: no context is matched at all, only the number of
+attachment points and which of them close a ring. It has to be built explicitly and
+returns very large result sets — see [Radius 0](fragment-databases/radius0.md).
+
 ## Fragment size and size windows
 
 Several parameters constrain the size (number of heavy atoms) of the fragments

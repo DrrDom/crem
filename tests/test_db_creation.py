@@ -388,3 +388,116 @@ def test_both_optimal_combines_acyclic_and_optimal_ring_fragments():
     assert {item[2] for item in both_optimal} == {0, 1}
     assert {item for item in both_optimal if item[2] == 1} == ring_optimal
     assert ring_optimal < ring_full
+
+
+# ---------------------------------------------------------------------------
+# radius 0
+# ---------------------------------------------------------------------------
+
+def _radius0_rows(db, with_counts=False):
+    with sqlite3.connect(db) as c:
+        q = """SELECT e.env, f.core_smi, r.core_num_atoms, r.dist2, r.test
+               FROM radius0 r JOIN envs e ON r.env_id = e.env_id
+               JOIN frags f ON r.core_smi_id = f.core_smi_id"""
+        rows = c.execute(q).fetchall()
+    if with_counts:
+        return {(e, s, n, d): cnt for e, s, n, d, cnt in rows}
+    return {(e, s, n, d) for e, s, n, d, _cnt in rows}
+
+
+def _build(tmp_path, name, radii):
+    import subprocess
+    import sys as _sys
+    smi = tmp_path / f"{name}.smi"
+    smi.write_text("\n".join(f"{s} m{i}" for i, s in enumerate(CORPUS_RADIUS0)))
+    db = str(tmp_path / f"{name}.db")
+    subprocess.run(
+        [_sys.executable, "-m", "crem.scripts.cremdb_create", "-i", str(smi), "-o", db,
+         "-s", "test", "--radii", *[str(r) for r in radii], "--ncpu", "1",
+         "--frag-mode", "both"],
+        check=True, capture_output=True,
+    )
+    return db
+
+
+CORPUS_RADIUS0 = [
+    "C[C@H]1CCOC[C@@H]1N", "CCC1CCOCC1", "c1ccc(CN)cc1", "O=C(N)c1ccccc1",
+    "CC(=O)Nc1ccccc1", "C1CCOCC1", "NCCCCN", "CCOc1ccc(CN)cc1",
+]
+
+
+def test_radius0_table_shape_and_envs(tmp_path):
+    db = _build(tmp_path, "r0", (0, 1, 2))
+    with sqlite3.connect(db) as c:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(radius0)")}
+        assert cols == {"env_id", "core_smi_id", "core_num_atoms", "dist2", "test"}
+        # every radius0 env is an RxAy class and nothing else
+        bad = c.execute("""SELECT COUNT(*) FROM radius0 r JOIN envs e ON r.env_id = e.env_id
+                           WHERE e.env NOT GLOB 'R[0-9]A[0-9]'""").fetchone()[0]
+        assert bad == 0
+        assert "idx_radius0_lookup" in _indices_of(db)
+
+
+def _indices_of(db):
+    with sqlite3.connect(db) as c:
+        return {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+
+
+def test_radius0_counts_are_occurrence_counts(tmp_path):
+    """Built from scratch, counts must be real occurrences: >= 1, and equal across every
+    stored orientation of one fragment (an orientation is not a separate observation)."""
+    from crem.mol_context import get_radius0_rows
+    db = _build(tmp_path, "r0counts", (0, 1, 2))
+    rows = _radius0_rows(db, with_counts=True)
+    assert rows
+    assert min(rows.values()) >= 1
+    by_fragment = {}
+    for (env, smi, _n, _d), cnt in rows.items():
+        _e, orientations = get_radius0_rows(smi)
+        by_fragment.setdefault((env, min(orientations)), set()).add(cnt)
+    assert all(len(counts) == 1 for counts in by_fragment.values())
+
+
+def test_radius0_dist2_only_for_two_attachment_classes(tmp_path):
+    db = _build(tmp_path, "r0dist", (0, 1))
+    with sqlite3.connect(db) as c:
+        for env, mn, mx in c.execute(
+                """SELECT e.env, MIN(r.dist2), MAX(r.dist2) FROM radius0 r
+                   JOIN envs e ON r.env_id = e.env_id GROUP BY e.env"""):
+            if env in ("R0A2", "R2A0"):
+                assert mn > 0, env
+            else:
+                assert mx == 0, env
+
+
+def test_derived_radius0_matches_from_scratch(tmp_path):
+    """The frags-derived table and the from-scratch one must hold the same rows.
+
+    They differ only in the counts: from scratch these are occurrence counts, derived they
+    are per-set membership flags, because a radius table's counts are inflated by the env
+    orbit size and cannot be turned back into occurrences.
+    """
+    import subprocess
+    import sys as _sys
+    scratch = _build(tmp_path, "scratch", (0, 1, 2))
+    derived = _build(tmp_path, "derived", (1, 2))
+    subprocess.run(
+        [_sys.executable, "-m", "crem.scripts.cremdb_radius0", "-i", derived, "--quiet"],
+        check=True, capture_output=True,
+    )
+    assert _radius0_rows(scratch) == _radius0_rows(derived)
+    derived_counts = set(_radius0_rows(derived, with_counts=True).values())
+    assert derived_counts <= {0, 1}
+    assert max(_radius0_rows(scratch, with_counts=True).values()) > 1
+
+
+def test_derived_radius0_refuses_to_clobber_real_counts(tmp_path):
+    import subprocess
+    import sys as _sys
+    db = _build(tmp_path, "guard", (0, 1))
+    res = subprocess.run(
+        [_sys.executable, "-m", "crem.scripts.cremdb_radius0", "-i", db, "--quiet"],
+        capture_output=True, text=True,
+    )
+    assert res.returncode != 0
+    assert "already exists" in res.stderr

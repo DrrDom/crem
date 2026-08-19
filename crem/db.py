@@ -1,9 +1,13 @@
 """Python API for CReM fragment database management.
 
-All three database operations (creation, merging, property annotation) are
+All database operations (creation, merging, property annotation, inspection) are
 available as plain Python functions importable from this module:
 
-    from crem.db import create_db, merge_dbs, add_fragment_props
+    from crem.db import create_db, merge_dbs, add_fragment_props, get_db_info
+
+This module also owns the schema column constants shared by the generation code
+and the command-line tools; it is deliberately free of RDKit imports at module
+level so that importing a constant costs nothing.
 """
 
 import os
@@ -23,6 +27,28 @@ _TABLE_COLS = {
     'frags':   ('core_smi_id', 'core_smi'),
     'frags_h': ('core_smi_h_id', 'smi'),
 }
+
+#: Columns of radius{N} that are schema metadata rather than per-set occurrence counts.
+#: `is_ring_closure` is absent from v2 tables; naming it here is harmless because set
+#: discovery is a set difference.
+_RESERVED_RADIUS_COLUMNS = frozenset(
+    {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2', 'is_ring_closure'}
+)
+
+#: Schema columns of the v1/v2 fragment tables. Everything else in them is a property
+#: column added after the build (by cremdb_add_prop or add_fragment_props), so property
+#: discovery is a set difference against these.
+#: `core_num_atoms` is listed for `frags` because older v1 builds carry it there while
+#: current builds denormalize it into radius{N} only - naming a column that may be
+#: absent is harmless in a set difference, and omitting it would report it as a property.
+BASE_TABLE_COLUMNS = {
+    'frags':   frozenset({'core_smi_id', 'core_smi', 'core_smi_h_id', 'core_num_atoms'}),
+    'frags_h': frozenset({'core_smi_h_id', 'smi'}),
+}
+
+#: Schema columns of a v0 radius{N} table (`freq` only when built with counts). v0 has no
+#: separate fragment table, so property columns live on the radius tables themselves.
+V0_BASE_COLUMNS = frozenset({'env', 'core_smi', 'core_num_atoms', 'core_sma', 'dist2', 'freq'})
 
 _CUSTOM_WRITE_BATCH = 10_000
 
@@ -290,9 +316,115 @@ def add_fragment_props(
         _add_custom_props(str(db), custom_props, table=table, ncpu=ncpu, verbose=verbose)
 
 
+def get_db_info(db: PathLike) -> Dict:
+    """Summarize the schema of a CReM fragment database.
+
+    Reads only PRAGMAs and `sqlite_master`, so it is cheap on databases of any size,
+    and opens the file read-only: a database is never created or modified by this call.
+
+    :param db: path to the fragment database.
+    :return: a dict with the keys
+
+        * ``path`` - the path as given;
+        * ``version`` - ``PRAGMA user_version`` (0 legacy, 1 deprecated, 2 current);
+        * ``has_sets`` - whether the schema supports fragment sets (False for v0);
+        * ``radius_tables`` - ``{'radius1': [set names], ...}``, ordered by radius; the
+          lists are empty for v0, which has no sets;
+        * ``properties`` - ``{table: [property columns]}`` in column order, covering
+          ``frags`` and ``frags_h`` for v1/v2 and each radius table for v0. These are
+          the columns that may be used as property filters at generation time;
+        * ``is_shard`` - True for an unmerged stride-mode shard written by
+          ``cremdb_create --parallel-shards``.
+
+    :raises FileNotFoundError: if the path does not exist.
+    :raises ValueError: if the file is not a recognizable CReM database.
+    :raises sqlite3.OperationalError: if the file cannot be opened read-only (for
+        instance a database with a hot write-ahead log needing recovery).
+    """
+    from crem.scripts.cremdb_create import _STRIDE_SHARD_SENTINEL
+
+    path = str(db)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"{path}: file not found")
+
+    con = _connect_ro(path)
+    try:
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+        # application_id is a 32-bit *signed* field, so a sentinel with the high bit set
+        # reads back as its negative twin (and SQLite ignores the write altogether when
+        # the value does not fit). Compare the low 32 bits, which is true either way.
+        app_id = con.execute("PRAGMA application_id").fetchone()[0]
+        is_shard = (app_id & 0xFFFFFFFF) == (_STRIDE_SHARD_SENTINEL & 0xFFFFFFFF)
+        tables = {row[0] for row in
+                  con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        radius_names = _radius_table_names(tables)
+
+        info = {'path': path, 'version': version, 'is_shard': is_shard}
+
+        if version >= 1:
+            # v1/v2 (and any future member of that family): sets are the radius{N}
+            # columns that are not schema, properties live on the shared fragment tables.
+            if 'frags' not in tables:
+                raise ValueError(
+                    f"{path}: user_version={version} implies the normalized schema, "
+                    f"but the frags table is missing - this is not a CReM database")
+            info['has_sets'] = True
+            info['radius_tables'] = {
+                name: sorted(_columns(con, name) - _RESERVED_RADIUS_COLUMNS)
+                for name in radius_names
+            }
+            info['properties'] = {
+                name: [c for c in _columns(con, name, ordered=True)
+                       if c not in BASE_TABLE_COLUMNS[name]]
+                for name in ('frags', 'frags_h') if name in tables
+            }
+        else:
+            # v0, or a SQLite file that simply is not a CReM database: user_version
+            # defaults to 0, so the radius tables are the only evidence either way.
+            if not radius_names:
+                raise ValueError(
+                    f"{path}: no radius tables and no schema version - "
+                    f"this is not a CReM database")
+            info['has_sets'] = False
+            info['radius_tables'] = {name: [] for name in radius_names}
+            info['properties'] = {
+                name: [c for c in _columns(con, name, ordered=True)
+                       if c not in V0_BASE_COLUMNS]
+                for name in radius_names
+            }
+        return info
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _connect_ro(path: str) -> sqlite3.Connection:
+    """Open a database read-only, so that inspecting it can neither create the file
+    (which a plain connect() to a mistyped path does) nor write to it."""
+    from urllib.request import pathname2url
+    return sqlite3.connect(f"file:{pathname2url(os.path.abspath(path))}?mode=ro", uri=True)
+
+
+def _columns(con: sqlite3.Connection, table: str, ordered: bool = False):
+    """Column names of `table`, in declaration order when `ordered`, else as a set."""
+    names = [row[1] for row in con.execute(f"PRAGMA table_info({table})")]
+    return names if ordered else set(names)
+
+
+def _radius_table_names(tables: Iterable[str]) -> List[str]:
+    """`radiusN` table names sorted by N. Names with a non-numeric suffix are ignored
+    rather than raising: nothing stops a user table from starting with "radius"."""
+    found = []
+    for name in tables:
+        if name.startswith('radius'):
+            try:
+                found.append((int(name[6:]), name))
+            except ValueError:
+                continue
+    return [name for _, name in sorted(found)]
 
 def _is_picklable(obj) -> bool:
     try:

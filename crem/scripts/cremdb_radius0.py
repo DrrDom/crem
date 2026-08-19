@@ -34,11 +34,10 @@ from multiprocessing import Pool
 
 from rdkit import RDLogger
 
+from crem.db import _RESERVED_RADIUS_COLUMNS
 from crem.mol_context import RADIUS0_ENV_CLASSES, get_radius0_rows
 from crem.scripts.cremdb_create import (_core_dist2, _count_heavy_atoms,
                                         _replace_attachment_points_with_h, create_indices)
-
-_RESERVED = frozenset({'env_id', 'core_smi_id', 'core_num_atoms', 'dist2', 'is_ring_closure'})
 
 
 def _radius_tables(con):
@@ -57,7 +56,7 @@ def _radius_tables(con):
 
 def _set_columns(con, radius):
     cols = {row[1] for row in con.execute(f"PRAGMA table_info(radius{radius})")}
-    return sorted(cols - _RESERVED)
+    return sorted(cols - _RESERVED_RADIUS_COLUMNS)
 
 
 def _check_database(con, force):

@@ -36,6 +36,7 @@ import sys
 import re
 from tqdm import tqdm
 from rdkit import Chem, RDLogger
+from crem.db import V0_BASE_COLUMNS
 from crem.mol_context import combine_core_env_to_rxn_smarts
 from crem.scripts.cremdb_create import (DB_SCHEMA_VERSION, create_indices,
                                         _replace_attachment_points_with_h)
@@ -179,14 +180,13 @@ def create_new_schema(
     new_conn.commit()
 
     # Add columns, which are not pre-defined, to transfer them
-    predefined_colnames = ['env', 'core_smi', 'core_num_atoms', 'core_sma', 'dist2', 'freq']
     old_tables = old_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'radius%'").fetchall()
     for row in old_tables:
         col_data_old = old_conn.execute(f"PRAGMA table_info({row[0]})").fetchall()
         col_data_new = new_conn.execute(f"PRAGMA table_info(frags)").fetchall()
         col_names_new = [row[1] for row in col_data_new]
         for row in col_data_old:
-            if row[1] not in predefined_colnames and row[1] not in col_names_new:
+            if row[1] not in V0_BASE_COLUMNS and row[1] not in col_names_new:
                 sql = f'ALTER TABLE frags ADD {row[1]} {row[2]} {"NOT NULL" if row[3] == 1 else ""} {f"DEFAULT {row[4]}" if row[4] is not None else ""}'
                 print(sql)
                 new_conn.execute(sql)

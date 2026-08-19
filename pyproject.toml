@@ -38,6 +38,8 @@ env_to_db            = "crem.import_env_to_db:entry_point"
 guacamol_test        = "crem.guacamol_crem_test:entry_point"
 cremdb_add_prop      = "crem.scripts.cremdb_add_prop:entry_point"
 cremdb_create        = "crem.scripts.cremdb_create:main"
+cremdb_info          = "crem.scripts.cremdb_info:main"
+# deprecated, superseded by cremdb_info; to be removed in a future release
 cremdb_get_set_names = "crem.scripts.cremdb_get_set_names:main"
 cremdb_merge         = "crem.scripts.cremdb_merge:main"
 cremdb_convert       = "crem.scripts.cremdb_convert:main"

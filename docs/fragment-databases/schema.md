@@ -24,6 +24,12 @@ Every generation function works with all three formats. v0 databases can be
 To check a database's format:
 
 ```bash
+cremdb_info -i fragments.db      # schema version, fragment sets, property columns
+```
+
+or, without CReM installed:
+
+```bash
 sqlite3 fragments.db "PRAGMA user_version;"   # 2 = v2, 1 = v1, 0 = v0
 ```
 

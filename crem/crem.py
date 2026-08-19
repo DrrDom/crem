@@ -17,6 +17,9 @@ from itertools import product, combinations
 from crem.mol_context import patt_remove_map
 from crem.ring_fragments import (ATOM_INDEX_PROP, RING_CUT_DUMMY_ISOTOPE, _ensure_atom_indices,
                                  iter_partial_ring_fragments)
+# crem.db owns the schema column constants and is imported by the command-line tools too,
+# so that set discovery here and in cremdb_info cannot drift apart.
+from crem.db import _RESERVED_RADIUS_COLUMNS
 
 Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 __patt_remove_brackets = re.compile(r'\(\)')
@@ -27,13 +30,6 @@ __patt_remove_brackets = re.compile(r'\(\)')
 # to output structures. In all cases it is expeected that only ring-arc attachment points will
 # have isotope labels.
 __RING_CUT_DUMMY_PATT = f'[{RING_CUT_DUMMY_ISOTOPE}*'
-
-#: Columns of radius{N} that are schema metadata rather than per-set occurrence counts.
-#: `is_ring_closure` is absent from v2 tables; naming it here is harmless because set
-#: discovery is a set difference.
-_RESERVED_RADIUS_COLUMNS = frozenset(
-    {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2', 'is_ring_closure'}
-)
 
 __molzip_params = rdmolops.MolzipParams()
 __molzip_params.label = rdmolops.MolzipLabel.AtomMapNumber

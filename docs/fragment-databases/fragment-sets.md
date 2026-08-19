@@ -61,16 +61,22 @@ c1ccccc1    mol_0002
 ## Inspect the sets in a database
 
 ```bash
-cremdb_get_set_names -i fragments.db
+cremdb_info -i fragments.db
 ```
 
-prints the set columns per radius table, e.g.:
+prints the schema version and the set columns per radius table, e.g.:
 
 ```text
-radius1: ['chembl']
-radius2: ['chembl']
-radius3: ['chembl']
+fragments.db
+  schema version : 2 (current)
+  radius1        : chembl
+  radius2        : chembl
+  radius3        : chembl
+  properties     : (none)
 ```
+
+Several databases may be given at once, and `--json` prints the same information in a
+machine-readable form. (The older `cremdb_get_set_names` still works but is deprecated.)
 
 Equivalently, with SQLite:
 

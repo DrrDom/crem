@@ -60,7 +60,8 @@ mols = list(mutate_mol(
     The keyword names must correspond to existing columns. In a **v1/v2** database
     these are columns of `frags` (or `frags_h`); in a **v0** database they are
     columns of the `radiusN` tables. This is the one generation-time difference
-    between the two formats.
+    between the two formats. Run `cremdb_info -i fragments.db` to list the property
+    columns a database actually has.
 
 ## Add custom properties (Python API)
 

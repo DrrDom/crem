@@ -1,37 +1,38 @@
 #!/usr/bin/env python3
+"""
+Deprecated. Use cremdb_info, which reports the schema version and property columns as
+well, and accepts several databases at once.
+
+This script is a thin wrapper kept so that existing pipelines keep working: its stdout
+format is unchanged, and get_set_names remains importable from here. It will be removed
+in a future CReM release.
+"""
+
 import argparse
-import re
-import sqlite3
+import sys
 
+# re-exported for code that imports get_set_names from this module
+from crem.scripts.cremdb_info import get_set_names
 
-def get_set_names(db_path):
-    conn = sqlite3.connect(db_path)
-
-    tables = [
-        row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'radius%'"
-        )
-    ]
-    tables.sort(key=lambda t: int(re.search(r'\d+', t).group()))
-
-    # Deliberately duplicated from crem.crem._RESERVED_RADIUS_COLUMNS rather than imported:
-    # this script is stdlib-only and runs a single PRAGMA, so importing crem.crem would add
-    # the whole RDKit import to its startup for no benefit. Keep the two in sync by hand.
-    reserved = {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2', 'is_ring_closure'}
-    result = {}
-
-    for table in tables:
-        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-        result[table] = sorted(cols - reserved)
-
-    conn.close()
-    return result
+_DEPRECATION_MSG = (
+    "cremdb_get_set_names is deprecated and will be removed in a future CReM release. "
+    "Use cremdb_info instead - it reports the database version and property columns too, "
+    "and accepts several databases at once.\n"
+)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="List set names from each radius table in a CReM database")
+    parser = argparse.ArgumentParser(
+        description="Deprecated, use cremdb_info. List set names from each radius table "
+                    "in a CReM database")
     parser.add_argument("-i", "--input", required=True, help="Path to the SQLite database")
     args = parser.parse_args()
+
+    # stderr rather than warnings.warn: DeprecationWarning is suppressed by Python's
+    # default filters outside __main__, and console entry points are wrapper modules, so
+    # the warning would be invisible to most users. Writing to stderr also leaves stdout
+    # byte-identical for pipelines that parse it.
+    sys.stderr.write(_DEPRECATION_MSG)
 
     for table, names in get_set_names(args.input).items():
         print(f"{table}: {names}")

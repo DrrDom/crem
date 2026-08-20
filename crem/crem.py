@@ -837,7 +837,12 @@ def __rigid_pair_distances(p, unit):
     depend on which products happened to be processed first. Returns None when the system
     cannot be extracted or embedded."""
     idx = sorted(unit)
-    em = Chem.RWMol(p)
+    try:
+        src = Chem.Mol(p)
+        Chem.Kekulize(src, clearAromaticFlags=True)
+    except Exception:
+        src = p  # p reaches here sanitized, so this is unreachable in practice
+    em = Chem.RWMol(src)
     for i in sorted(set(range(p.GetNumAtoms())) - unit, reverse=True):
         em.RemoveAtom(i)
     sub = em.GetMol()
@@ -876,7 +881,9 @@ def __embed_rigid_system(sub, ranks):
         params.randomSeed = 42
         params.maxIterations = 4  # give up quickly; a failure only skips the injection
         m = Chem.Mol(sub)         # heavy atoms are enough and embed several times faster
-        if rdDistGeom.EmbedMolecule(m, params) != 0:
+        with rdBase.BlockLogs():
+            embedded = rdDistGeom.EmbedMolecule(m, params)
+        if embedded != 0:
             return None
         conf = m.GetConformer()
         hinges = [b for b in sub.GetBonds()

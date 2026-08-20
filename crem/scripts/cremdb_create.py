@@ -45,7 +45,10 @@ DB_SCHEMA_VERSION = 2
 # Magic value written into PRAGMA application_id at the end of a stride-mode
 # shard build. The parallel-shards orchestrator reads this to decide which
 # children to skip on resume.
-_STRIDE_SHARD_SENTINEL = 0xC0DECAFE
+# Must fit a 32-bit *signed* integer: SQLite silently ignores an application_id
+# above 2**31 - 1, leaving the field at 0, so a sentinel with the high bit set
+# never reaches disk and every finalised shard would be rebuilt on resume.
+_STRIDE_SHARD_SENTINEL = 0x40DECAFE
 
 # How many MMPA failures each worker is allowed to log to stderr before going
 # silent. Bad-molecule edge cases in rdMMPA.FragmentMol can come in clusters

@@ -6,12 +6,14 @@ from rdkit import Chem
 from crem.scripts.cremdb_create import (
     DB_SCHEMA_VERSION,
     _FRAGMENT_ISSUE_COLUMNS,
+    _STRIDE_SHARD_SENTINEL,
     _FragmentIssueWriter,
     _fragment_error_log_path,
     _fragment_issue_records,
     _fragment_mol,
     _fragment_mol_ring,
     _normalize_input_mol,
+    _shard_is_finalised,
 )
 
 # On v2 there is no is_ring_closure column: every ring-cut attachment point carries
@@ -36,6 +38,20 @@ def test_required_tables(db):
 def test_envs_not_empty(db):
     with sqlite3.connect(db) as c:
         assert c.execute("SELECT count(*) FROM envs").fetchone()[0] > 0
+
+
+def test_shard_sentinel_survives_a_write(tmp_path):
+    """The stride-mode sentinel must fit a 32-bit signed application_id.
+
+    SQLite ignores an out-of-range value and leaves the field at 0, which makes every
+    finalised shard look unfinished and rebuilds it on resume.
+    """
+    shard = tmp_path / "shard_000.db"
+    with sqlite3.connect(shard) as c:
+        c.execute("CREATE TABLE t(a INTEGER)")
+        assert _shard_is_finalised(str(shard)) is False
+        c.execute(f"PRAGMA application_id = {_STRIDE_SHARD_SENTINEL}")
+    assert _shard_is_finalised(str(shard)) is True
 
 
 def test_frags_h_valid_smiles(db):

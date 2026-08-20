@@ -1995,7 +1995,7 @@ def grow_mol(mol, db_name, radius=3, min_atoms=1, max_atoms=2, max_replacements=
                       max_replacements=max_replacements, replace_ids=None, protected_ids=protected_ids,
                       min_freq=min_freq, set_names=set_names, return_rxn=return_rxn, return_rxn_freq=return_rxn_freq,
                       return_mol=return_mol, ncores=ncores, symmetry_fixes=symmetry_fixes, filter_func=filter_func,
-                      sample_func=sample_func, seed=seed, **kwargs)
+                      sample_func=sample_func, seed=seed, discard_ring_geometry=False, **kwargs)
 
 
 def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2, max_replacements=None,
@@ -2134,7 +2134,7 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                                                                          return_frag_smi_only=False,
                                                                          operation="link",
                                                                          seed=seed, **kwargs):
-            for smi, m, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, context_mol):
+            for smi, m, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, context_mol, discard_ring_geometry=False):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)

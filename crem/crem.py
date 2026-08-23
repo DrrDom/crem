@@ -32,8 +32,9 @@ __patt_remove_brackets = re.compile(r'\(\)')
 # have isotope labels.
 __RING_CUT_DUMMY_PATT = f'[{RING_CUT_DUMMY_ISOTOPE}*'
 
-__molzip_params = rdmolops.MolzipParams()
-__molzip_params.label = rdmolops.MolzipLabel.AtomMapNumber
+assert rdmolops.MolzipParams().label == rdmolops.MolzipLabel.AtomMapNumber, \
+    "RDKit's default molzip label is no longer AtomMapNumber; crem pairs attachment points " \
+    "by map number and must pass MolzipParams explicitly again"
 __explicit_h_query = Chem.MolFromSmarts("[#1]")
 __remove_hs_params = Chem.RemoveHsParameters()
 __remove_hs_params.removeDefiningBondStereo = True
@@ -140,22 +141,24 @@ def __backup_atom_properties(mol, names):
     return mol
 
 
-def __restore_and_clear_atom_properties(mol):
+def __restore_and_clear_atom_properties(mol, clear_index_props=True):
     """Restore backed-up atom properties and drop the atom-index bookkeeping, in one pass.
 
     Both jobs used to be separate full traversals of every atom from Python, which is 43% of
-    __frag_replace on a link run - and wasted, because most products carry neither property:
-    only isotopes are ever backed up, and the atom-index property is set only by the paths
-    that fragment rings. Asking RDKit for the matching atoms keeps the scan in C++ and leaves
-    nothing for Python to iterate in the common case. Measured on a 28-atom product with
-    neither property present: 3.9x faster than the two traversals, identical result.
+    __frag_replace on a link run. Asking RDKit for the matching atoms keeps the scan in C++
+    and leaves nothing for Python to iterate when a property is absent.
+
+    Restoring isotopes is never optional: they change the output SMILES. Clearing the atom
+    index is optional and enabled if Mol is returned. If SMILES will be returned these
+    properties can be kept as is.
     """
     for query, backup_name, setter in __atom_property_restore_queries:
         for atom in mol.GetAtomsMatchingQuery(query):
             setter(atom, atom.GetIntProp(backup_name))
             atom.ClearProp(backup_name)
-    for atom in mol.GetAtomsMatchingQuery(__atom_index_query):
-        atom.ClearProp(ATOM_INDEX_PROP)
+    if clear_index_props:
+        for atom in mol.GetAtomsMatchingQuery(__atom_index_query):
+            atom.ClearProp(ATOM_INDEX_PROP)
 
 
 def __has_ring(mol):
@@ -995,7 +998,7 @@ def __ring_reach_ok(p, ringinfo, slack=0.10, max_reach=10.0):
 
 
 def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=None, frag_ids_1=None, frag_ids_2=None,
-                   discard_ring_geometry=True):
+                   discard_ring_geometry=True, clear_index_props=True):
     """
     INPUT
         mol1:         mol for mutate, grow or link
@@ -1028,7 +1031,7 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
 
     transformation_smi = f"{old_frag_smi}>>{new_frag_smi}"
     try:
-        p = rdmolops.molzip(Chem.CombineMols(context_mol, repl_core_mol), __molzip_params)
+        p = Chem.molzip(context_mol, repl_core_mol)
     except RuntimeError as exc:
         try:
             context_smi = Chem.MolToSmiles(context_mol, isomericSmiles=True)
@@ -1054,7 +1057,7 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
         sys.stderr.flush()
         return
 
-    __restore_and_clear_atom_properties(p)
+    __restore_and_clear_atom_properties(p, clear_index_props=clear_index_props)
     if p.HasSubstructMatch(__explicit_h_query):
         p = Chem.RemoveHs(p, __remove_hs_params)
 
@@ -1638,14 +1641,15 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
 def __frag_replace_mp(items):
     # return smi, transformation, transformation_freq, mol
     # data generators yield (mol1, mol2, old_frag, new_frag, radius, context_mol, freq,
-    # discard_ring_geometry); the last two items are unpacked here
-    *args, freq, discard_ring_geometry = items
-    return [(*item, freq) for item in __frag_replace(*args, discard_ring_geometry=discard_ring_geometry)]
+    # discard_ring_geometry, clear_index_props); the last three items are unpacked here
+    *args, freq, discard_ring_geometry, clear_index_props = items
+    return [(*item, freq) for item in __frag_replace(*args, discard_ring_geometry=discard_ring_geometry,
+                                                     clear_index_props=clear_index_props)]
 
 
 def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_size, min_inc, max_inc,
                replace_cycles, protected_ids, min_freq, set_names, max_replacements, symmetry_fixes, filter_func=None,
-               sample_func=None, seed=None, discard_ring_geometry=True, **kwargs):
+               sample_func=None, seed=None, discard_ring_geometry=True, clear_index_props=True, **kwargs):
     for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol, mol2=None, db_name=db_name,
                                                                     radius=radius, min_size=min_size,
                                                                     max_size=max_size, min_rel_size=min_rel_size,
@@ -1662,12 +1666,12 @@ def __get_data(mol, db_name, radius, min_size, max_size, min_rel_size, max_rel_s
                                                                     return_frag_smi_only=False,
                                                                     operation="mutate",
                                                                     seed=seed, **kwargs):
-        yield mol, None, frag_sma, core_sma, radius, context_mol, freq, discard_ring_geometry
+        yield mol, None, frag_sma, core_sma, radius, context_mol, freq, discard_ring_geometry, clear_index_props
 
 
 def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, protected_ids_1, protected_ids_2, min_freq,
                     set_names, max_replacements, filter_func=None, sample_func=None, seed=None,
-                    discard_ring_geometry=False, **kwargs):
+                    discard_ring_geometry=False, clear_index_props=True, **kwargs):
     for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol1, mol2=mol2, db_name=db_name,
                                                                      radius=radius, dist=dist,
                                                                      min_size=0, max_size=0,
@@ -1682,12 +1686,12 @@ def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, pro
                                                                      sample_func=sample_func,
                                                                      operation="link",
                                                                      return_frag_smi_only=False, seed=seed, **kwargs):
-        yield mol1, mol2, frag_sma, core_sma, radius, context_mol, freq, discard_ring_geometry
+        yield mol1, mol2, frag_sma, core_sma, radius, context_mol, freq, discard_ring_geometry, clear_index_props
 
 
 def __get_data_cycle(mol, db_name, radius, ring_size, ring_closures, min_size, max_size, protected_ids,
                      min_freq, set_names, max_replacements, filter_func=None, sample_func=None,
-                     seed=None, discard_ring_geometry=True, **kwargs):
+                     seed=None, discard_ring_geometry=True, clear_index_props=True, **kwargs):
     for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol, mol2=None, db_name=db_name,
                                                                     radius=radius,
                                                                     min_size=0, max_size=0,
@@ -1705,7 +1709,7 @@ def __get_data_cycle(mol, db_name, radius, ring_size, ring_closures, min_size, m
                                                                     ring_closures=ring_closures,
                                                                     ring_size=ring_size,
                                                                     seed=seed, **kwargs):
-        yield mol, None, frag_sma, core_sma, radius, context_mol, freq, discard_ring_geometry
+        yield mol, None, frag_sma, core_sma, radius, context_mol, freq, discard_ring_geometry, clear_index_props
 
 
 def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, max_rel_size=1, min_inc=-2, max_inc=2,
@@ -1849,7 +1853,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                                         operation="mutate",
                                                                         seed=seed, **kwargs):
             for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, context_mol,
-                                              discard_ring_geometry=discard_ring_geometry):
+                                              discard_ring_geometry=discard_ring_geometry,
+                                              clear_index_props=return_mol):
                 if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
                     if smi not in products:
                         products.add(smi)
@@ -1874,7 +1879,8 @@ def mutate_mol(mol, db_name, radius=3, min_size=0, max_size=10, min_rel_size=0, 
                                                               symmetry_fixes, filter_func=filter_func,
                                                               sample_func=sample_func,
                                                               seed=seed,
-                                                              discard_ring_geometry=discard_ring_geometry, **kwargs),
+                                                              discard_ring_geometry=discard_ring_geometry,
+                                                              clear_index_props=return_mol, **kwargs),
                                 chunksize=100):
                 for smi, m, rxn, freq in items:
                     if max_replacements is None or len(products) < (max_replacements + 1):  # +1 because we added source mol to output smiles
@@ -2143,7 +2149,8 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
                                                                          return_frag_smi_only=False,
                                                                          operation="link",
                                                                          seed=seed, **kwargs):
-            for smi, m, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, context_mol, discard_ring_geometry=False):
+            for smi, m, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, context_mol, discard_ring_geometry=False,
+                                              clear_index_props=return_mol):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi not in products:
                         products.add(smi)
@@ -2166,7 +2173,8 @@ def link_mols(mol1, mol2, db_name, radius=3, dist=None, min_atoms=1, max_atoms=2
             for items in p.imap(__frag_replace_mp, __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms,
                                                                    protected_ids_1, protected_ids_2, min_freq,
                                                                    set_names, max_replacements, filter_func=filter_func,
-                                                                   sample_func=sample_func, seed=seed, **kwargs),
+                                                                   sample_func=sample_func, seed=seed,
+                                                                   clear_index_props=return_mol, **kwargs),
                                 chunksize=100):
                 for smi, m, rxn, freq in items:
                     if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
@@ -2412,7 +2420,8 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
                              '(source_core_smi, replacement_core_smi, freq, context_mol)\n')
 
         for smi, m, rxn in __frag_replace(mol1, mol2, frag_sma, core_sma, radius, context_mol,
-                                          discard_ring_geometry=discard_ring_geometry):
+                                          discard_ring_geometry=discard_ring_geometry,
+                                          clear_index_props=return_mol):
             if smi not in products:
                 products.add(smi)
                 res = [smi]
@@ -2579,7 +2588,8 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                                                                         ring_size=ring_size,
                                                                         seed=seed, **kwargs):
             for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, context_mol,
-                                              discard_ring_geometry=discard_ring_geometry):
+                                              discard_ring_geometry=discard_ring_geometry,
+                                              clear_index_props=return_mol):
                 if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):
                     if smi != source_smi and smi not in products:
                         products.add(smi)
@@ -2606,7 +2616,7 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                                                                     filter_func=filter_func,
                                                                     sample_func=sample_func, seed=seed,
                                                                     discard_ring_geometry=discard_ring_geometry,
-                                                                    **kwargs),
+                                                                    clear_index_props=return_mol, **kwargs),
                                 chunksize=100):
                 for smi, m, rxn, freq in items:
                     if max_replacements is None or (max_replacements is not None and len(products) < max_replacements):

@@ -38,6 +38,10 @@ structures.
 - Precompiled fragment databases: <http://www.qsar4u.com/pages/crem.php>
 - Changelog: [changelog](changelog)
 
+## Note on the development status  
+The current CReM release 0.3.1 supports databases of version 1. However, we are working on the next version of CReM, which will introduce v2 fragment databases, and there will be no direct conversion of v1 to v2. v1 databases will still work with new CReM version for structure generation. 
+Support of v1 databases may be disabled in future CReM versions. Therefore, it may be reasonable to wait until a new CREM version with v2 database support will be released before creation of new large fragment databses or use `dev` branch at your own risk as some changes may still change database. 
+
 ## Installation
 
 ```bash

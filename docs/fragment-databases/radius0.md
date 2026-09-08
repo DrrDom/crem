@@ -69,7 +69,13 @@ O(C[*:1])[*:2]   and  O(C[*:2])[*:1]    ->  two rows: the points are not equival
 ```
 
 Without that collapse a fully symmetric four-point fragment would be drawn up to 24 times
-more often than an asymmetric one.
+more often than an asymmetric one — `C([*:1])([*:2])([*:3])[*:4]` is one row, not 24.
+
+It is a symmetry of the whole fragment that collapses two orientations, not the
+interchangeability of the points taken one class at a time. In
+`O(C([*:1])[*:3])C([*:2])[*:4]` all four points sit in the same class, and the only
+symmetry swaps the two CH<sub>2</sub> groups — so the three ways of splitting the four
+points across them are three distinct fragments and get three rows.
 
 ## Building it
 

@@ -519,7 +519,8 @@ def get_radius0_rows(core, keep_stereo=False):
     relabelling of the fragment, with labellings that differ only by a symmetry of the
     fragment itself collapsed to one entry - those would splice to the identical product,
     so storing them all would weight symmetric fragments up under uniform row sampling
-    (`C([1*:1])[1*:2]` and `C([1*:2])[1*:1]` are one row, not two).
+    (`C([1*:1])[1*:2]` and `C([1*:2])[1*:1]` are one row, not two). Each is returned in
+    its canonical spelling, the same one radius >= 1 stores.
 
     Both radius-0 builders go through this, so the from-scratch and the frags-derived
     tables cannot disagree about which rows a fragment produces.
@@ -535,32 +536,29 @@ def get_radius0_rows(core, keep_stereo=False):
     if not cores:
         return env, ()
 
-    # Symmetries of the fragment itself are exactly the permutations its own attachment
-    # points admit when the fragment is used as its own env, so the existing orbit
-    # machinery identifies them - no separate automorphism code is needed.
+    # The canonical SMILES does the collapsing on its own: RDKit ranks atom map numbers
+    # along with the rest of the graph, so two labellings share a canonical string exactly
+    # when an automorphism of the fragment carries one onto the other.
     #
-    # The permutations must be derived from the labelling they are applied to. A dict from
-    # __get_att_permutations maps map number to map number, so it is only meaningful in the
-    # coordinate system of the molecule it was computed from - the same trap documented for
-    # `d` versus `old_to_std` above. Computing them once from the *input* core and applying
-    # them to the canonically renumbered strings silently permutes the wrong atoms, which
-    # makes the returned set depend on the labelling the fragment arrived with. Both
-    # builders rely on that set being labelling-independent, so each orientation gets its
-    # own automorphisms here; two orientations related by a symmetry then share an orbit
-    # and collapse onto the same representative.
+    # That is also why the collapsing must not be done with attachment-point orbits.
+    # __get_att_permutations reports the permutations of each equivalence class
+    # independently - the product of the class groups - and the fragment's automorphism
+    # group is in general only a subgroup of that product, so an orbit merges labellings
+    # no symmetry relates and the extra ones are lost. In O(C([*:1])[*:3])C([*:2])[*:4]
+    # all four points are one class, so the orbit merges every pairing of a point with a
+    # carbon, while the only symmetry is the swap of the two carbons: the three ways of
+    # splitting the points across them are distinct fragments and all but one used to be
+    # dropped.
+    #
+    # Plain Chem.MolToSmiles rather than __mol_to_smiles, to match _canonical_core in
+    # cremdb_create exactly: radius >= 1 stores that spelling, and only a byte-identical
+    # string keeps both radii on one frags row instead of giving the fragment a second id.
+    # The strings are already stereo- and isotope-normalised by the call above, so the two
+    # agree anyway in both keep_stereo modes.
     representatives = set()
     for smi in cores:
         mol = Chem.MolFromSmiles(smi)
-        if mol is None:
-            representatives.add(smi)
-            continue
-        automorphisms = __get_att_permutations(mol, keep_stereo, preserve_dummy_isotopes=True)
-        equivalent = {
-            __standardize_smiles_with_att_points(
-                __permute_att(mol, d), keep_stereo, preserve_dummy_isotopes=True)
-            for d in automorphisms
-        }
-        representatives.add(min(equivalent))
+        representatives.add(Chem.MolToSmiles(mol) if mol is not None else smi)
     return env, tuple(sorted(representatives))
 
 

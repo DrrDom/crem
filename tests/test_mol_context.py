@@ -134,3 +134,40 @@ def test_radius0_symmetric_relabellings_collapse_to_one_row():
     # asymmetric points must NOT be collapsed
     assert len(get_radius0_rows("O(C[*:1])[*:2]")[1]) == 2
     assert len(get_radius0_rows("C(C([*:1])[1*:2])[1*:3]")[1]) == 2
+
+
+def test_radius0_collapses_only_true_automorphisms():
+    """Interchangeable points within a class are not on their own a symmetry.
+
+    The collapse used to be done with attachment-point orbits, which are the product of
+    the per-class permutation groups. A fragment's automorphisms are in general only a
+    subgroup of that product, so orientations no symmetry relates were merged and all but
+    one dropped. Here all four points are one class and the only symmetry swaps the two
+    CH2 groups, so the three ways of splitting the points across them are three distinct
+    fragments - and they splice to three different products.
+    """
+    from rdkit import Chem
+
+    env, rows = get_radius0_rows("O(C([*:1])[*:3])C([*:2])[*:4]")
+    assert env == "R0A4"
+    assert len(rows) == 3
+
+    context = Chem.MolFromSmiles("C[*:1].N[*:2].O[*:3].F[*:4]")
+    products = {Chem.MolToSmiles(Chem.molzip(context, Chem.MolFromSmiles(row)))
+                for row in rows}
+    assert len(products) == 3
+
+
+@pytest.mark.parametrize("core", RADIUS0_CORES)
+def test_radius0_rows_are_canonically_spelled(core):
+    """Rows carry the canonical spelling, the one radius >= 1 stores in frags.
+
+    A radius-0 row spelled any other way gives the fragment a second frags row, so
+    nothing can join it to the radius >= 1 rows for the same fragment.
+    """
+    from rdkit import Chem
+
+    _env, rows = get_radius0_rows(core)
+    assert rows
+    for row in rows:
+        assert row == Chem.MolToSmiles(Chem.MolFromSmiles(row))

@@ -74,6 +74,31 @@ def db_rc(tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
+def db_spiro(tmp_path_factory):
+    """DB whose corpus carries spiro and gem-disubstituted rings.
+
+    Those are the only sources of an env with BOTH attachment points on one atom:
+    such an env needs a source atom with four heavy connections, two of them cut
+    into the excised ring, which a plain or monosubstituted cycloalkane cannot
+    provide. They are what `make_cycle` matches when closing a ring through a
+    single atom, so the ring_closures corpus cannot stand in for this one.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    smi_file = os.path.join(here, "data", "spiro.smi")
+    d = tmp_path_factory.mktemp("db_spiro")
+    db_path = str(d / "spiro.db")
+    subprocess.run(
+        [sys.executable, "-m", "crem.scripts.cremdb_create",
+         "-i", smi_file, "-o", db_path,
+         "-s", "test", "--radii", "1", "2", "3", "--ncpu", "1",
+         "--frag-mode", "both"],
+        check=True, capture_output=True,
+    )
+    return db_path
+
+
+@pytest.fixture(scope="session")
 def db_acyclic(tmp_path_factory):
     """Same corpus as db_rc but built with --frag-mode acyclic — used to
     exercise the legacy-DB error path of make_cycle(ring_closures=True)

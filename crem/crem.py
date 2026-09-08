@@ -477,12 +477,24 @@ def __fragment_mol_macrocycle(mol, radius=3, ring_size=None, keep_stereo=False, 
 
 
 def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False, protected_ids=None,
-                                 return_ids=True, label_variants=(True,)):
+                                 return_ids=True, label_variants=(True,), spiro=False):
     """Anchor-pair fragmentation for `make_cycle(ring_closures=True)`.
 
     Cuts pairs of H bonds in one MMPA call (maxCuts=2) so the resulting
     context is a single connected Mol with two attachment points — matching
     the connected-env shape that ring-closure rows in the DB carry.
+
+    `spiro` lets both attachment points sit on the SAME ring atom, closing a new
+    ring through it - a spiro centre, the two rings meeting at that atom alone.
+    False leaves such pairs out, True adds them to the two-atom ones, 'only' emits
+    them alone and skips the MMPA pass altogether. Such a pair has d_in = 0, so
+    `ring_size` equals `dist2` for it. These pairs are built directly rather than
+    read off MMPA, which reports one fragmentation per symmetry class and would
+    offer the cut at a single representative of each - naming an equivalent atom
+    has to keep working, and `protected_ids` has to stay exact. The DB side needs
+    no special treatment: `iter_partial_ring_fragments` cuts adjacent ring-bond
+    pairs like any other pair, so a spiro compound already contributes exactly
+    this row.
 
     `ring_size` (int or (min,max)) is translated per-pair into a `dist2`
     window using d_in = topological distance between the two anchor heavy
@@ -525,8 +537,58 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
     seen_pairs = set()
     output = {}
 
-    frags = rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=2,
-                               resultsAsMols=True, maxCutBonds=100)
+    def dist2_window(d_in):
+        """(ok, frag_dist) for an anchor pair at topological distance `d_in`.
+
+        A ring needs at least three atoms, so d_in + dist2 >= 3. Every core holds
+        at least one heavy atom and therefore has dist2 >= 2, which already
+        satisfies that whenever d_in >= 1; the floor only binds on a same-atom
+        pair, where a dist2 = 2 core would ask molzip for a second bond between
+        two atoms that are already bonded (it raises).
+        """
+        min_dist2 = max(1, 3 - d_in)
+        if rs_min is not None:
+            lo = max(min_dist2, rs_min - d_in)
+            hi = rs_max - d_in
+            if hi < lo:
+                return False, None      # target ring smaller than the in-mol path
+            return True, ((lo, hi) if lo != hi else lo)
+        if min_dist2 > 1:
+            return True, (min_dist2, None)   # size unconstrained, but no 2-rings
+        return True, None
+
+    def emit(context, frag_dist, variants=label_variants):
+        """Standardise one context Mol into one output row per label variant."""
+        for labelled in variants:
+            # The anchors are the prospective ring-closure ends. Labelling them makes the
+            # env match v2's ring-arc rows; leaving them plain makes it match v1's (where
+            # provenance comes from the is_ring_closure predicate instead).
+            # The per-variant copy is required, not an accident: it is what keeps the label
+            # out of the plain variant. Every dummy reaching here carries isotope 0, which
+            # is why only the labelled variant touches them.
+            variant = Chem.Mol(context)
+            if labelled:
+                for a in variant.GetAtoms():
+                    if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
+                        a.SetIsotope(RING_CUT_DUMMY_ISOTOPE)
+
+            env, frag, old_to_new_map = get_canon_context_core(
+                variant, fake_cores[labelled], radius=radius, keep_stereo=keep_stereo,
+                return_att_map=True, preserve_dummy_isotopes=True,
+            )
+            if env is None or not frag:
+                continue
+
+            # Renumber the context Mol so its * map numbers match the
+            # standardised env / DB-side core numbering.
+            context_smi, std_context = __standardize_context_mol(variant, old_to_new_map)
+            output[(env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist)] = std_context
+
+    # 'only' wants nothing but the same-atom pairs built below, and those are made
+    # from the molecule directly - skipping the two-cut pass is most of what makes
+    # that mode cheaper than filtering a full run.
+    frags = () if spiro == "only" else rdMMPA.FragmentMol(mol, pattern="[#1]!@!=!#[!#1]", maxCuts=2,
+                                                          resultsAsMols=True, maxCutBonds=100)
     for mmpa_core, mmpa_chains in frags:
         # In MMPA's convention for maxCuts=2 the *core* is the connected
         # rest-of-mol carrying both * attachment points, and *chains* is the
@@ -555,6 +617,10 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
             continue
         anchor_ids = sorted(anchors.values())
         if anchor_ids[0] == anchor_ids[1]:
+            # A same-atom cut. MMPA reports one fragmentation per symmetry class, so
+            # it offers this at a single representative of each class and a request
+            # naming an equivalent atom would be silently lost. Same-atom pairs are
+            # therefore built explicitly below rather than taken from here.
             continue
         if protected_ids and not protected_ids.isdisjoint(anchor_ids):
             continue
@@ -565,39 +631,54 @@ def __fragment_mol_ring_closure(mol, radius=3, ring_size=None, keep_stereo=False
 
         # ring_size = d_in + dist2_frag → derive per-pair dist2 window.
         d_in = int(distance_matrix[anchor_ids[0], anchor_ids[1]])
-        if rs_min is not None:
-            lo = max(1, rs_min - d_in)
-            hi = rs_max - d_in
-            if hi < lo:
-                continue  # target ring smaller than the in-mol path
-            frag_dist = (lo, hi) if lo != hi else lo
-        else:
-            frag_dist = None
+        ok, frag_dist = dist2_window(d_in)
+        if not ok:
+            continue
+        emit(context, frag_dist)
 
-        for labelled in label_variants:
-            # The anchors are the prospective ring-closure ends. Labelling them makes the
-            # env match v2's ring-arc rows; leaving them plain makes it match v1's (where
-            # provenance comes from the is_ring_closure predicate instead).
-            # The per-variant copy is required, not an accident: it is what keeps the label
-            # out of the plain variant. Every dummy here was created by MMPA and so arrives
-            # with isotope 0, which is why only the labelled variant touches them.
-            variant = Chem.Mol(context)
-            if labelled:
-                for a in variant.GetAtoms():
-                    if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
-                        a.SetIsotope(RING_CUT_DUMMY_ISOTOPE)
-
-            env, frag, old_to_new_map = get_canon_context_core(
-                variant, fake_cores[labelled], radius=radius, keep_stereo=keep_stereo,
-                return_att_map=True, preserve_dummy_isotopes=True,
-            )
-            if env is None or not frag:
+    # Same-atom pairs: both attachment points on one ring atom, so the new ring meets
+    # the existing one at that atom alone - a spiro centre. An acyclic atom is left out
+    # deliberately: a closure through one of those is an ordinary core replacement,
+    # which mutate_mol and grow_mol already produce. Constructed here for the reason
+    # given above, and constructing them is also what keeps `protected_ids` exact:
+    # naming one atom restricts generation to a closure through that atom and nothing
+    # else, which widening the permitted atom set could not do (on a molecule as
+    # symmetric as cyclohexane, widening to the symmetry class lifts the restriction
+    # entirely). Turning two of the atom's hydrogens into mapped dummies in place
+    # leaves every other index untouched, so the context has the same shape as an
+    # MMPA core.
+    ok, frag_dist = dist2_window(0)
+    if spiro and ok:
+        # A same-atom context cannot come from two acyclic cuts - the two cut bonds and
+        # the core close a cycle through the atom - so on a labelling (v2) database the
+        # plain variant of such an env asserts the impossible and matches no row at all.
+        spiro_variants = (True,) if True in label_variants else label_variants
+        for atom in mol.GetAtoms():
+            # A ring atom carries at least two ring bonds and so at most two hydrogens:
+            # "has two" already names both of them and the pair taken below is forced,
+            # not chosen. It also excludes aromatic atoms, which is right - a spiro
+            # centre is sp3.
+            if atom.GetAtomicNum() <= 1 or not atom.IsInRing():
                 continue
-
-            # Renumber the context Mol so its * map numbers match the
-            # standardised env / DB-side core numbering.
-            context_smi, std_context = __standardize_context_mol(variant, old_to_new_map)
-            output[(env, '[H][*:1].[H][*:2]', context_smi, 0, frag_dist)] = std_context
+            idx = (atom.GetIntProp(ATOM_INDEX_PROP)
+                   if atom.HasProp(ATOM_INDEX_PROP) else atom.GetIdx())
+            if protected_ids and idx in protected_ids:
+                continue
+            hydrogens = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(hydrogens) < 2:
+                continue
+            rw = Chem.RWMol(mol)
+            for map_num, h_idx in zip((1, 2), hydrogens[:2]):
+                dummy = rw.GetAtomWithIdx(h_idx)
+                dummy.SetAtomicNum(0)
+                dummy.SetIsotope(0)
+                dummy.SetNoImplicit(True)
+                dummy.SetNumExplicitHs(0)
+                dummy.SetAtomMapNum(map_num)
+            same_atom_context = rw.GetMol()
+            if Chem.SanitizeMol(same_atom_context, catchErrors=True):
+                continue
+            emit(same_atom_context, frag_dist, spiro_variants)
 
     res = []
     for (env, core, context_smi, num_heavy_atoms, frag_dist), context_mol in output.items():
@@ -1216,6 +1297,30 @@ def __check_env_provenance(env, is_ring_closure, radius):
         )
 
 
+def __dist2_sql(dist, column="dist2", fmt=str):
+    """SQL predicate for a `dist2` constraint, or '' when there is none.
+
+    `dist` is an int for an exact value, a (min, max) tuple for a window, or None
+    for no constraint. Either end of the tuple may be None, giving a one-sided
+    window: `make_cycle` uses (3, None) for a same-atom (spiro or gem) closure,
+    where the ring size is unconstrained but a ring still needs three atoms.
+    """
+    if dist is None:
+        return ""
+    if isinstance(dist, tuple):
+        if len(dist) != 2:
+            raise ValueError("dist must be a single value or a tuple of two values")
+        lo, hi = dist
+        if lo is not None and hi is not None:
+            return f" AND {column} BETWEEN {fmt(lo)} AND {fmt(hi)}"
+        if lo is not None:
+            return f" AND {column} >= {fmt(lo)}"
+        if hi is not None:
+            return f" AND {column} <= {fmt(hi)}"
+        return ""
+    return f" AND {column} = {fmt(dist)}"
+
+
 def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, min_freq=0, set_names=None,
                               schema_meta=None, is_ring_closure=None, **kwargs):
 
@@ -1234,10 +1339,7 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
                   WHERE env = '{env}' AND
                         freq >= {min_freq} AND
                         core_num_atoms BETWEEN {min_atoms} AND {max_atoms}"""
-        if isinstance(dist, int):
-            sql += f" AND dist2 = {dist}"
-        elif isinstance(dist, tuple) and len(dist) == 2:
-            sql += f" AND dist2 BETWEEN {dist[0]} AND {dist[1]}"
+        sql += __dist2_sql(dist)
         for k, v in kwargs.items():
             if isinstance(v, tuple) and len(v) == 2:
                 sql += f" AND {k} BETWEEN {v[0]} AND {v[1]}"
@@ -1325,13 +1427,7 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
         if freq_clause is not None:
             sql += f" AND {freq_clause}"
 
-        if dist is not None:
-            if isinstance(dist, tuple):
-                if len(dist) != 2:
-                    raise ValueError("dist must be a single value or a tuple of two values")
-                sql += f" AND r.dist2 BETWEEN {_sql_value(dist[0])} AND {_sql_value(dist[1])}"
-            else:
-                sql += f" AND r.dist2 = {_sql_value(dist)}"
+        sql += __dist2_sql(dist, column="r.dist2", fmt=_sql_value)
 
         # Filter by fragment provenance. is_ring_closure=1 restricts to
         # ring-cut rows; 0 restricts to acyclic-cut rows; None disables the
@@ -1436,7 +1532,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                        min_inc=-2, max_inc=2, max_replacements=None, replace_cycles=False,
                        protected_ids_1=None, protected_ids_2=None, min_freq=10, set_names=None,
                        symmetry_fixes=False, filter_func=None, sample_func=None, return_frag_smi_only=False,
-                       operation="mutate", ring_closures=False, ring_size=None,
+                       operation="mutate", ring_closures=False, ring_size=None, spiro=False,
                        seed=None, **kwargs):
 
     rng = random.Random(seed)
@@ -1520,6 +1616,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                     ring_size=ring_size,
                     protected_ids=protected_ids_1,
                     label_variants=(label_all_ring_cuts,),
+                    spiro=spiro,
                 )
             ]
         else:
@@ -1529,16 +1626,21 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
             # provenance lives in the env, so "either provenance" becomes a union over
             # the labelled and plain env variants of each fragmenter.
             broad_variants = (True, False) if label_all_ring_cuts else (False,)
-            f = [
-                (*frag, None)
-                for frag in __fragment_mol_macrocycle(
-                    mol=mol,
-                    radius=radius,
-                    ring_size=ring_size,
-                    protected_ids=protected_ids_1,
-                    label_variants=broad_variants,
+            f = []
+            if spiro != "only":
+                # This fragmenter pairs two independent single cuts, one per atom, so a
+                # same-atom pair is not expressible in it and it has nothing to add to a
+                # spiro-only run.
+                f.extend(
+                    (*frag, None)
+                    for frag in __fragment_mol_macrocycle(
+                        mol=mol,
+                        radius=radius,
+                        ring_size=ring_size,
+                        protected_ids=protected_ids_1,
+                        label_variants=broad_variants,
+                    )
                 )
-            ]
             f.extend(
                 (*frag, None)
                 for frag in __fragment_mol_ring_closure(
@@ -1547,6 +1649,7 @@ def __gen_replacements(mol1, mol2, db_name, radius, dist=None, min_size=0, max_s
                     ring_size=ring_size,
                     protected_ids=protected_ids_1,
                     label_variants=broad_variants,
+                    spiro=spiro,
                 )
             )
     elif operation == "link":
@@ -1691,7 +1794,8 @@ def __get_data_link(mol1, mol2, db_name, radius, dist, min_atoms, max_atoms, pro
 
 def __get_data_cycle(mol, db_name, radius, ring_size, ring_closures, min_size, max_size, protected_ids,
                      min_freq, set_names, max_replacements, filter_func=None, sample_func=None,
-                     seed=None, discard_ring_geometry=True, clear_index_props=True, **kwargs):
+                     spiro=False, seed=None, discard_ring_geometry=True, clear_index_props=True,
+                     **kwargs):
     for frag_sma, core_sma, freq, context_mol in __gen_replacements(mol1=mol, mol2=None, db_name=db_name,
                                                                     radius=radius,
                                                                     min_size=0, max_size=0,
@@ -1708,6 +1812,7 @@ def __get_data_cycle(mol, db_name, radius, ring_size, ring_closures, min_size, m
                                                                     operation="cycle",
                                                                     ring_closures=ring_closures,
                                                                     ring_size=ring_size,
+                                                                    spiro=spiro,
                                                                     seed=seed, **kwargs):
         yield mol, None, frag_sma, core_sma, radius, context_mol, freq, discard_ring_geometry, clear_index_props
 
@@ -2437,7 +2542,7 @@ def get_mols_from_replacements(mol1, radius, replacements, mol2=None, return_rxn
                     yield res
 
 
-def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
+def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True, spiro=False,
                min_atoms=1, max_atoms=10, max_replacements=None,
                replace_ids=None, protected_ids=None, symmetry_fixes=False, min_freq=0,
                return_rxn=False, return_rxn_freq=False, return_mol=False, ncores=1, filter_func=None,
@@ -2445,6 +2550,12 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
     """
     Generate new rings (macrocycles or smaller native cycles) by linking two
     atoms in the same molecule with a 2-attachment-point fragment from the DB.
+
+    With `spiro` the two atoms may also be one and the same: both ends of the linker
+    attach to a single ring atom, and the new ring meets the existing one there and
+    nowhere else - a spiro centre. Only ring atoms are eligible; through an acyclic
+    atom the same transformation is an ordinary core replacement, which `mutate_mol`
+    already produces. Rings of fewer than three atoms are never built.
 
     Two complementary modes:
 
@@ -2468,10 +2579,24 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                       per-anchor-pair ``dist2`` filter is derived as
                       ``ring_size − d_in`` where ``d_in`` is the topological
                       distance between the two anchor heavy atoms in the
-                      input molecule.
+                      input molecule. The size counts the anchor atoms plus the
+                      linker atoms joining them.
     :param ring_closures: if True, query ring-closure (arc) fragments in DB
                           (rows with ``is_ring_closure = 1``). If False
                           (default) query acyclic-cut linker fragments.
+    :param spiro: whether to also close a ring through a single atom, both ends of the
+                  linker landing on it. ``False`` (default) leaves those out, ``True``
+                  adds them to the ordinary two-atom closures, ``'only'`` returns them
+                  alone - which also skips the two-cut MMPA pass the two-atom
+                  enumeration needs, making a focused spiro scan much cheaper than
+                  filtering a full run. Eligible are ring atoms with two replaceable
+                  hydrogens; an acyclic atom is not eligible, since a closure through
+                  one is an ordinary core replacement reachable with `mutate_mol`.
+                  A same-atom context can only be matched by a fragment
+                  that was itself cut out of a ring, so ``'only'`` needs a DB built
+                  with ``--frag-mode ring|both`` (or the ``*_optimal`` modes) and
+                  returns the same rows whichever way `ring_closures` is set.
+                  Default: False.
     :param min_atoms: minimum number of heavy atoms in the linker fragment. Default: 1.
     :param max_atoms: maximum number of heavy atoms in the linker fragment. Default: 10.
     :param max_replacements: maximum number of replacements to make. If the number of replacements available in DB is
@@ -2479,7 +2604,12 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                              will be applied. Default: None.
     :param replace_ids: iterable with ids of heavy atom with replaceable Hs or/and ids of H atoms to replace,
                         it has lower priority over `protected_ids` (replace_ids
-                        which are present in protected_ids would be protected). Default: None.
+                        which are present in protected_ids would be protected).
+                        The ids are taken exactly: only the named atoms may serve as
+                        anchors, so a two-atom closure needs both of its anchors named.
+                        Under `spiro` each named eligible atom is additionally used as
+                        a spiro centre of its own, while pairs of named atoms go on
+                        closing ordinary rings between them. Default: None.
     :param protected_ids: iterable with ids of heavy atoms at which no H replacement should be made and/or ids of
                           protected hydrogens. This argument has a higher priority over `replace_ids`. Default: None.
     :param symmetry_fixes: accepted for API compatibility with mutate/grow functions but not used here.
@@ -2560,12 +2690,26 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
 
         return protected_ids
 
+    if spiro not in (False, True, "only"):
+        raise ValueError("spiro must be False, True or 'only'")
+
     __check_db_existence(db_name)
     products = set()
 
     mol = Chem.AddHs(mol)
     source_smi = Chem.MolToSmiles(Chem.RemoveHs(mol), isomericSmiles=True)
     protected_ids = __get_protected_ids(mol, replace_ids, protected_ids)
+
+    if spiro == "only" and not any(a.GetAtomicNum() > 1 and a.IsInRing()
+                                   and a.GetIdx() not in protected_ids
+                                   and sum(n.GetAtomicNum() == 1 for n in a.GetNeighbors()) >= 2
+                                   for a in mol.GetAtoms()):
+        # 'only' removes every other source of products, so with nothing eligible the
+        # call is empty by construction - say so instead of returning quietly.
+        warnings.warn("spiro='only' was requested but all atoms selected as anchors are acyclic or do not have "
+                      "two attached hydroges, so no products can be generated",
+                      RuntimeWarning)
+
     mol = __backup_atom_properties(mol, __atom_properties_to_backup)
 
     if ncores == 1:
@@ -2586,6 +2730,7 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                                                                         operation="cycle",
                                                                         ring_closures=ring_closures,
                                                                         ring_size=ring_size,
+                                                                        spiro=spiro,
                                                                         seed=seed, **kwargs):
             for smi, m, rxn in __frag_replace(mol, None, frag_sma, core_sma, radius, context_mol,
                                               discard_ring_geometry=discard_ring_geometry,
@@ -2614,7 +2759,8 @@ def make_cycle(mol, db_name, radius=3, ring_size=None, ring_closures=True,
                                                                     protected_ids, min_freq, set_names,
                                                                     max_replacements,
                                                                     filter_func=filter_func,
-                                                                    sample_func=sample_func, seed=seed,
+                                                                    sample_func=sample_func, spiro=spiro,
+                                                                    seed=seed,
                                                                     discard_ring_geometry=discard_ring_geometry,
                                                                     clear_index_props=return_mol, **kwargs),
                                 chunksize=100):

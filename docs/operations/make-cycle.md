@@ -95,29 +95,17 @@ therefore leaves its spiro closure as the only possibility.
 | `min_atoms` / `max_atoms` | Heavy-atom size window of the linking fragment. Defaults `1` / `10`. |
 | `replace_ids` / `protected_ids` | Restrict which atoms may serve as ring-closure anchors. |
 | `set_names` / `min_freq` | Fragment set and frequency threshold. |
+| `discard_ring_geometry` | Discard products whose new ring is geometrically impossible. Default `True` (see [Ring geometry filter](ring-geometry.md)). |
 
 `symmetry_fixes` is accepted for API compatibility with the other generation
 functions but is not used by `make_cycle`.
 
-## Prefer acyclic attachment points
+## Geometry of the new ring
 
-When forming rings you often want the linker to attach to acyclic atoms rather
-than to atoms already inside a ring. The built-in
-`crem.utils.filter_acyclic_attachment_points` filter enforces this:
-
-```python
-from crem.utils import filter_acyclic_attachment_points
-
-res = list(make_cycle(
-    m,
-    db_name="fragments.db",
-    radius=3,
-    ring_size=(5, 7),
-    max_atoms=10,
-    replace_ids=[1, 2],
-    filter_func=filter_acyclic_attachment_points,
-))
-```
+Products whose new ring cannot exist in 3D — a six-membered ring bridging the
+*meta* positions of a benzene ring, a short bridge across a naphthalene or a
+biaryl — are discarded automatically. Set `discard_ring_geometry=False` to keep
+them; see [Ring geometry filter](ring-geometry.md).
 
 ## Parallel use
 

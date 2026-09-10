@@ -61,6 +61,10 @@ res = list(mutate_mol(
 ))
 ```
 
+The `partial_*` modes form new rings, so their products pass the
+[ring geometry filter](ring-geometry.md) (`discard_ring_geometry`, default
+`True`).
+
 For forming *new* rings rather than swapping existing ones, see
 [Make cycle](make-cycle.md).
 

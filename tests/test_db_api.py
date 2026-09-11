@@ -138,6 +138,16 @@ def test_create_set_name_dict_all_mols(tmp_path):
     assert _frag_count(db) > 0
 
 
+def _set_cols(db, table="radius1"):
+    """Set-occurrence columns of a radius table, i.e. everything but the schema."""
+    return _cols(db, table) - {"env_id", "core_smi_id", "core_num_atoms", "dist2"}
+
+
+def _set_sum(db, col, table="radius1"):
+    with sqlite3.connect(db) as c:
+        return c.execute(f'SELECT coalesce(sum("{col}"), 0) FROM {table}').fetchone()[0]
+
+
 def test_create_set_name_dict_filtered(tmp_path):
     db_all = str(tmp_path / "all.db")
     db_filtered = str(tmp_path / "filtered.db")
@@ -146,8 +156,64 @@ def test_create_set_name_dict_filtered(tmp_path):
     # Only the first two molecule IDs
     id_filter = {"mol1", "mol2"}
     create_db(CORPUS_A, db_filtered, {"s": id_filter}, radii=(1, 2, 3), verbose=False)
+
+    # The dict form must produce exactly the named set — no stray temp-file column,
+    # and the name must not silently become an unfiltered set.
+    assert _set_cols(db_filtered) == {"s"}
+    assert _set_sum(db_filtered, "s") < _set_sum(db_all, "s")
+    assert _set_sum(db_filtered, "s") > 0
     # Filtered DB should have fewer or equal fragments
     assert _frag_count(db_filtered) <= _frag_count(db_all)
+
+
+def test_create_set_name_dict_multiple_sets(tmp_path):
+    """Several ID-filtered sets in one call each get their own correctly named column."""
+    db = str(tmp_path / "multi.db")
+    create_db(
+        CORPUS_A, db,
+        {"actives": {"mol1", "mol2"}, "decoys": {"mol4"}},
+        radii=(1,), verbose=False,
+    )
+    assert _set_cols(db) == {"actives", "decoys"}
+    assert _set_sum(db, "actives") > 0
+    assert _set_sum(db, "decoys") > 0
+
+
+def test_create_set_name_dict_mixed_filtered_and_all(tmp_path):
+    """A None-valued set covers every molecule alongside ID-filtered ones."""
+    db = str(tmp_path / "mixed.db")
+    create_db(
+        CORPUS_A, db,
+        {"subset": {"mol1"}, "everything": None},
+        radii=(1,), verbose=False,
+    )
+    assert _set_cols(db) == {"subset", "everything"}
+    assert 0 < _set_sum(db, "subset") < _set_sum(db, "everything")
+
+
+def test_create_set_name_dict_rejects_multiple_unfiltered(tmp_path):
+    db = str(tmp_path / "bad.db")
+    with pytest.raises(ValueError, match="At most one set"):
+        create_db(CORPUS_A, db, {"a": None, "b": None}, radii=(1,), verbose=False)
+
+
+def test_create_set_name_rejects_invalid_identifier(tmp_path):
+    db = str(tmp_path / "bad.db")
+    with pytest.raises(ValueError):
+        create_db(CORPUS_A, db, "9bad name", radii=(1,), verbose=False)
+    with pytest.raises(ValueError):
+        create_db(CORPUS_A, db, {"9bad name": {"mol1"}}, radii=(1,), verbose=False)
+
+
+def test_create_dict_filtered_is_incrementally_updatable(tmp_path):
+    """Two batches into the same ID-filtered set hit one column, not a new one."""
+    db = str(tmp_path / "incr.db")
+    create_db(CORPUS_A, db, {"chembl": {"mol1", "mol2"}}, radii=(1,), verbose=False)
+    assert _set_cols(db) == {"chembl"}
+    first = _set_sum(db, "chembl")
+    create_db(CORPUS_B, db, {"chembl": {"mol6", "mol7"}}, radii=(1,), verbose=False)
+    assert _set_cols(db) == {"chembl"}
+    assert _set_sum(db, "chembl") > first
 
 
 def test_create_max_heavy_atoms(tmp_path):

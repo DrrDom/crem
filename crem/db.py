@@ -6,17 +6,29 @@ available as plain Python functions importable from this module:
     from crem.db import create_db, merge_dbs, add_fragment_props, get_db_info
 
 This module also owns the schema column constants shared by the generation code
-and the command-line tools; it is deliberately free of RDKit imports at module
-level so that importing a constant costs nothing.
+and the command-line tools. Importing it pulls in the backing script modules --
+and through them RDKit -- at module level, so importing a constant from here is
+not free; `crem.scripts.cremdb_info` is the one consumer that needs no RDKit of
+its own and therefore pays for it.
 """
 
 import os
 import pickle
+import shutil
 import sqlite3
 import tempfile
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Union
+
+from crem.scripts.cremdb_add_prop import run as _run_add_prop
+from crem.scripts.cremdb_create import (
+    _STRIDE_SHARD_SENTINEL,
+    _validate_set_name,
+    run as _run_create,
+    run_parallel_shards as _run_create_parallel,
+)
+from crem.scripts.cremdb_merge import run as _run_merge
 
 PathLike = Union[str, Path]
 
@@ -93,7 +105,9 @@ def create_db(
     :param output: path to the output SQLite database.
     :param set_name: a single set name (``str``), or a ``dict`` mapping each set
         name to either ``None`` (all molecules) or a ``set`` of molecule IDs
-        that belong to that set.
+        that belong to that set. At most one set may map to ``None``. Every name
+        must be a valid SQLite identifier, since it becomes a column of the
+        ``radius{N}`` tables.
     :param radii: fragment radii to build (default 1–5).
     :param ncpu: worker processes.
     :param max_heavy_atoms: maximum heavy atoms in a core fragment.
@@ -129,10 +143,9 @@ def create_db(
         raise ValueError("parallel_shards must be >= 1")
     if parallel_shards > 1 and shard_size is not None:
         raise ValueError("parallel_shards > 1 is incompatible with shard_size")
-    from crem.scripts.cremdb_create import run as _run, run_parallel_shards as _run_parallel
 
     tmp_input: Optional[str] = None
-    tmp_ids: List[str] = []
+    tmp_dir: Optional[str] = None
 
     try:
         # --- resolve input ---------------------------------------------------
@@ -153,24 +166,40 @@ def create_db(
 
         # --- resolve set_name ------------------------------------------------
         if isinstance(set_name, str):
-            set_name_arg = [set_name]
+            set_name_arg = [_validate_set_name(set_name)]
         elif isinstance(set_name, dict):
-            set_name_arg = []
+            if not set_name:
+                raise ValueError("set_name dict must not be empty")
+            for name in set_name:
+                _validate_set_name(name)
+            # cremdb_create derives a set name from an ID file's *basename*, and
+            # reads a bare (non-file) value as a set covering every molecule. So
+            # each set contributes exactly one argv item: a file named
+            # <set_name>.txt when it is ID-filtered, the bare name otherwise.
+            # Emitting both, as this used to, silently created two sets per entry.
+            unfiltered = [name for name, ids in set_name.items() if ids is None]
+            if len(unfiltered) > 1:
+                raise ValueError(
+                    "At most one set may cover all molecules (ids=None); got: "
+                    + ", ".join(sorted(unfiltered))
+                )
+            filtered_args: List[str] = []
             for name, ids in set_name.items():
-                set_name_arg.append(name)
-                if ids is not None:
-                    with tempfile.NamedTemporaryFile(
-                        mode='w', suffix='.txt', delete=False, encoding='utf-8'
-                    ) as fh:
-                        tmp_ids.append(fh.name)
-                        for mol_id in ids:
-                            fh.write(str(mol_id) + '\n')
-                    set_name_arg.append(tmp_ids[-1])
+                if ids is None:
+                    continue
+                if tmp_dir is None:
+                    tmp_dir = tempfile.mkdtemp(prefix='crem_sets_')
+                path = os.path.join(tmp_dir, f'{name}.txt')
+                with open(path, 'w', encoding='utf-8') as fh:
+                    for mol_id in ids:
+                        fh.write(str(mol_id) + '\n')
+                filtered_args.append(path)
+            set_name_arg = filtered_args + unfiltered
         else:
             raise TypeError("set_name must be a str or dict")
 
         if parallel_shards > 1:
-            _run_parallel(
+            _run_create_parallel(
                 input_path=input_path,
                 output_db=str(output),
                 set_name=set_name_arg,
@@ -193,7 +222,7 @@ def create_db(
                 fragment_error_log=fragment_error_log,
             )
         else:
-            _run(
+            _run_create(
                 input_path=input_path,
                 output_db=str(output),
                 set_name=set_name_arg,
@@ -219,9 +248,8 @@ def create_db(
     finally:
         if tmp_input and os.path.exists(tmp_input):
             os.unlink(tmp_input)
-        for p in tmp_ids:
-            if os.path.exists(p):
-                os.unlink(p)
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def merge_dbs(
@@ -245,8 +273,7 @@ def merge_dbs(
     """
     if parallel < 1:
         raise ValueError("parallel must be >= 1")
-    from crem.scripts.cremdb_merge import run as _run
-    _run(
+    _run_merge(
         target_path=str(target),
         source_paths=[str(s) for s in sources],
         rebuild_index=rebuild_index,
@@ -309,8 +336,7 @@ def add_fragment_props(
         builtins_arg = None
 
     if compute_builtins:
-        from crem.scripts.cremdb_add_prop import run as _run
-        _run(db_path=str(db), properties=builtins_arg, ncpu=ncpu, verbose=verbose)
+        _run_add_prop(db_path=str(db), properties=builtins_arg, ncpu=ncpu, verbose=verbose)
 
     if custom_props:
         _add_custom_props(str(db), custom_props, table=table, ncpu=ncpu, verbose=verbose)
@@ -341,8 +367,6 @@ def get_db_info(db: PathLike) -> Dict:
     :raises sqlite3.OperationalError: if the file cannot be opened read-only (for
         instance a database with a hot write-ahead log needing recovery).
     """
-    from crem.scripts.cremdb_create import _STRIDE_SHARD_SENTINEL
-
     path = str(db)
     if not os.path.isfile(path):
         raise FileNotFoundError(f"{path}: file not found")

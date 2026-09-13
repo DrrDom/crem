@@ -149,6 +149,15 @@ The flag lives on the `Mol` object only — it is not encoded in the output SMIL
 The same applies to `grow_mol`, `link_mols`, `make_cycle`, and
 `get_mols_from_replacements`.
 
+`__crem` always describes the **current** call. Feeding a product back in — as an
+iterative workflow does — clears the markers it arrived with, so the property
+never accumulates over rounds and always answers "what did this step insert".
+
+Any other atom property you set on an input molecule *is* carried into the
+products, on each atom that survived. That is how
+[`enumerate_compounds`](enumeration.md) keeps positions protected across rounds
+without mapping parent atom ids onto child atom ids.
+
 ## Limiting and reproducing output
 
 - `max_replacements=N` returns at most `N` products, sampled uniformly at random

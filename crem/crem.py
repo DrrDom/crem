@@ -41,6 +41,10 @@ __remove_hs_params.removeDefiningBondStereo = True
 # (canonical SMILES, canonical ranking) of an isolated aromatic ring system -> its fixed
 # pairwise distances, used by the ring-geometry filter (see __rigid_pair_distances)
 __rigid_geometry_cache = {}
+# Set on every atom inserted by the current generation call. Public in the sense that the
+# docstrings promise it on returned molecules; named here because both the ring-geometry
+# analysis below and crem.utils depend on its exact meaning.
+CREM_MARKER_PROP = "__crem"
 __atom_properties_to_backup = ("isotope",)
 __atom_property_backup_handlers = {
     "isotope": (
@@ -72,6 +76,7 @@ __atom_property_restore_queries = tuple(
     for name, (_, setter, _) in __atom_property_backup_handlers.items()
 )
 __atom_index_query = rdqueries.HasPropQueryAtom(ATOM_INDEX_PROP)
+__crem_marker_query = rdqueries.HasPropQueryAtom(CREM_MARKER_PROP)
 
 
 def __check_db_existence(fname):
@@ -131,6 +136,14 @@ def __standardize_context_mol(context_mol, old_to_new_map):
 
 def __backup_atom_properties(mol, names):
     mol = Chem.Mol(mol)
+    # An input molecule that is itself a crem product still carries the markers of the call
+    # which made it, and they are indistinguishable from the atoms this call will insert.
+    # __identify_new_ring reads them to locate a newly formed ring, so stale markers make the
+    # ring geometry filter analyse the wrong ring and silently stop discarding; a caller
+    # reading the marker on the product would see every fragment ever added rather than the
+    # one added now. Every operation starts from this copy, so clearing it here is enough.
+    for atom in mol.GetAtomsMatchingQuery(__crem_marker_query):
+        atom.ClearProp(CREM_MARKER_PROP)
     names = tuple(names)
     unsupported = set(names) - set(__atom_property_backup_handlers)
     if unsupported:
@@ -844,7 +857,7 @@ def __identify_new_ring(p):
     Returns a dict {bridge, a1, a2, parent_arc, ring_atoms, ring_size} describing the smallest
     newly formed ring, or None when `p` is not a simple two-point ring closure.
     """
-    crem = set(a.GetIdx() for a in p.GetAtoms() if a.HasProp('__crem'))
+    crem = set(a.GetIdx() for a in p.GetAtoms() if a.HasProp(CREM_MARKER_PROP))
     if not crem:
         return None
     noncrem = set(a.GetIdx() for a in p.GetAtoms() if a.GetIdx() not in crem and a.GetAtomicNum() > 1)
@@ -1148,7 +1161,7 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
     # label new atoms in generated structure with bool prop
     for atom in repl_core_mol.GetAtoms():
         if atom.GetAtomicNum() != 0:
-            atom.SetBoolProp("__crem", True)
+            atom.SetBoolProp(CREM_MARKER_PROP, True)
 
     transformation_smi = f"{old_frag_smi}>>{new_frag_smi}"
     try:

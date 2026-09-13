@@ -127,3 +127,48 @@ def test_non_ring_transform_unaffected(db):
     on = set(mutate_mol(mol, db, radius=1, discard_ring_geometry=True))
     off = set(mutate_mol(mol, db, radius=1, discard_ring_geometry=False))
     assert on == off
+
+
+# ---------------------------------------------------------------------------
+# a crem product fed back in: its own markers must not be mistaken for this call's
+# ---------------------------------------------------------------------------
+
+def _without_markers(mol):
+    mol = Chem.Mol(mol)
+    for atom in mol.GetAtoms():
+        if atom.HasProp(C.CREM_MARKER_PROP):
+            atom.ClearProp(C.CREM_MARKER_PROP)
+    return mol
+
+
+def test_markers_do_not_survive_into_the_next_call(db_rc):
+    """__crem means "inserted by this call", not "inserted at some point"."""
+    from crem.crem import grow_mol2
+    parent = Chem.MolFromSmiles("c1ccc(-c2ccccc2)cc1")
+    _, child = grow_mol2(parent, db_name=db_rc, radius=1, min_atoms=1, max_atoms=4,
+                         max_replacements=1, seed=1, return_mol=True)[0]
+    first = {a.GetIdx() for a in child.GetAtoms() if a.HasProp(C.CREM_MARKER_PROP)}
+    assert first, "the inserted fragment must be marked"
+
+    for _, grandchild in grow_mol2(child, db_name=db_rc, radius=1, min_atoms=1, max_atoms=4,
+                                   max_replacements=3, seed=1, return_mol=True):
+        second = {a.GetIdx() for a in grandchild.GetAtoms() if a.HasProp(C.CREM_MARKER_PROP)}
+        assert second, "the second insertion must be marked"
+        # the round-one fragment kept its indices in the product and must no longer be marked
+        assert not (second & first), "markers of the previous call leaked into this product"
+
+
+def test_geometry_filter_ignores_markers_on_the_input(db_rc):
+    """A product carries markers; closing a ring on it must filter as it would on a copy
+    without them. Stale markers used to make __identify_new_ring analyse the wrong ring,
+    so the filter silently stopped discarding."""
+    from crem.crem import grow_mol2
+    parent = Chem.MolFromSmiles("c1ccc(-c2ccccc2)cc1")
+    products = grow_mol2(parent, db_name=db_rc, radius=1, min_atoms=1, max_atoms=4,
+                         max_replacements=3, seed=1, return_mol=True)
+    assert products
+    for _, child in products:
+        assert any(a.HasProp(C.CREM_MARKER_PROP) for a in child.GetAtoms())
+        options = dict(db_name=db_rc, radius=1, ring_size=(5, 7), ring_closures=False,
+                       max_atoms=6, discard_ring_geometry=True)
+        assert set(make_cycle(child, **options)) == set(make_cycle(_without_markers(child), **options))

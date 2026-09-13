@@ -6,40 +6,54 @@ import sys
 from collections import OrderedDict, defaultdict
 from multiprocessing import cpu_count
 
-from crem.crem import _get_replacements
+from crem.crem import CREM_MARKER_PROP, _get_replacements
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
 
 from .crem import grow_mol2, mutate_mol2
 
 
+# Marks an atom which must not be altered. Set on the starting molecule and inherited by
+# every product which keeps that atom, because atom properties travel through fragmentation
+# and product assembly. That is what lets an iteration protect the same positions round after
+# round without mapping parent atom ids onto child atom ids - the child arrives protected.
+PROTECTED_ATOM_PROP = '__crem_protected'
+
+
 def __get_child_added_atom_ids(child_mol):
     '''
-    Returns ids of atoms in a current mol which were added upon grow/mutation procedure
-    # After RDKit reaction procedure there is a field <react_atom_idx> with initial parent atom idx in a child mol
+    Returns ids of atoms which the generation step that produced this molecule inserted.
+
+    crem marks them with `CREM_MARKER_PROP` and clears the markers of earlier calls, so this
+    is the fragment added in the last round rather than every fragment ever added.
     '''
-    added_mol_ids = []
-    for a in child_mol.GetAtoms():
-        if not a.HasProp('react_atom_idx'):
-            added_mol_ids.append(a.GetIdx())
-    return sorted(added_mol_ids)
+    return sorted(a.GetIdx() for a in child_mol.GetAtoms() if a.HasProp(CREM_MARKER_PROP))
 
 
-def __get_child_protected_atom_ids(mol, protected_parent_ids):
+def __protect_atoms(mol, atom_ids):
     '''
+    Returns a copy of `mol` whose atoms in `atom_ids` are marked as protected.
 
-    :param mol:
-    :param protected_parent_ids: ids of a parent molecule which were protected and should be transferred to the
-                                 current molecule
-    :type  protected_parent_ids: list[int]
-    :return: sorted list of integers
+    :param mol: RDKit Mol
+    :param atom_ids: iterable of atom ids to protect
+    :return: a new Mol; the input is left untouched
     '''
-    # After RDKit reaction procedure there is a field <react_atom_idx> with initial parent atom idx in product mol
-    protected_mol_ids = []
+    mol = Chem.Mol(mol)
+    for i in atom_ids:
+        mol.GetAtomWithIdx(int(i)).SetBoolProp(PROTECTED_ATOM_PROP, True)
+    return mol
+
+
+def __get_protected_atom_ids(mol):
+    '''Returns ids of atoms which carry the protection mark, inherited or newly set.'''
+    return sorted(a.GetIdx() for a in mol.GetAtoms() if a.HasProp(PROTECTED_ATOM_PROP))
+
+
+def __clear_protection(mol):
+    '''Removes the protection mark, so molecules handed back look like ordinary output.'''
     for a in mol.GetAtoms():
-        if a.HasProp('react_atom_idx') and int(a.GetProp('react_atom_idx')) in protected_parent_ids:
-            protected_mol_ids.append(a.GetIdx())
-    return sorted(protected_mol_ids)
+        if a.HasProp(PROTECTED_ATOM_PROP):
+            a.ClearProp(PROTECTED_ATOM_PROP)
 
 
 def __mol_with_atom_index(mol):
@@ -119,7 +133,9 @@ def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3
     if protected_ids is None:
         protected_ids = []
 
-    start_mols = {mol: protected_ids}
+    # The protection is stored on the atoms themselves, so every product inherits the marks of
+    # the atoms it kept and no parent-to-child id mapping is needed between iterations.
+    start_mols = [__protect_atoms(mol, protected_ids)]
     # to get results ordered by iterations
     generated_mols = OrderedDict()
     n = 0
@@ -127,37 +143,40 @@ def enumerate_compounds(mol, db_fname, mode='scaffold', n_iterations=1, radius=3
     for n in range(n_iterations):
         new_mols = ()
         if mode == 'scaffold':
-            new_mols = pool(joblib.delayed(grow_mol2)(m, db_name=db_fname, protected_ids=prot_ids,
+            new_mols = pool(joblib.delayed(grow_mol2)(m, db_name=db_fname,
+                                                      protected_ids=__get_protected_atom_ids(m),
                                                       min_freq=min_freq, radius=radius,
                                                       max_replacements=max_replacements,
                                                       return_mol=True, return_rxn=False, return_rxn_freq=False,
                                                       ncores=1 if len(start_mols) > 1 else ncpu, **kwargs)
-                            for m, prot_ids in start_mols.items())
+                            for m in start_mols)
         if mode == 'analogs':
-            new_mols = pool(joblib.delayed(mutate_mol2)(m, db_name=db_fname, protected_ids=prot_ids,
+            new_mols = pool(joblib.delayed(mutate_mol2)(m, db_name=db_fname,
+                                                        protected_ids=__get_protected_atom_ids(m),
                                                         min_freq=0, radius=radius, max_replacements=max_replacements,
                                                         return_mol=True, return_rxn=False, return_rxn_freq=False,
                                                         ncores=1 if len(start_mols) > 1 else ncpu, **kwargs)
-                            for m, prot_ids in start_mols.items())
+                            for m in start_mols)
 
-        parent_protected_ids_list = start_mols.values()
-        start_mols = OrderedDict()
-        for childs, parent_protected_ids in zip(new_mols, parent_protected_ids_list):
+        start_mols = []
+        for childs in new_mols:
             for items in childs:
                 if items[0] not in generated_mols:
-                    protected_ids = __get_child_protected_atom_ids(items[1], parent_protected_ids)
+                    child = items[1]
                     if protect_added_frag:
-                        protect_added_ids = __get_child_added_atom_ids(items[1])
-                        protected_ids = set(protected_ids + protect_added_ids)
-
-                    generated_mols[items[0]] = items[1]
-                    start_mols[items[1]] = protected_ids
+                        for i in __get_child_added_atom_ids(child):
+                            child.GetAtomWithIdx(i).SetBoolProp(PROTECTED_ATOM_PROP, True)
+                    generated_mols[items[0]] = child
+                    start_mols.append(child)
 
         if not start_mols:
             break
 
     if n + 1 < n_iterations:
         sys.stderr.write(f'INFO. Procedure is finished after {n + 1} iterations instead of {n_iterations}\n')
+
+    for child in generated_mols.values():
+        __clear_protection(child)
 
     if not return_smi:
         return list(generated_mols.values())

@@ -33,13 +33,14 @@ import traceback
 from collections import defaultdict
 from typing import Dict, List, Tuple, Set
 import sys
-import re
 from tqdm import tqdm
 from rdkit import Chem, RDLogger
 from crem.db import V0_BASE_COLUMNS
 from crem.mol_context import combine_core_env_to_rxn_smarts
+from crem.sql_utils import quote_ident
 from crem.scripts.cremdb_create import (DB_SCHEMA_VERSION, create_indices,
-                                        _replace_attachment_points_with_h)
+                                        _replace_attachment_points_with_h,
+                                        _validate_set_name)
 
 
 def replace_attachment_points_with_h(smiles: str) -> str:
@@ -53,16 +54,6 @@ def replace_attachment_points_with_h(smiles: str) -> str:
         SMILES string with hydrogens instead of attachment points
     """
     return _replace_attachment_points_with_h(smiles)
-
-
-def _validate_set_name(set_name: str) -> str:
-    if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', set_name):
-        raise ValueError(
-            "set name must be a valid SQLite identifier (letters, numbers, underscores; cannot start with a number)"
-        )
-    if set_name in ('env_id', 'core_smi_id'):
-        raise ValueError("set name cannot be env_id or core_smi_id")
-    return set_name
 
 
 def _require_v0_source(old_db_path: str) -> None:
@@ -167,7 +158,7 @@ def create_new_schema(
             unique_cols += ", is_ring_closure"
         if set_name:
             freq_type = _get_freq_column_type(old_conn, radius)
-            column_defs.append(f"{set_name} {freq_type} DEFAULT 0")
+            column_defs.append(f"{quote_ident(set_name)} {freq_type} DEFAULT 0")
         cur.execute(f"""
             CREATE TABLE IF NOT EXISTS radius{radius}(
                 {", ".join(column_defs)},
@@ -304,7 +295,8 @@ def convert_database(
             while offset < total_rows:
                 # Fetch batch
                 rows = old_cur.execute(
-                    f'SELECT {",".join(column_names_transfer)} FROM radius{radius} LIMIT ? OFFSET ?',
+                    f'SELECT {",".join(quote_ident(c) for c in column_names_transfer)} '
+                    f'FROM radius{radius} LIMIT ? OFFSET ?',
                     (batch_size, offset)
                 ).fetchall()
 
@@ -363,14 +355,14 @@ def convert_database(
                                     new_rows_frags_h)
 
                 all_frag_cols = frags_columns + ['core_smi_h_id', 'core_smi_id', 'core_smi']
-                sql = (f"INSERT INTO frags ({','.join(all_frag_cols)}) "
+                sql = (f"INSERT INTO frags ({','.join(quote_ident(c) for c in all_frag_cols)}) "
                        f"VALUES ({','.join('?' * len(all_frag_cols))})")
                 new_cur.executemany(sql, new_rows_frags)
 
                 if set_name:
                     new_cur.executemany(
                         f"INSERT INTO radius{radius} "
-                        f"(env_id, core_smi_id, core_num_atoms, dist2, {set_name}) "
+                        f"(env_id, core_smi_id, core_num_atoms, dist2, {quote_ident(set_name)}) "
                         f"VALUES (?, ?, ?, ?, ?)",
                         new_rows_radius
                     )

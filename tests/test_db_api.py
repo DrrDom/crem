@@ -197,6 +197,49 @@ def test_create_set_name_dict_rejects_multiple_unfiltered(tmp_path):
         create_db(CORPUS_A, db, {"a": None, "b": None}, radii=(1,), verbose=False)
 
 
+def test_create_set_name_sql_keyword(tmp_path):
+    """A set named after a SQL keyword is a legal column: the name is quoted, not checked
+    against a keyword list, and the resulting DB is queryable by that name."""
+    from crem.crem import mutate_mol
+    from rdkit import Chem
+
+    db = str(tmp_path / "kw.db")
+    create_db(CORPUS_A, db, "all", radii=(1, 2, 3), verbose=False)
+    assert _set_cols(db) == {"all"}
+    assert _set_sum(db, "all") > 0
+
+    # Extending with a second keyword-named set must add a column, not reuse the first.
+    create_db(CORPUS_B, db, {"order": None}, radii=(1, 2, 3), verbose=False)
+    assert _set_cols(db) == {"all", "order"}
+    assert _set_sum(db, "order") > 0
+
+    mol = Chem.MolFromSmiles("c1ccccc1N")
+    for names in (None, "all", ["all", "order"]):
+        assert list(mutate_mol(mol, db, radius=1, min_size=0, max_size=4,
+                               min_freq=0, set_names=names))
+
+
+def test_merge_sets_with_sql_keyword_names(tmp_path):
+    """The merge path also interpolates set names as columns."""
+    db_a = str(tmp_path / "a.db")
+    db_b = str(tmp_path / "b.db")
+    create_db(CORPUS_A, db_a, "all", radii=(1,), verbose=False)
+    create_db(CORPUS_B, db_b, "order", radii=(1,), verbose=False)
+    merge_dbs(db_a, [db_b], verbose=False)
+    assert _set_cols(db_a) == {"all", "order"}
+    assert _set_sum(db_a, "all") > 0
+    assert _set_sum(db_a, "order") > 0
+
+
+def test_create_set_name_rejects_radius_metadata_columns(tmp_path):
+    """A set named after a metadata column would be written into that column instead of
+    getting one of its own, so it is rejected rather than silently corrupting the table."""
+    db = str(tmp_path / "bad.db")
+    for name in ("dist2", "core_num_atoms", "env_id", "core_smi_id", "is_ring_closure", "rowid"):
+        with pytest.raises(ValueError, match="reserved column"):
+            create_db(CORPUS_A, db, name, radii=(1,), verbose=False)
+
+
 def test_create_set_name_rejects_invalid_identifier(tmp_path):
     db = str(tmp_path / "bad.db")
     with pytest.raises(ValueError):
@@ -313,6 +356,22 @@ def test_create_invalid_set_name_type(tmp_path):
 # ---------------------------------------------------------------------------
 # merge_dbs
 # ---------------------------------------------------------------------------
+
+def test_custom_prop_sql_keyword_name(tmp_path):
+    """Fragment property columns are interpolated as identifiers too, and are filterable
+    as query kwargs afterwards."""
+    from crem.crem import mutate_mol
+    from rdkit import Chem
+
+    db = str(tmp_path / "prop.db")
+    create_db(CORPUS_A, db, "s", radii=(1, 2, 3), verbose=False)
+    add_fragment_props(db, ["mw"], custom_props={"order": lambda smi: float(len(smi))})
+    assert {"mw", "order"} <= _cols(db, "frags")
+    assert _null_count(db, "frags", '"order"') == 0
+    mol = Chem.MolFromSmiles("c1ccccc1N")
+    assert list(mutate_mol(mol, db, radius=1, min_size=0, max_size=4,
+                           min_freq=0, order=(1, 100)))
+
 
 def test_merge_combines_fragments(tmp_path):
     db_a = str(tmp_path / "a.db")

@@ -21,6 +21,7 @@ from crem.ring_fragments import (ATOM_INDEX_PROP, RING_CUT_DUMMY_ISOTOPE, _ensur
 # crem.db owns the schema column constants and is imported by the command-line tools too,
 # so that set discovery here and in cremdb_info cannot drift apart.
 from crem.db import _RESERVED_RADIUS_COLUMNS
+from crem.sql_utils import quote_ident
 
 Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 __patt_remove_brackets = re.compile(r'\(\)')
@@ -1310,8 +1311,8 @@ def __get_count_sql_expr(set_names_list):
     the aggregate, which would collapse the whole result set to one row.
     """
     if len(set_names_list) == 1:
-        return f"r.{set_names_list[0]}"
-    return f"MAX({', '.join(f'r.{sn}' for sn in set_names_list)})"
+        return f"r.{quote_ident(set_names_list[0])}"
+    return f"MAX({', '.join(f'r.{quote_ident(sn)}' for sn in set_names_list)})"
 
 
 def __load_convention(db_name, radius):
@@ -1445,7 +1446,7 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
             #             max(1, mf) for explicit subsets.
             threshold = mf if is_full_set else max(1, mf)
             freq_clause = " OR ".join(
-                f"r.{sn} >= {_sql_value(threshold)}" for sn in set_names_list
+                f"r.{quote_ident(sn)} >= {_sql_value(threshold)}" for sn in set_names_list
             )
             if len(set_names_list) > 1:
                 freq_clause = f"({freq_clause})"
@@ -1507,7 +1508,7 @@ def __get_replacements_rowids(db_cur, env, dist, min_atoms, max_atoms, radius, m
                 sql += f" AND r.is_ring_closure = {_sql_value(is_ring_closure)}"
 
         for k, v in kwargs.items():
-            column = f"{kwarg_target[k]}.{k}"
+            column = f"{kwarg_target[k]}.{quote_ident(k)}"
 
             if isinstance(v, tuple):
                 if len(v) != 2:

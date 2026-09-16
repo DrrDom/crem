@@ -36,6 +36,7 @@ from rdkit import RDLogger
 
 from crem.db import _RESERVED_RADIUS_COLUMNS
 from crem.mol_context import RADIUS0_ENV_CLASSES, get_radius0_rows
+from crem.sql_utils import quote_ident
 from crem.scripts.cremdb_create import (_core_dist2, _count_heavy_atoms,
                                         _replace_attachment_points_with_h, create_indices)
 
@@ -87,7 +88,7 @@ def _create_radius0(con, set_cols, freq_types):
     con.execute("DROP TABLE IF EXISTS radius0")
     defs = ["env_id INTEGER NOT NULL", "core_smi_id INTEGER NOT NULL",
             "core_num_atoms INTEGER NOT NULL", "dist2 INTEGER NOT NULL"]
-    defs += [f"{c} {freq_types.get(c, 'INTEGER')} NOT NULL DEFAULT 0" for c in set_cols]
+    defs += [f"{quote_ident(c)} {freq_types.get(c, 'INTEGER')} NOT NULL DEFAULT 0" for c in set_cols]
     con.execute(f"""CREATE TABLE radius0({', '.join(defs)},
                     FOREIGN KEY (env_id) REFERENCES envs(env_id),
                     FOREIGN KEY (core_smi_id) REFERENCES frags(core_smi_id),
@@ -184,15 +185,16 @@ def build_radius0(db_path, ncpu=1, batch_size=50000, verbose=True, force=False):
     #    and every radius table. Unlike a count this is orbit-independent, so it is exact.
     con.execute(f"""CREATE TEMP TABLE _member(
                         frag_key TEXT PRIMARY KEY,
-                        {', '.join(f'{c} INTEGER NOT NULL DEFAULT 0' for c in set_cols)})""")
+                        {', '.join(f'{quote_ident(c)} INTEGER NOT NULL DEFAULT 0' for c in set_cols)})""")
     for radius in radii:
         cols = _set_columns(con, radius)
         present = [c for c in cols if c in set_cols]
         if not present:
             continue
-        sel = ", ".join(f"MAX(CASE WHEN r.{c} > 0 THEN 1 ELSE 0 END)" for c in present)
-        upd = ", ".join(f"{c} = MAX({c}, excluded.{c})" for c in present)
-        con.execute(f"""INSERT INTO _member(frag_key, {', '.join(present)})
+        quoted = [quote_ident(c) for c in present]
+        sel = ", ".join(f"MAX(CASE WHEN r.{c} > 0 THEN 1 ELSE 0 END)" for c in quoted)
+        upd = ", ".join(f"{c} = MAX({c}, excluded.{c})" for c in quoted)
+        con.execute(f"""INSERT INTO _member(frag_key, {', '.join(quoted)})
                         SELECT m.frag_key, {sel}
                         FROM radius{radius} r JOIN _frag_map m ON r.core_smi_id = m.core_smi_id
                         GROUP BY m.frag_key
@@ -223,9 +225,9 @@ def build_radius0(db_path, ncpu=1, batch_size=50000, verbose=True, force=False):
         con.commit()
 
     # 4. write the rows: count 1 where the fragment belongs to the set, 0 where it does not
-    member_sel = ", ".join(f"COALESCE(mb.{c}, 0)" for c in set_cols)
+    member_sel = ", ".join(f"COALESCE(mb.{quote_ident(c)}, 0)" for c in set_cols)
     con.execute(f"""INSERT OR IGNORE INTO radius0(env_id, core_smi_id, core_num_atoms,
-                                                 dist2, {', '.join(set_cols)})
+                                                 dist2, {', '.join(quote_ident(c) for c in set_cols)})
                     SELECT e.env_id, f.core_smi_id, 0, 0, {member_sel}
                     FROM _rows w
                     JOIN envs e ON e.env = w.env

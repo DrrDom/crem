@@ -30,6 +30,7 @@ from rdkit.Chem import rdMMPA
 from tqdm import tqdm
 
 from crem.mol_context import RADIUS0_ENV_CLASSES, get_radius0_rows, get_std_context_core_permutations
+from crem.sql_utils import quote_ident
 from crem.ring_fragments import iter_partial_ring_fragments
 
 
@@ -241,13 +242,34 @@ def _find_last_shard_idx(output_db: str) -> int:
     return last
 
 
+#: Names a set column may not take. The first four are the metadata columns of
+#: radius{N}: a set named after one of them would silently reuse that column instead of
+#: getting one of its own, so counts would be written over dist2 or core_num_atoms.
+#: `is_ring_closure` is absent from v2 tables, but the query layer treats it as metadata
+#: (crem.db._RESERVED_RADIUS_COLUMNS), so a set of that name would be invisible. The rowid
+#: aliases are excluded because the query layer selects r.rowid, which a real column of
+#: that name would shadow.
+_FORBIDDEN_SET_NAMES = frozenset(
+    {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2', 'is_ring_closure',
+     'rowid', 'oid', '_rowid_'}
+)
+
+
 def _validate_set_name(set_name):
+    """Check a set name before it becomes a radius{N} column.
+
+    SQL keywords ('all', 'order', ...) are accepted: every interpolation of a set name
+    goes through quote_ident, so they are legal column names.
+    """
     if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', set_name):
         raise ValueError(
             "set_name must be a valid SQLite identifier (letters, numbers, underscores; cannot start with a number)"
         )
-    if set_name in ('env_id', 'core_smi_id'):
-        raise ValueError("set_name cannot be env_id or core_smi_id")
+    if set_name.lower() in _FORBIDDEN_SET_NAMES:
+        raise ValueError(
+            f"set_name cannot be {set_name!r}: it is a reserved column of the radius tables "
+            f"({', '.join(sorted(_FORBIDDEN_SET_NAMES))})"
+        )
     return set_name
 
 
@@ -862,7 +884,8 @@ def _ensure_schema(conn, radii, set_names):
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info(radius{radius})")}
         for set_name in set_names:
             if set_name not in cols:
-                conn.execute(f"ALTER TABLE radius{radius} ADD COLUMN {set_name} INTEGER NOT NULL DEFAULT 0")
+                conn.execute(f"ALTER TABLE radius{radius} "
+                             f"ADD COLUMN {quote_ident(set_name)} INTEGER NOT NULL DEFAULT 0")
         # Drop query indices on radius tables before bulk loading; they will be
         # recreated by create_indices() at the end. The UNIQUE autoindex is kept
         # because it is required for ON CONFLICT DO UPDATE upserts.
@@ -1009,6 +1032,7 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii, timings=None):
     t0 = time.perf_counter()
     for set_name in set_names:
         per_set = counts.get(set_name, {})
+        col = quote_ident(set_name)
         for radius in radii:
             mapping = per_set.get(radius, {})
             if not mapping:
@@ -1031,10 +1055,10 @@ def _flush_to_db(conn, envs, core_info, counts, set_names, radii, timings=None):
             if rows:
                 conn.executemany(
                     f"INSERT INTO radius{radius} "
-                    f"(env_id, core_smi_id, core_num_atoms, dist2, {set_name}) "
+                    f"(env_id, core_smi_id, core_num_atoms, dist2, {col}) "
                     f"VALUES (?, ?, ?, ?, ?) "
                     f"ON CONFLICT(env_id, core_smi_id) "
-                    f"DO UPDATE SET {set_name} = {set_name} + excluded.{set_name}",
+                    f"DO UPDATE SET {col} = {col} + excluded.{col}",
                     rows,
                 )
     if timings is not None:

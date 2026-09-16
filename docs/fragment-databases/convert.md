@@ -71,7 +71,8 @@ build used `--frag-mode acyclic`.
 
 ## Naming and safety
 
-- `--set-name` must be a valid SQLite identifier and cannot be `env_id` or
-  `core_smi_id`.
+- `--set-name` must be a valid SQLite identifier and cannot be one of the radius
+  table's own columns (`env_id`, `core_smi_id`, `core_num_atoms`, `dist2`,
+  `is_ring_closure`) or a rowid alias. SQL keywords such as `all` are accepted.
 - If the output file already exists, `cremdb_convert` asks for confirmation
   before overwriting it.

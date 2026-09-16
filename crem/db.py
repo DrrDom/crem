@@ -29,6 +29,7 @@ from crem.scripts.cremdb_create import (
     run_parallel_shards as _run_create_parallel,
 )
 from crem.scripts.cremdb_merge import run as _run_merge
+from crem.sql_utils import quote_ident
 
 PathLike = Union[str, Path]
 
@@ -107,7 +108,10 @@ def create_db(
         name to either ``None`` (all molecules) or a ``set`` of molecule IDs
         that belong to that set. At most one set may map to ``None``. Every name
         must be a valid SQLite identifier, since it becomes a column of the
-        ``radius{N}`` tables.
+        ``radius{N}`` tables; SQL keywords (``all``, ``order``, ...) are accepted,
+        but the metadata columns of those tables (``env_id``, ``core_smi_id``,
+        ``core_num_atoms``, ``dist2``, ``is_ring_closure``) and rowid aliases are
+        not.
     :param radii: fragment radii to build (default 1–5).
     :param ncpu: worker processes.
     :param max_heavy_atoms: maximum heavy atoms in a core fragment.
@@ -489,12 +493,13 @@ def _add_custom_props(
         # Add columns (silently skip if already present).
         for col in col_names:
             try:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} NUMERIC DEFAULT NULL")
+                conn.execute(f"ALTER TABLE {table} "
+                             f"ADD COLUMN {quote_ident(col)} NUMERIC DEFAULT NULL")
             except sqlite3.OperationalError:
                 pass
         conn.commit()
 
-        null_filter = " OR ".join(f"{c} IS NULL" for c in col_names)
+        null_filter = " OR ".join(f"{quote_ident(c)} IS NULL" for c in col_names)
         rows = conn.execute(
             f"SELECT {id_col}, {smi_col} FROM {table} WHERE {null_filter}"
         ).fetchall()
@@ -511,7 +516,7 @@ def _add_custom_props(
 
         update_sql = (
             f"UPDATE {table} SET "
-            + ", ".join(f"{c} = ?" for c in col_names)
+            + ", ".join(f"{quote_ident(c)} = ?" for c in col_names)
             + f" WHERE {id_col} = ?"
         )
 

@@ -133,7 +133,11 @@ resume markers internally, so simply rerunning the command resumes them.
 ## Naming rules of fragment sets
 
 - A set name must be a valid SQLite identifier: `[A-Za-z_][A-Za-z0-9_]*`.
-- The reserved names `env_id` and `core_smi_id` are not allowed.
+- SQL keywords such as `all`, `order` or `index` are fine: set names are quoted
+  wherever they are used as column names.
+- The metadata columns of the radius tables are not allowed: `env_id`,
+  `core_smi_id`, `core_num_atoms`, `dist2`, `is_ring_closure`, and the rowid
+  aliases `rowid`, `oid`, `_rowid_`.
 
 ## Python API
 

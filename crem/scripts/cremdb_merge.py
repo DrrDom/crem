@@ -22,6 +22,8 @@ from typing import List
 
 from tqdm import tqdm
 
+from crem.sql_utils import quote_ident
+
 
 def _get_radii(conn: sqlite3.Connection) -> List[int]:
     """Return sorted list of radius values found in the database."""
@@ -190,13 +192,14 @@ def merge_into(
                     if col not in dst_cols:
                         target_conn.execute(
                             f"ALTER TABLE main.radius{radius} "
-                            f"ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0"
+                            f"ADD COLUMN {quote_ident(col)} INTEGER NOT NULL DEFAULT 0"
                         )
 
-                col_list = ", ".join(src_set_cols)
-                src_vals = ", ".join(f"r.{c}" for c in src_set_cols)
+                quoted_set_cols = [quote_ident(c) for c in src_set_cols]
+                col_list = ", ".join(quoted_set_cols)
+                src_vals = ", ".join(f"r.{c}" for c in quoted_set_cols)
                 conflict_upd = ", ".join(
-                    f"{c} = {c} + excluded.{c}" for c in src_set_cols
+                    f"{c} = {c} + excluded.{c}" for c in quoted_set_cols
                 )
 
                 if target_version >= 2:

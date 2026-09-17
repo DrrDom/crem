@@ -26,7 +26,7 @@ linking are therefore never filtered.
 | [`make_cycle`](make-cycle.md) / `make_cycle2` | accepted, default `True` |
 | [`mutate_mol`](mutate-grow-link.md#replacing-cyclic-source-fragments) / `mutate_mol2` | accepted, default `True` — acts on the `replace_cycles="partial_*"` modes |
 | [`get_mols_from_replacements`](two-step-replacements.md) | accepted, default `True` |
-| `grow_mol` / `grow_mol2` | accepted and forwarded, but no ring is ever formed |
+| `grow_mol` / `grow_mol2` | not accepted — growing replaces a hydrogen and forms no ring |
 | `link_mols` | not accepted — linking joins two separate molecules |
 
 Closures with three or more attachment points are not analysed and are always

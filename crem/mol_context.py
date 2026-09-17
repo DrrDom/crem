@@ -3,11 +3,72 @@ from itertools import product, permutations, combinations
 from collections import defaultdict
 from rdkit import Chem
 from .functions import mol_to_smarts
+from .ring_fragments import RING_CUT_DUMMY_ISOTOPE
 
 __author__ = 'pavel'
 
 patt_remove_map = re.compile(r"\[(?:\d+)?\*:[0-9]+\]")    # to change CC([*:1])O to CC([*])O
 patt_remove_h = re.compile(r"(?<!\[)H[1-9]*(?=:[0-9])")   # to remove H after atoms with maps: [CH2:1] to [C:1], but not touching [H] or [nH]
+
+
+# --------------------------------------------------------------------------- #
+# radius-0 attachment-point classes
+#
+# At radius 0 no context is recorded, so all that remains of an environment is how many
+# attachment points a fragment has and which of them close a ring. That is encoded as
+# `R<x>A<y>`: x ring-cut points, y acyclic ones. Ring cuts always come in a pair (two ring
+# bonds are always cut together), so x is 0 or 2 - verified against all 32 769 176 rows of
+# the chembl36 `frags` table, where n_ring is never anything else. With n_att capped at 4
+# that leaves exactly seven classes.
+#
+# The class string is the radius-0 `env`. It is deliberately not valid SMILES: it cannot be
+# mistaken for a real env, and unlike a synthetic `[1*:1].[*:2]` form it states the class
+# counts without implying a map numbering.
+# --------------------------------------------------------------------------- #
+RADIUS0_ENV_CLASSES = ('R0A1', 'R0A2', 'R0A3', 'R0A4', 'R2A0', 'R2A1', 'R2A2')
+
+
+def __radius0_env(n_ring, n_acyclic):
+    """`env` string for a radius-0 attachment-point class."""
+    return f'R{n_ring}A{n_acyclic}'
+
+
+def __attachment_point_classes(mol):
+    """Split a fragment's attachment points into (ring_cut_ids, acyclic_ids).
+
+    Ring cuts are the dummies carrying RING_CUT_DUMMY_ISOTOPE - the v2 convention applied
+    in crem.ring_fragments._materialize_fragment.
+    """
+    ring, acyclic = [], []
+    for a in mol.GetAtoms():
+        if a.GetAtomicNum() == 0 and a.GetAtomMapNum():
+            (ring if a.GetIsotope() == RING_CUT_DUMMY_ISOTOPE else acyclic).append(a.GetIdx())
+    return ring, acyclic
+
+
+def __radius0_fake_context(core):
+    """A stand-in context for radius-0 standardisation: one aliphatic carbon per attachment
+    point, carrying that point's class label.
+
+    Radius 0 keeps no context, but the standardisation pipeline is driven by one - it
+    derives the attachment-point numbering, the symmetry orbits and hence the set of
+    equivalent labellings from the env. Feeding it a context in which every point of a
+    class sits in an identical component makes all points of that class one orbit, so
+    get_std_context_core_permutations returns exactly the within-class relabellings,
+    canonically numbered, with no radius-0-specific standardisation code. Ring and acyclic
+    points stay in separate orbits because the isotope is part of each component's
+    canonical SMILES.
+
+    Returns `(context_mol, env)`, where `env` is the class string that replaces the fake
+    context's own env in the result.
+    """
+    ring, acyclic = __attachment_point_classes(core)
+    parts = []
+    for idx in ring + acyclic:
+        a = core.GetAtomWithIdx(idx)
+        iso = RING_CUT_DUMMY_ISOTOPE if a.GetIsotope() == RING_CUT_DUMMY_ISOTOPE else ''
+        parts.append(f'C[{iso}*:{a.GetAtomMapNum()}]')
+    return Chem.MolFromSmiles('.'.join(parts)), __radius0_env(len(ring), len(acyclic))
 
 
 def __get_submol(mol, atom_ids):
@@ -313,7 +374,7 @@ def __standardize_smiles_with_att_points(mol, keep_stereo=False, preserve_dummy_
 
 
 def get_std_context_core_permutations(context, core, radius, keep_stereo, return_att_map=False,
-                                      preserve_dummy_isotopes=False):
+                                      preserve_dummy_isotopes=True):
     """
     INPUT:
         context - Mol or SMILES containing full chain(s) of a context with labeled attachment point(s),
@@ -321,7 +382,14 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
         core    - Mol or SMILES of a core fragment with labeled attachment point(s)
         keep_stereo - boolean to keep stereo information in output
         radius  - integer (0, 1, 2, etc), number of bonds to cut context
-        preserve_dummy_isotopes - keep isotope labels on dummy atoms when keep_stereo is False
+        preserve_dummy_isotopes - keep isotope labels on dummy atoms when keep_stereo is False.
+                  Ring-cut attachment points carry isotope 1 (see crem.ring_fragments), so
+                  stripping them merges ring-arc fragments into the acyclic string space.
+                  Defaults to True because that is the non-lossy behaviour; pass False only
+                  to deliberately obtain the unlabelled variant of an env/core (used by broad
+                  make_cycle, which must match both provenances). Has no effect when the input
+                  carries no dummy isotopes, and is ignored entirely when keep_stereo is True
+                  (isotopes are preserved in that case regardless).
     OUTPUT:
         SMILES of a context environment of a specified radius,
         list of SMILES of a core fragment with possible permutations of attachment point numbers
@@ -346,24 +414,16 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
     if core and Chem.MolToSmiles(core) != '[H][*:1]':
         core = Chem.RemoveHs(core)
 
+    # Radius 0 keeps no context, so the environment reduces to the attachment-point
+    # classes, `R<x>A<y>` for x ring cuts and y acyclic points. Rather than a separate
+    # standardisation path, substitute a fake context in which every point of a class sits
+    # in an identical component and let the ordinary pipeline below do the work: it then
+    # numbers the points canonically and returns exactly the within-class relabellings as
+    # its permutation tuple. Only the env string is swapped for the class on the way out.
+    radius0_env_str = None
     if radius == 0 and core:
-
-        if not keep_stereo:
-            Chem.RemoveStereochemistry(core)
-
-        s = __standardize_smiles_with_att_points(
-            core,
-            keep_stereo,
-            preserve_dummy_isotopes=preserve_dummy_isotopes,
-        )
-        s = patt_remove_map.sub("[*]", s)
-
-        if return_att_map:
-            old_to_new = {a.GetAtomMapNum(): a.GetAtomMapNum() for a in core.GetAtoms()
-                          if a.GetAtomicNum() == 0 and a.GetAtomMapNum()}
-            return '', (s, ), {s: old_to_new}
-
-        return '', (s, )
+        context, radius0_env_str = __radius0_fake_context(core)
+        radius = 1
 
     if core and context:
 
@@ -389,6 +449,10 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
             preserve_dummy_isotopes=preserve_dummy_isotopes,
             allBondsExplicit=True,
         )
+        if radius0_env_str is not None:
+            # the fake context has served its purpose (numbering + orbits); report the
+            # attachment-point class instead of its SMILES
+            env_smi = radius0_env_str
 
         if att_num == 1:
             core_smi = __standardize_smiles_with_att_points(
@@ -448,10 +512,61 @@ def get_std_context_core_permutations(context, core, radius, keep_stereo, return
     return None, None
 
 
+def get_radius0_rows(core, keep_stereo=False):
+    """Radius-0 rows for one fragment: `(env, (core_smi, ...))`.
+
+    `env` is the `RxAy` attachment-point class. The cores are every within-class
+    relabelling of the fragment, with labellings that differ only by a symmetry of the
+    fragment itself collapsed to one entry - those would splice to the identical product,
+    so storing them all would weight symmetric fragments up under uniform row sampling
+    (`C([1*:1])[1*:2]` and `C([1*:2])[1*:1]` are one row, not two). Each is returned in
+    its canonical spelling, the same one radius >= 1 stores.
+
+    Both radius-0 builders go through this, so the from-scratch and the frags-derived
+    tables cannot disagree about which rows a fragment produces.
+    """
+    if isinstance(core, str):
+        core = Chem.MolFromSmiles(core)
+    if core is None:
+        return None, ()
+
+    env, cores = get_std_context_core_permutations(
+        '', core, 0, keep_stereo, preserve_dummy_isotopes=True,
+    )
+    if not cores:
+        return env, ()
+
+    # The canonical SMILES does the collapsing on its own: RDKit ranks atom map numbers
+    # along with the rest of the graph, so two labellings share a canonical string exactly
+    # when an automorphism of the fragment carries one onto the other.
+    #
+    # That is also why the collapsing must not be done with attachment-point orbits.
+    # __get_att_permutations reports the permutations of each equivalence class
+    # independently - the product of the class groups - and the fragment's automorphism
+    # group is in general only a subgroup of that product, so an orbit merges labellings
+    # no symmetry relates and the extra ones are lost. In O(C([*:1])[*:3])C([*:2])[*:4]
+    # all four points are one class, so the orbit merges every pairing of a point with a
+    # carbon, while the only symmetry is the swap of the two carbons: the three ways of
+    # splitting the points across them are distinct fragments and all but one used to be
+    # dropped.
+    #
+    # Plain Chem.MolToSmiles rather than __mol_to_smiles, to match _canonical_core in
+    # cremdb_create exactly: radius >= 1 stores that spelling, and only a byte-identical
+    # string keeps both radii on one frags row instead of giving the fragment a second id.
+    # The strings are already stereo- and isotope-normalised by the call above, so the two
+    # agree anyway in both keep_stereo modes.
+    representatives = set()
+    for smi in cores:
+        mol = Chem.MolFromSmiles(smi)
+        representatives.add(Chem.MolToSmiles(mol) if mol is not None else smi)
+    return env, tuple(sorted(representatives))
+
+
 def get_canon_context_core(context, core, radius, keep_stereo=False, return_att_map=False,
-                           preserve_dummy_isotopes=False):
+                           preserve_dummy_isotopes=True):
     # context and core are Mols or SMILES
     # returns SMILES by default
+    # preserve_dummy_isotopes defaults to True - see get_std_context_core_permutations
     res = get_std_context_core_permutations(
         context,
         core,

@@ -6,6 +6,7 @@ import sys
 from multiprocessing import Pool
 
 from crem.arg_types import filepath_type, cpu_type
+from crem.sql_utils import quote_ident
 from rdkit import Chem
 from rdkit.Chem.Descriptors import MolWt
 from rdkit.Chem.Crippen import MolLogP
@@ -49,7 +50,8 @@ def _calc(item):
 def _add_columns(conn, table, selected_props):
     for prop in selected_props:
         try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {prop} NUMERIC DEFAULT NULL")
+            conn.execute(f"ALTER TABLE {table} "
+                         f"ADD COLUMN {quote_ident(prop)} NUMERIC DEFAULT NULL")
         except sqlite3.OperationalError as e:
             sys.stderr.write(str(e) + '\n')
     conn.commit()
@@ -57,7 +59,7 @@ def _add_columns(conn, table, selected_props):
 
 def _process_table(conn, pool, table, id_col, smi_col, selected_props,
                    verbose, fetch_batch, write_batch, imap_chunk):
-    null_filter = " OR ".join(f"{p} IS NULL" for p in selected_props)
+    null_filter = " OR ".join(f"{quote_ident(p)} IS NULL" for p in selected_props)
 
     total = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {null_filter}").fetchone()[0]
     if total == 0:
@@ -73,7 +75,7 @@ def _process_table(conn, pool, table, id_col, smi_col, selected_props,
 
     update_sql = (
         f"UPDATE {table} SET "
-        + ", ".join(f"{p} = ?" for p in selected_props)
+        + ", ".join(f"{quote_ident(p)} = ?" for p in selected_props)
         + f" WHERE {id_col} = ?"
     )
 
@@ -142,12 +144,14 @@ def run(
 
         version = conn.execute("PRAGMA user_version").fetchone()[0]
 
-        if version == 1:
+        # v2 differs from v1 only in the radius tables (no is_ring_closure column) and in
+        # the fragment convention; properties live on frags in both, so one arm serves both.
+        if version in (1, 2):
             all_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if 'frags' not in all_tables:
-                raise RuntimeError("Detected new schema (user_version=1) but frags table is missing")
+                raise RuntimeError(f"Detected new schema (user_version={version}) but frags table is missing")
             if verbose:
-                sys.stderr.write("Schema version 1: adding properties to frags table\n")
+                sys.stderr.write(f"Schema version {version}: adding properties to frags table\n")
             _add_columns(conn, 'frags', selected_props)
             _process_table(
                 conn, pool, 'frags', 'core_smi_id', 'core_smi', selected_props,

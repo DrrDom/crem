@@ -5,10 +5,10 @@ The original CReM database builder is a three-stage text pipeline:
 [v0 database](schema.md#v0-schema-legacy).
 
 !!! tip "Use `cremdb_create` for new databases"
-    The one-step [`cremdb_create`](build-v1.md) builds the richer v1 format
+    The one-step [`cremdb_create`](build-v2.md) builds the richer v2 format
     (fragment sets, ring-closure provenance, smaller files). Use the v0 pipeline
     only when you specifically need it; a v0 database can later be
-    [converted to v1](convert.md).
+    [converted to v2](convert.md).
 
 ## All-in-one wrapper
 
@@ -103,5 +103,5 @@ done
 
 ## Next step
 
-To use fragment sets, ring closures, and the smaller v1 layout, convert the
-result: see [Convert v0 to v1](convert.md).
+To use fragment sets and the smaller normalized layout, convert the
+result: see [Convert a v0 database](convert.md).

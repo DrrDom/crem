@@ -1,6 +1,6 @@
 # Fragment sets
 
-A v1 database can hold several **fragment sets** in one file. Each set is a
+A v1 or v2 database can hold several **fragment sets** in one file. Each set is a
 separate frequency column on every `radiusN` table, so the same deduplicated
 `envs` and `frags` tables are shared while each set records how often a fragment
 occurs *within that set*.
@@ -9,8 +9,8 @@ This lets one database describe, for example, how common a fragment is in
 ChEMBL versus in a focused in-house library, and lets you switch between those
 views at generation time.
 
-!!! note "v1 only"
-    Fragment sets are a v1 feature. v0 databases have a single `freq` column and
+!!! note "Not available in v0"
+    Fragment sets need the v1/v2 schema. v0 databases have a single `freq` column and
     ignore the `set_names` argument.
 
 ## Build with a single set
@@ -61,16 +61,22 @@ c1ccccc1    mol_0002
 ## Inspect the sets in a database
 
 ```bash
-cremdb_get_set_names -i fragments.db
+cremdb_info -i fragments.db
 ```
 
-prints the set columns per radius table, e.g.:
+prints the schema version and the set columns per radius table, e.g.:
 
 ```text
-radius1: ['chembl']
-radius2: ['chembl']
-radius3: ['chembl']
+fragments.db
+  schema version : 2 (current)
+  radius1        : chembl
+  radius2        : chembl
+  radius3        : chembl
+  properties     : (none)
 ```
+
+Several databases may be given at once, and `--json` prints the same information in a
+machine-readable form. (The older `cremdb_get_set_names` still works but is deprecated.)
 
 Equivalently, with SQLite:
 

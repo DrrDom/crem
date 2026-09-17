@@ -1,18 +1,35 @@
 """Python API for CReM fragment database management.
 
-All three database operations (creation, merging, property annotation) are
+All database operations (creation, merging, property annotation, inspection) are
 available as plain Python functions importable from this module:
 
-    from crem.db import create_db, merge_dbs, add_fragment_props
+    from crem.db import create_db, merge_dbs, add_fragment_props, get_db_info
+
+This module also owns the schema column constants shared by the generation code
+and the command-line tools. Importing it pulls in the backing script modules --
+and through them RDKit -- at module level, so importing a constant from here is
+not free; `crem.scripts.cremdb_info` is the one consumer that needs no RDKit of
+its own and therefore pays for it.
 """
 
 import os
 import pickle
+import shutil
 import sqlite3
 import tempfile
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Union
+
+from crem.scripts.cremdb_add_prop import run as _run_add_prop
+from crem.scripts.cremdb_create import (
+    _STRIDE_SHARD_SENTINEL,
+    _validate_set_name,
+    run as _run_create,
+    run_parallel_shards as _run_create_parallel,
+)
+from crem.scripts.cremdb_merge import run as _run_merge
+from crem.sql_utils import quote_ident
 
 PathLike = Union[str, Path]
 
@@ -23,6 +40,28 @@ _TABLE_COLS = {
     'frags':   ('core_smi_id', 'core_smi'),
     'frags_h': ('core_smi_h_id', 'smi'),
 }
+
+#: Columns of radius{N} that are schema metadata rather than per-set occurrence counts.
+#: `is_ring_closure` is absent from v2 tables; naming it here is harmless because set
+#: discovery is a set difference.
+_RESERVED_RADIUS_COLUMNS = frozenset(
+    {'env_id', 'core_smi_id', 'core_num_atoms', 'dist2', 'is_ring_closure'}
+)
+
+#: Schema columns of the v1/v2 fragment tables. Everything else in them is a property
+#: column added after the build (by cremdb_add_prop or add_fragment_props), so property
+#: discovery is a set difference against these.
+#: `core_num_atoms` is listed for `frags` because older v1 builds carry it there while
+#: current builds denormalize it into radius{N} only - naming a column that may be
+#: absent is harmless in a set difference, and omitting it would report it as a property.
+BASE_TABLE_COLUMNS = {
+    'frags':   frozenset({'core_smi_id', 'core_smi', 'core_smi_h_id', 'core_num_atoms'}),
+    'frags_h': frozenset({'core_smi_h_id', 'smi'}),
+}
+
+#: Schema columns of a v0 radius{N} table (`freq` only when built with counts). v0 has no
+#: separate fragment table, so property columns live on the radius tables themselves.
+V0_BASE_COLUMNS = frozenset({'env', 'core_smi', 'core_num_atoms', 'core_sma', 'dist2', 'freq'})
 
 _CUSTOM_WRITE_BATCH = 10_000
 
@@ -56,7 +95,7 @@ def create_db(
     merge_parallel: Optional[int] = None,
     fragment_error_log: bool = False,
 ) -> None:
-    """Create or extend a v1 CReM fragment database.
+    """Create or extend a v2 CReM fragment database.
 
     Calling on an existing database is safe and additive: ``_ensure_schema``
     uses ``CREATE TABLE IF NOT EXISTS`` and incremental ``ALTER TABLE``, so
@@ -67,7 +106,12 @@ def create_db(
     :param output: path to the output SQLite database.
     :param set_name: a single set name (``str``), or a ``dict`` mapping each set
         name to either ``None`` (all molecules) or a ``set`` of molecule IDs
-        that belong to that set.
+        that belong to that set. At most one set may map to ``None``. Every name
+        must be a valid SQLite identifier, since it becomes a column of the
+        ``radius{N}`` tables; SQL keywords (``all``, ``order``, ...) are accepted,
+        but the metadata columns of those tables (``env_id``, ``core_smi_id``,
+        ``core_num_atoms``, ``dist2``, ``is_ring_closure``) and rowid aliases are
+        not.
     :param radii: fragment radii to build (default 1–5).
     :param ncpu: worker processes.
     :param max_heavy_atoms: maximum heavy atoms in a core fragment.
@@ -103,10 +147,9 @@ def create_db(
         raise ValueError("parallel_shards must be >= 1")
     if parallel_shards > 1 and shard_size is not None:
         raise ValueError("parallel_shards > 1 is incompatible with shard_size")
-    from crem.scripts.cremdb_create import run as _run, run_parallel_shards as _run_parallel
 
     tmp_input: Optional[str] = None
-    tmp_ids: List[str] = []
+    tmp_dir: Optional[str] = None
 
     try:
         # --- resolve input ---------------------------------------------------
@@ -127,24 +170,40 @@ def create_db(
 
         # --- resolve set_name ------------------------------------------------
         if isinstance(set_name, str):
-            set_name_arg = [set_name]
+            set_name_arg = [_validate_set_name(set_name)]
         elif isinstance(set_name, dict):
-            set_name_arg = []
+            if not set_name:
+                raise ValueError("set_name dict must not be empty")
+            for name in set_name:
+                _validate_set_name(name)
+            # cremdb_create derives a set name from an ID file's *basename*, and
+            # reads a bare (non-file) value as a set covering every molecule. So
+            # each set contributes exactly one argv item: a file named
+            # <set_name>.txt when it is ID-filtered, the bare name otherwise.
+            # Emitting both, as this used to, silently created two sets per entry.
+            unfiltered = [name for name, ids in set_name.items() if ids is None]
+            if len(unfiltered) > 1:
+                raise ValueError(
+                    "At most one set may cover all molecules (ids=None); got: "
+                    + ", ".join(sorted(unfiltered))
+                )
+            filtered_args: List[str] = []
             for name, ids in set_name.items():
-                set_name_arg.append(name)
-                if ids is not None:
-                    with tempfile.NamedTemporaryFile(
-                        mode='w', suffix='.txt', delete=False, encoding='utf-8'
-                    ) as fh:
-                        tmp_ids.append(fh.name)
-                        for mol_id in ids:
-                            fh.write(str(mol_id) + '\n')
-                    set_name_arg.append(tmp_ids[-1])
+                if ids is None:
+                    continue
+                if tmp_dir is None:
+                    tmp_dir = tempfile.mkdtemp(prefix='crem_sets_')
+                path = os.path.join(tmp_dir, f'{name}.txt')
+                with open(path, 'w', encoding='utf-8') as fh:
+                    for mol_id in ids:
+                        fh.write(str(mol_id) + '\n')
+                filtered_args.append(path)
+            set_name_arg = filtered_args + unfiltered
         else:
             raise TypeError("set_name must be a str or dict")
 
         if parallel_shards > 1:
-            _run_parallel(
+            _run_create_parallel(
                 input_path=input_path,
                 output_db=str(output),
                 set_name=set_name_arg,
@@ -167,7 +226,7 @@ def create_db(
                 fragment_error_log=fragment_error_log,
             )
         else:
-            _run(
+            _run_create(
                 input_path=input_path,
                 output_db=str(output),
                 set_name=set_name_arg,
@@ -193,9 +252,8 @@ def create_db(
     finally:
         if tmp_input and os.path.exists(tmp_input):
             os.unlink(tmp_input)
-        for p in tmp_ids:
-            if os.path.exists(p):
-                os.unlink(p)
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def merge_dbs(
@@ -219,8 +277,7 @@ def merge_dbs(
     """
     if parallel < 1:
         raise ValueError("parallel must be >= 1")
-    from crem.scripts.cremdb_merge import run as _run
-    _run(
+    _run_merge(
         target_path=str(target),
         source_paths=[str(s) for s in sources],
         rebuild_index=rebuild_index,
@@ -283,16 +340,119 @@ def add_fragment_props(
         builtins_arg = None
 
     if compute_builtins:
-        from crem.scripts.cremdb_add_prop import run as _run
-        _run(db_path=str(db), properties=builtins_arg, ncpu=ncpu, verbose=verbose)
+        _run_add_prop(db_path=str(db), properties=builtins_arg, ncpu=ncpu, verbose=verbose)
 
     if custom_props:
         _add_custom_props(str(db), custom_props, table=table, ncpu=ncpu, verbose=verbose)
 
 
+def get_db_info(db: PathLike) -> Dict:
+    """Summarize the schema of a CReM fragment database.
+
+    Reads only PRAGMAs and `sqlite_master`, so it is cheap on databases of any size,
+    and opens the file read-only: a database is never created or modified by this call.
+
+    :param db: path to the fragment database.
+    :return: a dict with the keys
+
+        * ``path`` - the path as given;
+        * ``version`` - ``PRAGMA user_version`` (0 legacy, 1 deprecated, 2 current);
+        * ``has_sets`` - whether the schema supports fragment sets (False for v0);
+        * ``radius_tables`` - ``{'radius1': [set names], ...}``, ordered by radius; the
+          lists are empty for v0, which has no sets;
+        * ``properties`` - ``{table: [property columns]}`` in column order, covering
+          ``frags`` and ``frags_h`` for v1/v2 and each radius table for v0. These are
+          the columns that may be used as property filters at generation time;
+        * ``is_shard`` - True for an unmerged stride-mode shard written by
+          ``cremdb_create --parallel-shards``.
+
+    :raises FileNotFoundError: if the path does not exist.
+    :raises ValueError: if the file is not a recognizable CReM database.
+    :raises sqlite3.OperationalError: if the file cannot be opened read-only (for
+        instance a database with a hot write-ahead log needing recovery).
+    """
+    path = str(db)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"{path}: file not found")
+
+    con = _connect_ro(path)
+    try:
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+        # application_id is a 32-bit *signed* field, so a sentinel with the high bit set
+        # reads back as its negative twin (and SQLite ignores the write altogether when
+        # the value does not fit). Compare the low 32 bits, which is true either way.
+        app_id = con.execute("PRAGMA application_id").fetchone()[0]
+        is_shard = (app_id & 0xFFFFFFFF) == (_STRIDE_SHARD_SENTINEL & 0xFFFFFFFF)
+        tables = {row[0] for row in
+                  con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        radius_names = _radius_table_names(tables)
+
+        info = {'path': path, 'version': version, 'is_shard': is_shard}
+
+        if version >= 1:
+            # v1/v2 (and any future member of that family): sets are the radius{N}
+            # columns that are not schema, properties live on the shared fragment tables.
+            if 'frags' not in tables:
+                raise ValueError(
+                    f"{path}: user_version={version} implies the normalized schema, "
+                    f"but the frags table is missing - this is not a CReM database")
+            info['has_sets'] = True
+            info['radius_tables'] = {
+                name: sorted(_columns(con, name) - _RESERVED_RADIUS_COLUMNS)
+                for name in radius_names
+            }
+            info['properties'] = {
+                name: [c for c in _columns(con, name, ordered=True)
+                       if c not in BASE_TABLE_COLUMNS[name]]
+                for name in ('frags', 'frags_h') if name in tables
+            }
+        else:
+            # v0, or a SQLite file that simply is not a CReM database: user_version
+            # defaults to 0, so the radius tables are the only evidence either way.
+            if not radius_names:
+                raise ValueError(
+                    f"{path}: no radius tables and no schema version - "
+                    f"this is not a CReM database")
+            info['has_sets'] = False
+            info['radius_tables'] = {name: [] for name in radius_names}
+            info['properties'] = {
+                name: [c for c in _columns(con, name, ordered=True)
+                       if c not in V0_BASE_COLUMNS]
+                for name in radius_names
+            }
+        return info
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _connect_ro(path: str) -> sqlite3.Connection:
+    """Open a database read-only, so that inspecting it can neither create the file
+    (which a plain connect() to a mistyped path does) nor write to it."""
+    from urllib.request import pathname2url
+    return sqlite3.connect(f"file:{pathname2url(os.path.abspath(path))}?mode=ro", uri=True)
+
+
+def _columns(con: sqlite3.Connection, table: str, ordered: bool = False):
+    """Column names of `table`, in declaration order when `ordered`, else as a set."""
+    names = [row[1] for row in con.execute(f"PRAGMA table_info({table})")]
+    return names if ordered else set(names)
+
+
+def _radius_table_names(tables: Iterable[str]) -> List[str]:
+    """`radiusN` table names sorted by N. Names with a non-numeric suffix are ignored
+    rather than raising: nothing stops a user table from starting with "radius"."""
+    found = []
+    for name in tables:
+        if name.startswith('radius'):
+            try:
+                found.append((int(name[6:]), name))
+            except ValueError:
+                continue
+    return [name for _, name in sorted(found)]
 
 def _is_picklable(obj) -> bool:
     try:
@@ -333,12 +493,13 @@ def _add_custom_props(
         # Add columns (silently skip if already present).
         for col in col_names:
             try:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} NUMERIC DEFAULT NULL")
+                conn.execute(f"ALTER TABLE {table} "
+                             f"ADD COLUMN {quote_ident(col)} NUMERIC DEFAULT NULL")
             except sqlite3.OperationalError:
                 pass
         conn.commit()
 
-        null_filter = " OR ".join(f"{c} IS NULL" for c in col_names)
+        null_filter = " OR ".join(f"{quote_ident(c)} IS NULL" for c in col_names)
         rows = conn.execute(
             f"SELECT {id_col}, {smi_col} FROM {table} WHERE {null_filter}"
         ).fetchall()
@@ -355,7 +516,7 @@ def _add_custom_props(
 
         update_sql = (
             f"UPDATE {table} SET "
-            + ", ".join(f"{c} = ?" for c in col_names)
+            + ", ".join(f"{quote_ident(c)} = ?" for c in col_names)
             + f" WHERE {id_col} = ?"
         )
 

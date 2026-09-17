@@ -119,4 +119,4 @@ cremdb_add_prop -i fragments.db -p mw logp rtb tpsa fcsp3 -c 8
 ```
 
 The keyword names must match existing columns: `frags` / `frags_h` columns in a
-v1 database, or `radiusN` columns in a v0 database.
+v1/v2 database, or `radiusN` columns in a v0 database.

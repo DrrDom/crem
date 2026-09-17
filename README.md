@@ -34,6 +34,7 @@ structures.
 ## Links
 
 - Documentation: <https://crem.readthedocs.io/>
+- Tutorials: <https://github.com/DrrDom/crem-tutorials>
 - Web app: <https://crem.imtm.cz/>
 - Precompiled fragment databases: <http://www.qsar4u.com/pages/crem.php>
 - Changelog: [changelog](changelog)
@@ -61,6 +62,9 @@ benchmark) and `zstandard` (to read `.zst`-compressed input when building
 databases).
 
 ## Quick start
+
+Worked tutorials — three Jupyter notebooks and eighteen one-page reference cards — live
+in a separate repository: <https://github.com/DrrDom/crem-tutorials>.
 
 All examples assume a fragment database `fragments.db` — [build one](#build-a-fragment-database)
 or download a precompiled ChEMBL database.
@@ -136,10 +140,6 @@ GuacaMol publication):
 
 ## Limitations
 
-- CReM builds structures only from fragments present in the database, so the
-  ring systems that can appear depend on the database. `make_cycle` and
-  `replace_cycles` form or replace rings using fragments observed in the
-  database rather than inventing entirely new ring systems.
 - Very large molecules are skipped in some workflows: a molecule with more than
   30 non-ring single bonds is not mutated, and one with more than 100 hydrogen
   atoms is not grown or linked.

@@ -1,7 +1,7 @@
 # Quick start
 
 This page assumes you already have a fragment database. You can
-[build one](../fragment-databases/build-v1.md) or download a precompiled ChEMBL
+[build one](../fragment-databases/build-v2.md) or download a precompiled ChEMBL
 database from <http://www.qsar4u.com/pages/crem.php>. All examples use a file
 named `fragments.db`.
 
@@ -76,6 +76,9 @@ mols = list(mutate_mol(m, db_name="fragments.db", set_names="chembl", min_freq=5
 
 ## Next steps
 
+- [Tutorials](https://github.com/DrrDom/crem-tutorials) — the same ground at a slower
+  pace: three Jupyter notebooks that build their own fragment databases, and eighteen
+  one-page reference cards to print.
 - [Concepts](../concepts.md) — what radius, context, and sets mean.
 - [Mutate, grow, link](../operations/mutate-grow-link.md) — all parameters.
 - [Advanced fragment selection](../operations/advanced-selection.md) — custom

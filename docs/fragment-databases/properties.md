@@ -31,7 +31,7 @@ Built-in properties:
 | `tpsa` | topological polar surface area |
 | `fcsp3` | fraction of sp³ carbons |
 
-The command is schema-aware: in a v1 database it adds columns to the `frags`
+The command is schema-aware: in a v1 or v2 database it adds columns to the `frags`
 table; in a v0 database it adds them to each `radiusN` table. It is also
 **incremental** — only rows whose property values are still `NULL` are
 computed, so rerunning after adding new fragments fills just the new rows.
@@ -57,10 +57,11 @@ mols = list(mutate_mol(
 ```
 
 !!! note "Where property columns live"
-    The keyword names must correspond to existing columns. In a **v1** database
+    The keyword names must correspond to existing columns. In a **v1/v2** database
     these are columns of `frags` (or `frags_h`); in a **v0** database they are
     columns of the `radiusN` tables. This is the one generation-time difference
-    between the two formats.
+    between the two formats. Run `cremdb_info -i fragments.db` to list the property
+    columns a database actually has.
 
 ## Add custom properties (Python API)
 

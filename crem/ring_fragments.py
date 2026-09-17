@@ -141,7 +141,8 @@ def _combine_mols(mols):
     return combined
 
 
-def _materialize_fragment(mol, cut_bond_ids, core_atom_ids, ring_cut_maps=None):
+def _materialize_fragment(mol, cut_bond_ids, core_atom_ids, label_all_ring_cuts,
+                          ring_cut_maps=None):
     cut_bond_ids = list(cut_bond_ids)
     ring_cut_maps = set(ring_cut_maps or ())
     dummy_labels = [(i + 1, i + 1) for i in range(len(cut_bond_ids))]
@@ -181,14 +182,20 @@ def _materialize_fragment(mol, cut_bond_ids, core_atom_ids, ring_cut_maps=None):
     if n_context_attachments != n_core_attachments:
         return None
 
-    if n_core_attachments > 2 and ring_cut_maps:
+    # Mark the ring-cut ends with isotope 1 so that later canonicalization can distinguish
+    # them from acyclic (exo) attachment points. Under the v2 fragment convention every
+    # ring cut is labelled; under v1 only fragments with a third/fourth attachment point
+    # were labelled, because with exactly two points both are ring cuts by construction
+    # and there was nothing to disambiguate.
+    if (label_all_ring_cuts or n_core_attachments > 2) and ring_cut_maps:
         _label_ring_cut_dummies(core_mol, ring_cut_maps)
         _label_ring_cut_dummies(context_mol, ring_cut_maps)
 
     return core_mol, context_mol, core_atom_ids
 
 
-def iter_partial_ring_fragments(mol, max_acyclic_cuts=2, min_core_atoms=None, max_core_atoms=None,
+def iter_partial_ring_fragments(mol, *, label_all_ring_cuts, max_acyclic_cuts=2,
+                                min_core_atoms=None, max_core_atoms=None,
                                 side_cut_mode="all"):
     """Yield connected partial-ring fragments with 2-4 context attachments.
 
@@ -197,6 +204,13 @@ def iter_partial_ring_fragments(mol, max_acyclic_cuts=2, min_core_atoms=None, ma
     on distinct detached side components of the selected ring arc. With
     ``side_cut_mode="exo"``, those side cuts are limited to acyclic bonds
     adjacent to an atom of the selected ring arc.
+
+    ``label_all_ring_cuts`` selects the fragment convention and is deliberately
+    keyword-only with no default: it must follow the schema version of the database
+    the fragments will be matched against, and silently inheriting the wrong value
+    yields zero matches rather than an error. Pass True for v2 databases (every
+    ring cut carries isotope 1) and False for v1 (only 3-/4-attachment fragments
+    are labelled).
     """
     if side_cut_mode not in {"all", "exo"}:
         raise ValueError("side_cut_mode must be one of: 'all', 'exo'")
@@ -266,6 +280,7 @@ def iter_partial_ring_fragments(mol, max_acyclic_cuts=2, min_core_atoms=None, ma
                             mol,
                             sorted(ring_cut_bond_ids) + sorted(side_bond_ids),
                             core_atom_ids,
+                            label_all_ring_cuts,
                             ring_cut_maps=range(1, len(ring_cut_bond_ids) + 1),
                         )
                         if fragment is not None:

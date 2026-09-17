@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 
 from crem.db import add_fragment_props, create_db, merge_dbs
+from crem.scripts.cremdb_create import DB_SCHEMA_VERSION
 
 CORPUS_A = [
     "CCO mol1", "c1ccccc1 mol2", "CCCO mol3",
@@ -49,9 +50,17 @@ def _null_count(db, table, col):
 
 
 def _provenance_counts(db, radius=2):
+    """Rows per provenance, keyed 0 (acyclic cut) / 1 (ring cut).
+
+    On v2 there is no is_ring_closure column: every ring-cut attachment point carries
+    isotope 1, so the label in core_smi *is* the provenance.
+    """
     with sqlite3.connect(db) as c:
         return dict(c.execute(
-            f"SELECT is_ring_closure, count(*) FROM radius{radius} GROUP BY is_ring_closure"
+            f"SELECT CASE WHEN f.core_smi LIKE '%[1*%' THEN 1 ELSE 0 END AS is_ring_closure, "
+            f"       count(*) "
+            f"FROM radius{radius} r JOIN frags f ON r.core_smi_id = f.core_smi_id "
+            f"GROUP BY is_ring_closure"
         ).fetchall())
 
 
@@ -94,7 +103,7 @@ def test_create_valid_schema(tmp_path):
     create_db(CORPUS_A, db, "chembl", radii=(1, 2, 3), verbose=False)
     with sqlite3.connect(db) as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 1
+    assert ver == DB_SCHEMA_VERSION
     assert {"envs", "frags_h", "frags", "radius1", "radius2", "radius3"}.issubset(_tables(db))
     assert "idx_radius3_lookup" in _indices(db)
 
@@ -129,6 +138,16 @@ def test_create_set_name_dict_all_mols(tmp_path):
     assert _frag_count(db) > 0
 
 
+def _set_cols(db, table="radius1"):
+    """Set-occurrence columns of a radius table, i.e. everything but the schema."""
+    return _cols(db, table) - {"env_id", "core_smi_id", "core_num_atoms", "dist2"}
+
+
+def _set_sum(db, col, table="radius1"):
+    with sqlite3.connect(db) as c:
+        return c.execute(f'SELECT coalesce(sum("{col}"), 0) FROM {table}').fetchone()[0]
+
+
 def test_create_set_name_dict_filtered(tmp_path):
     db_all = str(tmp_path / "all.db")
     db_filtered = str(tmp_path / "filtered.db")
@@ -137,8 +156,107 @@ def test_create_set_name_dict_filtered(tmp_path):
     # Only the first two molecule IDs
     id_filter = {"mol1", "mol2"}
     create_db(CORPUS_A, db_filtered, {"s": id_filter}, radii=(1, 2, 3), verbose=False)
+
+    # The dict form must produce exactly the named set — no stray temp-file column,
+    # and the name must not silently become an unfiltered set.
+    assert _set_cols(db_filtered) == {"s"}
+    assert _set_sum(db_filtered, "s") < _set_sum(db_all, "s")
+    assert _set_sum(db_filtered, "s") > 0
     # Filtered DB should have fewer or equal fragments
     assert _frag_count(db_filtered) <= _frag_count(db_all)
+
+
+def test_create_set_name_dict_multiple_sets(tmp_path):
+    """Several ID-filtered sets in one call each get their own correctly named column."""
+    db = str(tmp_path / "multi.db")
+    create_db(
+        CORPUS_A, db,
+        {"actives": {"mol1", "mol2"}, "decoys": {"mol4"}},
+        radii=(1,), verbose=False,
+    )
+    assert _set_cols(db) == {"actives", "decoys"}
+    assert _set_sum(db, "actives") > 0
+    assert _set_sum(db, "decoys") > 0
+
+
+def test_create_set_name_dict_mixed_filtered_and_all(tmp_path):
+    """A None-valued set covers every molecule alongside ID-filtered ones."""
+    db = str(tmp_path / "mixed.db")
+    create_db(
+        CORPUS_A, db,
+        {"subset": {"mol1"}, "everything": None},
+        radii=(1,), verbose=False,
+    )
+    assert _set_cols(db) == {"subset", "everything"}
+    assert 0 < _set_sum(db, "subset") < _set_sum(db, "everything")
+
+
+def test_create_set_name_dict_rejects_multiple_unfiltered(tmp_path):
+    db = str(tmp_path / "bad.db")
+    with pytest.raises(ValueError, match="At most one set"):
+        create_db(CORPUS_A, db, {"a": None, "b": None}, radii=(1,), verbose=False)
+
+
+def test_create_set_name_sql_keyword(tmp_path):
+    """A set named after a SQL keyword is a legal column: the name is quoted, not checked
+    against a keyword list, and the resulting DB is queryable by that name."""
+    from crem.crem import mutate_mol
+    from rdkit import Chem
+
+    db = str(tmp_path / "kw.db")
+    create_db(CORPUS_A, db, "all", radii=(1, 2, 3), verbose=False)
+    assert _set_cols(db) == {"all"}
+    assert _set_sum(db, "all") > 0
+
+    # Extending with a second keyword-named set must add a column, not reuse the first.
+    create_db(CORPUS_B, db, {"order": None}, radii=(1, 2, 3), verbose=False)
+    assert _set_cols(db) == {"all", "order"}
+    assert _set_sum(db, "order") > 0
+
+    mol = Chem.MolFromSmiles("c1ccccc1N")
+    for names in (None, "all", ["all", "order"]):
+        assert list(mutate_mol(mol, db, radius=1, min_size=0, max_size=4,
+                               min_freq=0, set_names=names))
+
+
+def test_merge_sets_with_sql_keyword_names(tmp_path):
+    """The merge path also interpolates set names as columns."""
+    db_a = str(tmp_path / "a.db")
+    db_b = str(tmp_path / "b.db")
+    create_db(CORPUS_A, db_a, "all", radii=(1,), verbose=False)
+    create_db(CORPUS_B, db_b, "order", radii=(1,), verbose=False)
+    merge_dbs(db_a, [db_b], verbose=False)
+    assert _set_cols(db_a) == {"all", "order"}
+    assert _set_sum(db_a, "all") > 0
+    assert _set_sum(db_a, "order") > 0
+
+
+def test_create_set_name_rejects_radius_metadata_columns(tmp_path):
+    """A set named after a metadata column would be written into that column instead of
+    getting one of its own, so it is rejected rather than silently corrupting the table."""
+    db = str(tmp_path / "bad.db")
+    for name in ("dist2", "core_num_atoms", "env_id", "core_smi_id", "is_ring_closure", "rowid"):
+        with pytest.raises(ValueError, match="reserved column"):
+            create_db(CORPUS_A, db, name, radii=(1,), verbose=False)
+
+
+def test_create_set_name_rejects_invalid_identifier(tmp_path):
+    db = str(tmp_path / "bad.db")
+    with pytest.raises(ValueError):
+        create_db(CORPUS_A, db, "9bad name", radii=(1,), verbose=False)
+    with pytest.raises(ValueError):
+        create_db(CORPUS_A, db, {"9bad name": {"mol1"}}, radii=(1,), verbose=False)
+
+
+def test_create_dict_filtered_is_incrementally_updatable(tmp_path):
+    """Two batches into the same ID-filtered set hit one column, not a new one."""
+    db = str(tmp_path / "incr.db")
+    create_db(CORPUS_A, db, {"chembl": {"mol1", "mol2"}}, radii=(1,), verbose=False)
+    assert _set_cols(db) == {"chembl"}
+    first = _set_sum(db, "chembl")
+    create_db(CORPUS_B, db, {"chembl": {"mol6", "mol7"}}, radii=(1,), verbose=False)
+    assert _set_cols(db) == {"chembl"}
+    assert _set_sum(db, "chembl") > first
 
 
 def test_create_max_heavy_atoms(tmp_path):
@@ -238,6 +356,22 @@ def test_create_invalid_set_name_type(tmp_path):
 # ---------------------------------------------------------------------------
 # merge_dbs
 # ---------------------------------------------------------------------------
+
+def test_custom_prop_sql_keyword_name(tmp_path):
+    """Fragment property columns are interpolated as identifiers too, and are filterable
+    as query kwargs afterwards."""
+    from crem.crem import mutate_mol
+    from rdkit import Chem
+
+    db = str(tmp_path / "prop.db")
+    create_db(CORPUS_A, db, "s", radii=(1, 2, 3), verbose=False)
+    add_fragment_props(db, ["mw"], custom_props={"order": lambda smi: float(len(smi))})
+    assert {"mw", "order"} <= _cols(db, "frags")
+    assert _null_count(db, "frags", '"order"') == 0
+    mol = Chem.MolFromSmiles("c1ccccc1N")
+    assert list(mutate_mol(mol, db, radius=1, min_size=0, max_size=4,
+                           min_freq=0, order=(1, 100)))
+
 
 def test_merge_combines_fragments(tmp_path):
     db_a = str(tmp_path / "a.db")

@@ -2,6 +2,7 @@ import pytest
 from rdkit import Chem
 
 import crem.crem as crem_module
+from crem.mol_context import RADIUS0_ENV_CLASSES
 from crem.crem import (
     get_mols_from_replacements,
     get_replacements,
@@ -215,11 +216,13 @@ def test_mutate_replace_cycles_no_queries_acyclic_rows_only(db_rc):
     mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
 
     def assert_acyclic(row_ids, cur, radius):
+        # On v2 provenance is the isotope-1 label on the core, not a column.
         if row_ids:
             bad = cur.execute(
-                f"SELECT count(*) FROM radius{radius} "
-                f"WHERE rowid IN ({','.join(map(str, row_ids))}) "
-                f"AND is_ring_closure != 0"
+                f"SELECT count(*) FROM radius{radius} r "
+                f"JOIN frags f ON r.core_smi_id = f.core_smi_id "
+                f"WHERE r.rowid IN ({','.join(map(str, row_ids))}) "
+                f"AND f.core_smi LIKE '%[1*%'"
             ).fetchone()[0]
             assert bad == 0
         return row_ids
@@ -481,22 +484,16 @@ def test_ring_closure_close_anchors_connected_env(db_rc):
 
 
 def test_ring_closure_legacy_db_raises(db_acyclic):
-    # db_acyclic was built with --frag-mode acyclic, so it has no ring rows.
-    # ring_closures=True should still WORK against it (just yield zero
-    # results) because the column exists and just has no rows. To exercise
-    # the legacy-DB error path, we simulate a pre-feature DB by dropping
-    # the column from a fresh copy.
+    # The legacy-DB error path belongs to the v1 reader: a v1 database predating
+    # ring-closure support has no is_ring_closure column, so ring_closures=True cannot be
+    # satisfied and must raise rather than silently return nothing. db_acyclic is built by
+    # the current code and is therefore v2 (where the column is absent by design and
+    # provenance lives in the env), so stamp the copy back to v1 to exercise that path.
     import shutil, sqlite3, tempfile
     legacy_db = tempfile.mkstemp(suffix=".db")[1]
     shutil.copyfile(db_acyclic, legacy_db)
     with sqlite3.connect(legacy_db) as c:
-        # Drop is_ring_closure column from radius1 (test only that radius).
-        cols = [r[1] for r in c.execute("PRAGMA table_info(radius1)")]
-        keep = [c2 for c2 in cols if c2 != "is_ring_closure"]
-        c.execute(f"CREATE TABLE radius1_new ({','.join(keep)})")
-        c.execute(f"INSERT INTO radius1_new SELECT {','.join(keep)} FROM radius1")
-        c.execute("DROP TABLE radius1")
-        c.execute("ALTER TABLE radius1_new RENAME TO radius1")
+        c.execute("PRAGMA user_version = 1")
 
     m = Chem.MolFromSmiles("CCCC")
     with pytest.raises(ValueError, match="is_ring_closure"):
@@ -578,3 +575,84 @@ def test_get_replacements_replace_cycles_partial_all_matches_mutate(db_rc):
     via_repl = set(get_mols_from_replacements(mol, 1, replacements))
     direct = set(mutate_mol(mol, db_rc, **kw))
     assert via_repl == direct
+
+
+# ---------------------------------------------------------------------------
+# radius 0
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def db_r0(tmp_path_factory):
+    """A v2 database built with radius 0 alongside radius 1."""
+    import os
+    import subprocess
+    import sys as _sys
+    here = os.path.dirname(__file__)
+    smi_file = os.path.join(here, "data", "ring_closures.smi")
+    d = tmp_path_factory.mktemp("db_r0")
+    db_path = str(d / "r0.db")
+    subprocess.run(
+        [_sys.executable, "-m", "crem.scripts.cremdb_create", "-i", smi_file, "-o", db_path,
+         "-s", "test", "--radii", "0", "1", "--ncpu", "1", "--frag-mode", "both"],
+        check=True, capture_output=True,
+    )
+    return db_path
+
+
+R0_CASES = [
+    ("mutate", dict(radius=0, max_size=4, replace_cycles="no")),
+    ("mutate", dict(radius=0, max_size=3, replace_cycles="partial_exo")),
+    ("mutate", dict(radius=0, max_size=3, replace_cycles="partial_all")),
+    ("mutate", dict(radius=0, max_size=8, replace_cycles="forced")),
+    ("grow", dict(radius=0, max_atoms=3)),
+    ("cycle_strict", dict(radius=0, ring_closures=True, max_atoms=3)),
+    ("cycle_broad", dict(radius=0, ring_closures=False, max_atoms=3)),
+]
+
+
+def _run(op, db, kwargs):
+    mol = Chem.MolFromSmiles("CC1CCC(CC)CC1")
+    if op == "mutate":
+        return set(mutate_mol(mol, db, min_freq=0, **kwargs))
+    if op == "grow":
+        return set(grow_mol(mol, db, min_freq=0, **kwargs))
+    return set(make_cycle(mol, db, min_freq=0, **kwargs))
+
+
+@pytest.mark.parametrize("op,kwargs", R0_CASES)
+def test_radius0_generation_produces_valid_products(db_r0, op, kwargs):
+    products = _run(op, db_r0, kwargs)
+    assert products
+    assert all(Chem.MolFromSmiles(s) is not None for s in products)
+
+
+@pytest.mark.parametrize("op,kwargs", R0_CASES)
+def test_radius0_superset_of_radius1(db_r0, op, kwargs):
+    """Radius 0 imposes no environment constraint, so whatever radius 1 finds it must find.
+
+    This is the strongest available end-to-end check that the RxAy env classes line up
+    between the builder and the query path: a mismatch shows up as a missing product
+    rather than as an error.
+    """
+    r0 = _run(op, db_r0, kwargs)
+    r1 = _run(op, db_r0, {**kwargs, "radius": 1})
+    assert r1 <= r0
+    assert len(r0) > len(r1)
+
+
+def test_radius0_link_produces_valid_products(db_r0):
+    a = Chem.MolFromSmiles("c1ccc(CN)cc1")
+    b = Chem.MolFromSmiles("CCO")
+    products = set(link_mols(a, b, db_r0, radius=0, max_atoms=3, min_freq=0))
+    assert products
+    assert all(Chem.MolFromSmiles(s) is not None for s in products)
+
+
+def test_radius0_env_classes_are_used(db_r0):
+    """Every env a radius-0 query resolves against must be an attachment-point class."""
+    import sqlite3
+    with sqlite3.connect(db_r0) as c:
+        envs = {r[0] for r in c.execute(
+            "SELECT DISTINCT e.env FROM radius0 r JOIN envs e ON r.env_id = e.env_id")}
+    assert envs
+    assert envs <= set(RADIUS0_ENV_CLASSES)

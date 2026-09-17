@@ -1,6 +1,6 @@
-# Build a database (v1)
+# Build a database (v2)
 
-`cremdb_create` builds a v1 fragment database directly from a SMILES file in one
+`cremdb_create` builds a v2 fragment database directly from a SMILES file in one
 step. It is the recommended way to create new databases. The same functionality
 is available programmatically through [`crem.db.create_db`](#python-api).
 
@@ -40,7 +40,7 @@ cremdb_create -i input.smi -o fragments.db -s chembl \
 
 | Option | Default | Description |
 |---|---|---|
-| `-r`, `--radii` | `1 2 3 4 5` | Context radii to build |
+| `-r`, `--radii` | `1 2 3 4 5` | Context radii to build. Include `0` for the no-context [radius 0](radius0.md) table |
 | `-c`, `--ncpu` | `1` | Worker processes (capped at available CPUs) |
 | `--max-heavy-atoms` | `15` | Maximum heavy atoms in a core fragment |
 | `--mode` | `0` | Acyclic cut mode: `0` all atoms, `1` heavy only, `2` H only |
@@ -100,7 +100,7 @@ cremdb_create -i big_input.smi -o fragments.db -s chembl \
 
 ### Merge shards manually with `cremdb_merge`
 
-Shards or individual v1 databases can also be merged by hand — for example 
+Shards or individual databases of the same schema version can also be merged by hand — for example 
 to combine the per-shard databases from `--shard-size`, or to merge shards built 
 on different machines. `cremdb_merge` merges source databases into an existing 
 target; it is idempotent and resumable, so already-absorbed sources are skipped.
@@ -133,7 +133,11 @@ resume markers internally, so simply rerunning the command resumes them.
 ## Naming rules of fragment sets
 
 - A set name must be a valid SQLite identifier: `[A-Za-z_][A-Za-z0-9_]*`.
-- The reserved names `env_id` and `core_smi_id` are not allowed.
+- SQL keywords such as `all`, `order` or `index` are fine: set names are quoted
+  wherever they are used as column names.
+- The metadata columns of the radius tables are not allowed: `env_id`,
+  `core_smi_id`, `core_num_atoms`, `dist2`, `is_ring_closure`, and the rowid
+  aliases `rowid`, `oid`, `_rowid_`.
 
 ## Python API
 

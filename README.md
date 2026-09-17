@@ -136,10 +136,6 @@ GuacaMol publication):
 
 ## Limitations
 
-- CReM builds structures only from fragments present in the database, so the
-  ring systems that can appear depend on the database. `make_cycle` and
-  `replace_cycles` form or replace rings using fragments observed in the
-  database rather than inventing entirely new ring systems.
 - Very large molecules are skipped in some workflows: a molecule with more than
   30 non-ring single bonds is not mutated, and one with more than 100 hydrogen
   atoms is not grown or linked.

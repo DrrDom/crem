@@ -34,6 +34,7 @@ structures.
 ## Links
 
 - Documentation: <https://crem.readthedocs.io/>
+- Tutorials: <https://github.com/DrrDom/crem-tutorials>
 - Web app: <https://crem.imtm.cz/>
 - Precompiled fragment databases: <http://www.qsar4u.com/pages/crem.php>
 - Changelog: [changelog](changelog)
@@ -57,6 +58,9 @@ benchmark) and `zstandard` (to read `.zst`-compressed input when building
 databases).
 
 ## Quick start
+
+Worked tutorials — three Jupyter notebooks and eighteen one-page reference cards — live
+in a separate repository: <https://github.com/DrrDom/crem-tutorials>.
 
 All examples assume a fragment database `fragments.db` — [build one](#build-a-fragment-database)
 or download a precompiled ChEMBL database.

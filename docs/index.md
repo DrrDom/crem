@@ -37,6 +37,7 @@ only from fragment substitutions that have been observed in real molecules.
 | Understand the vocabulary (context, radius, core, sets) | [Concepts](concepts.md) |
 | Install CReM | [Installation](getting-started/installation.md) |
 | Run your first generation | [Quick start](getting-started/quickstart.md) |
+| Work through it properly, with notebooks and printable cards | [Tutorials](https://github.com/DrrDom/crem-tutorials) |
 | Build a fragment database | [Build a database (v2)](fragment-databases/build-v2.md) |
 | Look up a function or CLI flag | [Reference](reference/crem.md) |
 
@@ -61,6 +62,7 @@ See [Concepts](concepts.md) for the full model and
 ## Online resources
 
 - Documentation: <https://crem.readthedocs.io/>
+- Tutorials: <https://github.com/DrrDom/crem-tutorials>
 - Web application: <https://crem.imtm.cz/>
 - Precompiled ChEMBL databases: <http://www.qsar4u.com/pages/crem.php>
 - Source code: <https://github.com/DrrDom/crem>

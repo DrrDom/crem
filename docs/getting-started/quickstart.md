@@ -76,6 +76,9 @@ mols = list(mutate_mol(m, db_name="fragments.db", set_names="chembl", min_freq=5
 
 ## Next steps
 
+- [Tutorials](https://github.com/DrrDom/crem-tutorials) — the same ground at a slower
+  pace: three Jupyter notebooks that build their own fragment databases, and eighteen
+  one-page reference cards to print.
 - [Concepts](../concepts.md) — what radius, context, and sets mean.
 - [Mutate, grow, link](../operations/mutate-grow-link.md) — all parameters.
 - [Advanced fragment selection](../operations/advanced-selection.md) — custom

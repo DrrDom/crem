@@ -1207,6 +1207,16 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
         except Exception:
             pass
 
+    # Re-perceive stereo before handing the molecule back. molzip carries the
+    # context's bond stereo through into the product, but a replacement can change
+    # which atoms surround a double bond - or absorb it into a ring - leaving stereo
+    # atom references that no longer describe a real neighbour. Writing SMILES hides
+    # that, so the product looks fine; but processing Mol output hits an RDKit
+    # precondition inside Bond::setStereoAtoms - "bgnIdx not connected to begin
+    # atom of bond" - which aborts the process rather than raising, taking the worker
+    # and everything queued behind it with no traceback. cleanIt drops the stale flags.
+    Chem.AssignStereochemistry(p, cleanIt=True, force=True)
+
     smi = Chem.MolToSmiles(p, isomericSmiles=True)
     yield smi, p, transformation_smi
 

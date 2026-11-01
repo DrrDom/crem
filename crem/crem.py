@@ -1159,10 +1159,14 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
 
     with rdBase.BlockLogs():
         repl_core_mol = Chem.MolFromSmiles(new_frag_smi)
-    # label new atoms in generated structure with bool prop
+    # label new atoms in generated structure with bool prop, and count the
+    # attachment points while we are already walking the atoms
+    n_attachment_points = 0
     for atom in repl_core_mol.GetAtoms():
         if atom.GetAtomicNum() != 0:
             atom.SetBoolProp(CREM_MARKER_PROP, True)
+        else:
+            n_attachment_points += 1
 
     transformation_smi = f"{old_frag_smi}>>{new_frag_smi}"
     try:
@@ -1196,7 +1200,7 @@ def __frag_replace(mol1, mol2, old_frag_smi, new_frag_smi, radius, context_mol=N
     if p.HasSubstructMatch(__explicit_h_query):
         p = Chem.RemoveHs(p, __remove_hs_params)
 
-    if discard_ring_geometry:
+    if discard_ring_geometry and n_attachment_points >= 2:
         # discard ring-forming products with an impossible-to-embed new ring; any error in the
         # geometry analysis must never discard a structure (would be a false negative)
         try:
